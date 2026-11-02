@@ -53,11 +53,10 @@ endfunction()
 arc_session_test(arc_drive arc_drive.c)
 
 # The frontend contract, against a real temporary XDG tree: settings persist,
-# paths resolve, CONFIG boots on the stand-in and reports the missing character
-# set, input reaches the machine, a FujiNet app opens and runs, RESET restarts
-# it, Reset to CONFIG ejects it, a game is refused until a BIOS is imported,
-# an image the console cannot take is refused with a reason, the Videopac G7000
-# and the Voice, and a Videopac+ G7400 with no BIOS does not start.
+# paths resolve, CONFIG boots, input reaches the machine, a FujiNet app opens
+# and runs, RESET restarts it, Reset to CONFIG ejects it, a 4K game and a zip
+# of one load, an image the console cannot take is refused with a reason, and
+# the PAL clone runs at 50 Hz.
 arc_session_test(session_test session_test.c)
 add_test(NAME session COMMAND session_test)
 set_tests_properties(session PROPERTIES TIMEOUT 120)
@@ -68,10 +67,9 @@ set_tests_properties(session PROPERTIES TIMEOUT 120)
 arc_session_test(bindings_test bindings_test.c)
 add_test(NAME bindings COMMAND bindings_test)
 
-# The on-screen keyboard's layout tables for the Arcadia 2001 and the Videopac+
-# G7400: no overlapping caps, every matrix position reachable, labels unique
-# and agreeing with the matrix, the caps where the console's photograph has
-# them. No machine is started.
+# The on-screen controller layout table for the Arcadia 2001: no overlapping
+# caps, every key reachable, labels unique and agreeing with the matrix. No
+# machine is started.
 arc_session_test(keyboard_test keyboard_test.c)
 add_test(NAME keyboard COMMAND keyboard_test)
 

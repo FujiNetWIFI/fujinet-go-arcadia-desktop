@@ -36,7 +36,7 @@ extern "C" {
  * Intellivision 65503/64003, MSX 65505/64003, Astrocade 11500/11501,
  * ColecoVision 11502/11503, Atari 2600 11504/11505, NES 11506/11507, SMS
  * 11508/11509, Atari 7800 11510/11511, H89 11512/11513, Atari 800
- * 11514/11515, MS-DOS 11516/11517, Studio II 11518/11519, Odyssey 2 11520/11521;
+ * 11514/11515, MS-DOS 11516/11517, Studio II 11518/11519, Odyssey 2 11520/11521, Arcadia 2001 11522/11523;
  * the firmware's MAME dev harness for the Arcadia 2001 uses 9995/9997.
  *
  * Direction: FujiNet LISTENS and the Arcadia 2001 FujiNet cartridge dials in, as
