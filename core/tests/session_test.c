@@ -172,7 +172,9 @@ static uint8_t ram(arcsession *s, uint16_t addr)
 static int moving(arcsession *s)
 {
     uint8_t a = ram(s, RAM_COUNTER);
-    for (int i = 0; i < 4; i++) {
+    /* a freshly loaded game needs a few frames to start (a loaded CI runner
+     * more than a desk), so give it three seconds before "stopped" */
+    for (int i = 0; i < 50; i++) {
         sleep_ms(60);
         if (ram(s, RAM_COUNTER) != a) return 1;
     }
