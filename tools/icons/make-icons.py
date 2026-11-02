@@ -7,18 +7,16 @@ to the siblings' copies -- composited over this product's own background
 colour, so the whole family reads as one product line while each target
 still gets a distinct badge colour.
 
-Two things are specific to this target, both the user's choice (2026-11-01):
+Colours are the Emerson Arcadia 2001's own, sampled from the console photo
+(the user's choice, 2026-11-02):
 
-  * Background is #C3C0BF, the Magnavox Arcadia 2001's case silver, sampled from
-    the console photo in fujinet-ads/arcadia/magnavox-arcadia-2-console.png. The
-    UI accent is NOT the icon colour: it is the console's power-button red,
-    #C11218 (ARCSESSION_ACCENT_RGB in core/include/arcsession.h), which keeps
-    the dock and the family banner distinct from the Master System's red.
-  * The mark is INVERTED before compositing, as on the 2600's and 7800's
-    icons: the family art is white discs and lines around one black centre
-    disc, which would wash out on a light ground, so the RGB channels are
-    inverted (alpha untouched) -- the mark comes out in the black of the
-    console's keys and controllers, the centre disc white.
+  * Background #2D2928, the console's charcoal case.
+  * The family mark is recoloured through a two-stop gradient on its
+    brightness: the white discs and lines become the keypad/disc gold
+    #AA916C, and the black centre disc becomes the wood-grain front
+    strip's brown #5B3B26.
+  * The UI accent is the same gold (ARCSESSION_ACCENT_RGB in
+    core/include/arcsession.h), with a darker variant for light themes.
 
 Everything else about the composite (rounded-square mask, corner radius,
 foreground zoom, output sizes) matches the sibling repos' own
@@ -34,7 +32,7 @@ re-run this only when the artwork or background colour changes:
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[2]
 FOREGROUND = ROOT / "data/icons/src/fujinet-go-arcadia-foreground.png"
@@ -42,8 +40,9 @@ OUTDIR = ROOT / "data/icons/hicolor"
 ICNS_OUT = ROOT / "data/icons/fujinet-go-arcadia.icns"
 ICO_OUT = ROOT / "frontends/windows/app.ico"
 
-BACKGROUND = (0xC3, 0xC0, 0xBF, 0xFF)    # #C3C0BF, the Arcadia 2001's case silver
-INVERT_FOREGROUND = True                 # black mark, white centre (see above)
+BACKGROUND = (0x2D, 0x29, 0x28, 0xFF)    # #2D2928, the Arcadia 2001's charcoal case
+GOLD = (0xAA, 0x91, 0x6C)                # the keypads and the discs
+WOOD = (0x5B, 0x3B, 0x26)                # the wood-grain front strip
 MASTER = 1024                            # render big, downsample with LANCZOS
 CORNER_RADIUS = 0.22                     # fraction of the edge
 FOREGROUND_ZOOM = 1.18                   # Android's mask crops; compensate a little
@@ -53,12 +52,13 @@ ICNS_SIZES = (32, 64, 128, 256, 512, 1024)  # every size macOS's icns TOC refere
 
 def render_master() -> Image.Image:
     art = Image.open(FOREGROUND).convert("RGBA")
-    if INVERT_FOREGROUND:
-        # Invert colour only; the alpha channel is the mark's shape and must
-        # not change, or the transparent field would become opaque white.
-        r, g, b, a = art.split()
-        art = Image.merge("RGBA", (ImageChops.invert(r), ImageChops.invert(g),
-                                   ImageChops.invert(b), a))
+    # Recolour by brightness (the alpha channel is the mark's shape and must
+    # not change): white -> GOLD, black -> WOOD.
+    r, g, b, a = art.split()
+    lum = Image.merge("RGB", (r, g, b)).convert("L")
+    chans = [lum.point(lambda v, lo=WOOD[i], hi=GOLD[i]: int(lo + (hi - lo) * v / 255))
+             for i in range(3)]
+    art = Image.merge("RGBA", (*chans, a))
 
     # Rounded-square background on a transparent canvas, drawn at 4x and
     # downsampled so the corners are antialiased.
