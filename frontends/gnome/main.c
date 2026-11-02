@@ -87,16 +87,16 @@ static void on_activate(AdwApplication *app, gpointer user_data)
 
     arcsession_default_opts(g_session, &opts);
     gtk_window_present(GTK_WINDOW(win));
-    /* a machine that cannot start (the Videopac+ G7400 chosen, its BIOS gone)
-     * says why; Preferences is still there to choose another */
+    /* a machine that cannot start says why; Preferences is still there to
+     * choose another */
     if (arcsession_start(g_session, &opts) != 0) {
         g_warning("%s", arcsession_last_error(g_session));
         arc_window_message(ARC_WINDOW(win), "The Console Did Not Start",
                           arcsession_last_error(g_session));
     }
 
-    /* A file named on the command line takes the drag-and-drop path: a BIOS
-     * is imported, a cartridge is opened (and remembered, as from the menu),
+    /* A file named on the command line takes the drag-and-drop path: a
+     * cartridge is opened (and remembered, as from the menu),
      * anything else goes to FujiNet's SD folder. */
     if (g_media_arg) {
         arc_window_load_media(ARC_WINDOW(win), g_media_arg);

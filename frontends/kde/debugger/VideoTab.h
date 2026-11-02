@@ -1,14 +1,13 @@
 /*
- * The debugger's Video tab: everything the 8244/8245 knows.
+ * The debugger's Video tab: everything the 2637 UVI knows.
  *
  * Left, the picture the chip draws -- the last frame, the registers
  * re-rendered with the layers and overlays you choose, or the frame as far as
  * the beam has got -- at 2x with nearest-neighbour scaling, and what is under
- * the pointer. Right, the chip in sections: the objects with their positions
- * and rendered bitmaps (4 sprites, 12 single characters, 4 quads of 4), the
- * grid as a diagram, every register $00-$FF decoded (editable while the
- * machine is stopped), the control, status, collision and colour registers,
- * the sound shift register, and the font, shape and palette sheets.
+ * the pointer. Right, the chip in sections: the four objects with their
+ * positions and rendered bitmaps, the 16 x 13 (or 26) character screen with
+ * its colours, every register $1800-$1AFF decoded (editable), the control,
+ * collision and sound state, and the glyph, object and palette sheets.
  *
  * Refreshed by the debugger window: live while the machine runs (at most ten
  * times a second) and on every stop, only while this tab shows.
@@ -26,14 +25,14 @@
 #include "arcdebug.h"
 
 class BitsWidget;
-class GridDiagram;
+class CharScreen;
 class QCheckBox;
 class QComboBox;
 class QLabel;
 class QPlainTextEdit;
 class QTabWidget;
 class QTableWidget;
-class VdcImage;
+class UviImage;
 
 class VideoTab : public QWidget {
 public:
@@ -44,48 +43,45 @@ public:
 private:
     QWidget *buildLeft();
     QWidget *buildObjects();
-    QWidget *buildGrid();
+    QWidget *buildScreen();
     QWidget *buildRegisters();
     QWidget *buildControl();
-    QWidget *buildSound();
     QWidget *buildSheets();
 
     void refreshPicture();
     void refreshObjects();
-    void refreshGrid();
+    void refreshScreen();
     void refreshRegisters();
     void refreshControl();
-    void refreshSound();
     void refreshSheets();
     void hover(int x, int y);
-    QPixmap objectPixmap(int kind, int index, int scale);
+    QPixmap thingPixmap(int kind, int index, int scale);
     QPixmap viewPixmap(int view, int maxWidth);
     void loadPalette();
     unsigned layers() const;
     unsigned overlays() const;
 
     arcdebug *m_dbg;
-    i8244_snapshot m_snap;
+    arcdebug_uvi m_uvi;
     std::vector<uint32_t> m_px;
-    uint32_t m_pal[16] = {};          /* 8 colours dim, then 8 bright */
+    uint32_t m_pal[8] = {};           /* the 8 colours, XRGB */
 
     QComboBox *m_view = nullptr;
-    QCheckBox *m_layer[7] = {};
-    QCheckBox *m_overlay[6] = {};
-    VdcImage *m_image = nullptr;
+    QCheckBox *m_layer[2] = {};
+    QCheckBox *m_overlay[4] = {};
+    UviImage *m_image = nullptr;
     QLabel *m_hover = nullptr;
     QLabel *m_beam = nullptr;
     QTabWidget *m_sections = nullptr;
 
-    QTableWidget *m_sprites = nullptr, *m_singles = nullptr, *m_quads = nullptr;
-    GridDiagram *m_gridDiagram = nullptr;
-    QPlainTextEdit *m_gridText = nullptr;
+    QTableWidget *m_objects = nullptr;
+    CharScreen *m_screen = nullptr;
+    QPlainTextEdit *m_screenText = nullptr;
     QTableWidget *m_regs = nullptr;
     bool m_regsFilling = false;
-    std::vector<char> m_regHot = std::vector<char>(256, 0);   /* changed at the last look */
+    std::vector<char> m_regHot = std::vector<char>(0x300, 0);   /* changed at the last look */
     QPlainTextEdit *m_ctlText = nullptr;
-    BitsWidget *m_collision = nullptr;
-    BitsWidget *m_shift = nullptr;
-    QPlainTextEdit *m_soundText = nullptr;
+    BitsWidget *m_collChars = nullptr;
+    BitsWidget *m_collObjects = nullptr;
     QLabel *m_fontSheet = nullptr, *m_shapeSheet = nullptr, *m_paletteSheet = nullptr;
 };

@@ -3,19 +3,13 @@
  *
  * The analog switch, the volume, the aspect and smooth scaling apply LIVE.
  * Everything else is read when the machine powers up: which console it is,
- * whether the imported BIOS runs and whether The Voice is in front of the
- * cartridge are the console you would switch off to change, and the host
- * options (FujiNet, audio, gamepads) are what runs beside it. Those mark the
- * dialog dirty, and closing it power-cycles the session once
+ * and the host options (FujiNet, audio, gamepads) that run beside it. Those
+ * mark the dialog dirty, and closing it power-cycles the session once
  * (arcsession_restart, which restarts FujiNet and the devices only if one of
  * their switches changed) -- an opened cartridge boots again.
  *
- * Nothing the console needs from Magnavox or Philips is shipped: the ROMs
- * page lists every ROM image the app takes, imported or not, and imports
- * them from files, a zip or a folder, each recognised by its checksums. CONFIG
- * and the FujiNet apps never need them (the app's own stand-in boots them);
- * games need the BIOS, and every machine wants its video chip's character
- * set to show text.
+ * The console has no BIOS and no other ROM to import: the only ROM-like data
+ * is the game cartridge, opened from the main window.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -28,7 +22,6 @@
 
 #include <string.h>
 
-#define MAX_ROM_ROWS 16
 #define MAX_PAD_ROWS 8
 
 typedef struct {
@@ -43,10 +36,6 @@ typedef struct {
     int pad_row_count;
     unsigned pad_generation;
     guint pad_timer;
-
-    GtkWidget *bios_row;        /* what the chosen machine has imported, as its subtitle */
-    GtkWidget *rom_rows[MAX_ROM_ROWS];
-    GtkWidget *rom_state[MAX_ROM_ROWS];
 } PrefsState;
 
 /* What a row does when it changes. */
@@ -55,7 +44,7 @@ enum {
     ROW_ANALOG = -2,    /* live */
     ROW_ASPECT = -3,    /* live */
     ROW_SMOOTH = -4,    /* live */
-    ROW_MACHINE = -5,   /* read at power-up, and says what it needs */
+    ROW_MACHINE = -5,   /* read at power-up */
 };
 
 typedef struct {
@@ -101,147 +90,6 @@ static GtkWidget *info_row(const char *title, const char *subtitle)
     return row;
 }
 
-/* ---- the ROMs ------------------------------------------------------------- */
-
-static int machine_now(PrefsState *state)
-{
-    int m = arcsession_get_int(state->session, "machine", ARC_MACHINE_ARCADIA);
-    return m >= 0 && m < ARC_MACHINE_COUNT ? m : ARC_MACHINE_ARCADIA;
-}
-
-/* What the chosen machine has of what it wants, as the BIOS row's subtitle. */
-static void refresh_bios_row(PrefsState *state)
-{
-    arcsession *s = state->session;
-    const int m = machine_now(state);
-    char text[300];
-
-    g_snprintf(text, sizeof text, "BIOS %s, character set %s. CONFIG and FujiNet "
-               "apps run without any; games need the BIOS, text needs the character set.",
-               arcsession_have_bios(s, m) ? "imported" : "not imported",
-               arcsession_have_font(s, m) ? "imported" : "not imported");
-    adw_action_row_set_subtitle(ADW_ACTION_ROW(state->bios_row), text);
-}
-
-static void refresh_roms(PrefsState *state)
-{
-    int i;
-    for (i = 0; i < arcsession_rom_item_count() && i < MAX_ROM_ROWS; i++) {
-        gboolean have = arcsession_rom_item_available(state->session, i) != 0;
-        if (!state->rom_rows[i]) continue;
-        adw_action_row_set_subtitle(ADW_ACTION_ROW(state->rom_rows[i]),
-                                    have ? "Imported" : "Not imported");
-        gtk_widget_remove_css_class(state->rom_state[i], have ? "dim-label" : "arc-accent-text");
-        gtk_widget_add_css_class(state->rom_state[i], have ? "arc-accent-text" : "dim-label");
-        gtk_image_set_from_icon_name(GTK_IMAGE(state->rom_state[i]),
-                                     have ? "emblem-ok-symbolic" : "action-unavailable-symbolic");
-    }
-    refresh_bios_row(state);
-}
-
-/* An import from Preferences does not power-cycle at once: closing the dialog
- * does, with everything else changed here. */
-static void on_import_done(int imported, gpointer user_data)
-{
-    AdwDialog *dialog = user_data;
-    /* Preferences may have closed while the file chooser was up */
-    PrefsState *state = g_object_get_data(G_OBJECT(dialog), "prefs-state");
-    if (state) {
-        if (imported > 0)
-            state->dirty = TRUE;
-        refresh_roms(state);
-    }
-    g_object_unref(dialog);
-}
-
-static void on_import_clicked(GtkButton *b, gpointer user_data)
-{
-    PrefsState *state = user_data;
-    const gboolean folder = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "arc-folder")) != 0;
-    arc_window_import_bios(state->window, GTK_WIDGET(state->dialog), folder, FALSE, NULL,
-                          on_import_done, g_object_ref(state->dialog));
-}
-
-static void on_open_roms(GtkButton *b, gpointer user_data)
-{
-    PrefsState *state = user_data;
-    g_autoptr(GFile) dir = g_file_new_for_path(arcsession_roms_path(state->session));
-    GtkFileLauncher *l = gtk_file_launcher_new(dir);
-    (void)b;
-    gtk_file_launcher_launch(l, GTK_WINDOW(state->window), NULL, NULL, NULL);
-    g_object_unref(l);
-}
-
-static AdwPreferencesPage *build_roms_page(PrefsState *state)
-{
-    AdwPreferencesPage *page = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
-    AdwPreferencesGroup *group = NULL;
-    const char *last = NULL;
-    GtkWidget *box, *files, *folder, *row, *open;
-    int i;
-
-    adw_preferences_page_set_title(page, "ROMs");
-    adw_preferences_page_set_name(page, "roms");
-    adw_preferences_page_set_icon_name(page, "media-flash-symbolic");
-
-    /* the buttons and the folder, first */
-    group = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
-    adw_preferences_group_set_title(group, "Import");
-    row = info_row("Import ROMs",
-        "Your own copies: single files, a zip (MAME's videopac.zip, i8244.zip or "
-        "videopacp.zip work) or a folder. Each is recognised by its size and "
-        "checksum, whatever it is called.");
-    box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    files = gtk_button_new_with_label("Import BIOS\xe2\x80\xa6");
-    folder = gtk_button_new_with_label("Import from a Folder\xe2\x80\xa6");
-    gtk_widget_add_css_class(files, "suggested-action");
-    g_object_set_data(G_OBJECT(folder), "arc-folder", GINT_TO_POINTER(1));
-    g_signal_connect(files, "clicked", G_CALLBACK(on_import_clicked), state);
-    g_signal_connect(folder, "clicked", G_CALLBACK(on_import_clicked), state);
-    gtk_widget_set_valign(box, GTK_ALIGN_CENTER);
-    gtk_box_append(GTK_BOX(box), files);
-    gtk_box_append(GTK_BOX(box), folder);
-    adw_action_row_add_suffix(ADW_ACTION_ROW(row), box);
-    adw_preferences_group_add(group, row);
-    row = info_row("ROM folder", arcsession_roms_path(state->session));
-    adw_action_row_set_subtitle_selectable(ADW_ACTION_ROW(row), TRUE);
-    open = gtk_button_new_with_label("Open");
-    gtk_widget_set_valign(open, GTK_ALIGN_CENTER);
-    g_signal_connect(open, "clicked", G_CALLBACK(on_open_roms), state);
-    adw_action_row_add_suffix(ADW_ACTION_ROW(row), open);
-    adw_preferences_group_add(group, row);
-    adw_preferences_page_add(page, group);
-    group = NULL;
-
-    for (i = 0; i < arcsession_rom_item_count() && i < MAX_ROM_ROWS; i++) {
-        const arc_rom_item *item = arcsession_rom_item(i);
-        GtkWidget *mark, *detail;
-        char info[64];
-        if (!item) continue;
-        if (!last || strcmp(last, item->group) != 0) {
-            group = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
-            adw_preferences_group_set_title(group, item->group);
-            adw_preferences_page_add(page, group);
-            last = item->group;
-        }
-        row = adw_action_row_new();
-        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), item->name);
-        g_snprintf(info, sizeof info, "%u bytes   CRC-32 %08X", item->size, item->crc);
-        detail = gtk_label_new(info);
-        gtk_widget_add_css_class(detail, "dim-label");
-        gtk_widget_add_css_class(detail, "caption");
-        gtk_widget_set_valign(detail, GTK_ALIGN_CENTER);
-        mark = gtk_image_new();
-        adw_action_row_add_prefix(ADW_ACTION_ROW(row), mark);
-        adw_action_row_add_suffix(ADW_ACTION_ROW(row), detail);
-        adw_preferences_group_add(group, row);
-        state->rom_rows[i] = row;
-        state->rom_state[i] = mark;
-    }
-    refresh_roms(state);
-    return page;
-}
-
 /* ---- generic rows ------------------------------------------------------------ */
 
 static void combo_changed(GObject *row, GParamSpec *pspec, gpointer user_data)
@@ -251,17 +99,6 @@ static void combo_changed(GObject *row, GParamSpec *pspec, gpointer user_data)
     (void)pspec;
     if (b->state->syncing)
         return;
-    if (b->kind == ROW_MACHINE && sel == ARC_MACHINE_VIDEOPAC_PLUS &&
-        !arcsession_have_bios(b->state->session, sel)) {
-        /* it would not start: say why and keep the console it was */
-        adw_preferences_dialog_add_toast(ADW_PREFERENCES_DIALOG(b->state->dialog),
-            adw_toast_new("The Videopac+ G7400 needs its BIOS: import it first (ROMs page)"));
-        b->state->syncing = TRUE;
-        adw_combo_row_set_selected(ADW_COMBO_ROW(row),
-            (guint)arcsession_get_int(b->state->session, b->key, b->def));
-        b->state->syncing = FALSE;
-        return;
-    }
     if (b->kind == ROW_ASPECT) {
         arcsession_set_int(b->state->session, b->key, sel);
         arc_window_apply_aspect(b->state->window, sel);
@@ -271,8 +108,6 @@ static void combo_changed(GObject *row, GParamSpec *pspec, gpointer user_data)
         return;
     arcsession_set_int(b->state->session, b->key, sel);
     b->state->dirty = TRUE;
-    if (b->kind == ROW_MACHINE)
-        refresh_bios_row(b->state);
 }
 
 static void analog_changed(GObject *row, GParamSpec *pspec, gpointer user_data)
@@ -342,9 +177,9 @@ static GtkWidget *switch_row(PrefsState *state, const char *title,
     return row;
 }
 
-#define EXTERNAL_PLACEHOLDER "127.0.0.1:11520"
+#define EXTERNAL_PLACEHOLDER "127.0.0.1:11522"
 
-/* The address field: valid text (or none, meaning 127.0.0.1:11520) is saved
+/* The address field: valid text (or none, meaning 127.0.0.1:11522) is saved
  * and marks the machine dirty; anything else is flagged and not saved. */
 static void addr_changed(GtkEditable *entry, gpointer user_data)
 {
@@ -385,7 +220,7 @@ static void pad_assign_changed(GObject *row, GParamSpec *pspec, gpointer user_da
 
 static void rebuild_pad_rows(PrefsState *state)
 {
-    static const char *const choices[] = { "Automatic", "Stick 1", "Stick 2", NULL };
+    static const char *const choices[] = { "Automatic", "Player 1", "Player 2", NULL };
     int i, n = arcsession_gamepad_count(state->session);
     char name[128], sub[64];
 
@@ -407,7 +242,7 @@ static void rebuild_pad_rows(PrefsState *state)
         arcsession_gamepad_name(state->session, i, name, sizeof name);
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), name);
         if (eff >= 0)
-            g_snprintf(sub, sizeof sub, "Driving stick %d", eff + 1);
+            g_snprintf(sub, sizeof sub, "Driving player %d", eff + 1);
         else
             g_snprintf(sub, sizeof sub, "Driving nothing");
         adw_action_row_set_subtitle(ADW_ACTION_ROW(row), sub);
@@ -454,7 +289,6 @@ static void on_open_webui(GtkButton *b, gpointer user_data)
 static void prefs_closed(AdwDialog *dialog, gpointer user_data)
 {
     PrefsState *state = user_data;
-    /* an import's file chooser can still be up: it finds no state */
     g_object_set_data(G_OBJECT(dialog), "prefs-state", NULL);
     if (state->pad_timer) g_source_remove(state->pad_timer);
     state->pad_timer = 0;
@@ -508,29 +342,19 @@ void arc_prefs_show(ArcWindow *parent, arcsession *session,
     /* ---- the console: applied by a power cycle when the dialog closes */
     group = new_group(machine, "Console",
         "Applied when Preferences closes, with a power cycle: an opened "
-        "cartridge boots again. The Arcadia 2001 is NTSC with the 8244; the Videopac "
-        "G7000 is PAL with the 8245 on the same BIOS; the Videopac+ G7400 adds a "
-        "text chip, its own BIOS and a bigger keyboard.");
+        "cartridge boots again. The Arcadia 2001 is the NTSC console (60 Hz); the "
+        "PAL clone (Hanimex and Leisure-Vision class, 50 Hz) is not verified "
+        "against MAME, which runs every clone at NTSC. The 16-key Palladium is "
+        "not supported.");
     adw_preferences_group_add(group,
         combo_row(state, "Machine", NULL,
                   "machine", ARC_MACHINE_ARCADIA, machine_name, ROW_MACHINE));
-    state->bios_row = info_row("BIOS", NULL);
-    adw_preferences_group_add(group, state->bios_row);
-    adw_preferences_group_add(group,
-        switch_row(state, "Use the imported BIOS",
-                   "Off: the app's own stand-in runs instead. It boots CONFIG and "
-                   "FujiNet apps, not games", "use_bios", 1, ROW_RESTART));
-    adw_preferences_group_add(group,
-        switch_row(state, "The Voice in front of the cartridge",
-                   "The speech module, as plugged into the console's slot. It needs "
-                   "its two speech ROMs (the ROMs page)", "voice", 0, ROW_RESTART));
     adw_preferences_dialog_add(dialog, machine);
-    adw_preferences_dialog_add(dialog, build_roms_page(state));
 
     /* ---- the picture: live */
     group = new_group(video, "Display", NULL);
     adw_preferences_group_add(group,
-        combo_row(state, "Aspect", "The 360 x 243 picture's shape",
+        combo_row(state, "Aspect", "The 192 x 262 picture's shape",
                   "aspect", 0, aspect_name, ROW_ASPECT));
     adw_preferences_group_add(group,
         switch_row(state, "Smooth scaling", "Blend the pixels when the picture is "
@@ -561,11 +385,12 @@ void arc_prefs_show(ArcWindow *parent, arcsession *session,
                    "(applied when Preferences closes)", "enable_gamepad", 1, ROW_RESTART));
     adw_preferences_group_add(group,
         switch_row(state, "Analog sticks steer too",
-                   "The left stick presses the joystick's directions as the D-pad does",
+                   "The left stick moves the controller disc continuously; off, it "
+                   "acts as an eight-way switch like the D-pad",
                    "analog_joystick", 1, ROW_ANALOG));
 
     group = new_group(input, "Gamepads",
-        "Assigned to the console's two sticks in connection order unless chosen here. "
+        "Assigned to the console's two controllers in connection order unless chosen here. "
         "Rebind keys and buttons in the Controllers window (F9).");
     state->pad_group = GTK_WIDGET(group);
     rebuild_pad_rows(state);
@@ -609,7 +434,6 @@ void arc_prefs_show(ArcWindow *parent, arcsession *session,
     }
     adw_preferences_dialog_add(dialog, net);
 
-    refresh_bios_row(state);
     g_signal_connect(dialog, "closed", G_CALLBACK(prefs_closed), state);
     state->pad_timer = g_timeout_add(1000, pad_tick, state);
     adw_dialog_present(ADW_DIALOG(dialog), GTK_WIDGET(parent));

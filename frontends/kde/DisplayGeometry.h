@@ -2,9 +2,11 @@
  * Where the picture goes inside the display, shared by the GPU and the
  * software display.
  *
- * The 8244/8245 paints 360 x 243 across a 4:3 television, so on the TV a
- * pixel is a little narrower than it is tall (0.9 : 1). Square pixels show
- * the raw buffer at 360 : 243.
+ * The 2637 UVI's frame is 192 x 262 (128 pixels of playfield plus 32 of border
+ * each side, 262 lines). MAME declares no screen aspect, so it shows the frame
+ * across a 4:3 screen: a pixel is about 1.8 times as wide as it is tall. That
+ * is the "TV Aspect" picture and the default.
+ * Square pixels show the raw buffer at 192 : 262 (a tall, narrow picture).
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later

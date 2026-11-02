@@ -10,7 +10,7 @@
 
 @interface ArcDisplayView : NSView
 - (instancetype)initWithSession:(arcsession *)session;
-/* YES: the 360x243 picture at the television's 4:3 (setting "aspect" 0, the
+/* YES: the 192x262 picture at the television's 4:3 (setting "aspect" 0, the
  * default); NO: square pixels. */
 - (void)setTvAspect:(BOOL)tv;
 - (void)setSmooth:(BOOL)smooth;

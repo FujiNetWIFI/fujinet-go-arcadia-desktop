@@ -48,8 +48,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The picture is 360 x 243 in MAME's visible area, and a television shows
- * that whole area at its 4:3. Square pixels show the 360 x 243 as it is. */
+/* The picture is 192 x 262 (MAME's visible area for the UVI: 128 playfield
+ * pixels plus the borders, 262 lines), and MAME shows that whole area at the
+ * television's 4:3, so its pixels are tall. Square pixels show the 192 x 262
+ * as it is. */
 #define TV_ASPECT (4.0 / 3.0)
 
 /* Buffers in flight: one being filled, one waiting for the main thread, one
@@ -120,8 +122,8 @@ static CVReturn displayCallback(CVDisplayLinkRef link, const CVTimeStamp *now,
 
 - (instancetype)initWithSession:(arcsession *)session
 {
-    /* 3x the 243 lines at the TV's 4:3 */
-    self = [super initWithFrame:NSMakeRect(0, 0, 972, 729)];
+    /* 2x the 262 lines at the TV's 4:3 */
+    self = [super initWithFrame:NSMakeRect(0, 0, 699, 524)];
     if (!self) return nil;
     _session = session;
     _tv = YES;
@@ -162,7 +164,7 @@ static CVReturn displayCallback(CVDisplayLinkRef link, const CVTimeStamp *now,
 
 /* ---- the picture's place ---------------------------------------------------- */
 
-/* Letterboxed at the TV's 4:3, or at the picture's own 360:243. */
+/* Letterboxed at the TV's 4:3, or at the picture's own 192:262. */
 - (void)positionPicture
 {
     if (!_picture) return;

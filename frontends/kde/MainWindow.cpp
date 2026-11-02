@@ -38,7 +38,7 @@
 namespace {
 
 const char *const kCartFilter =
-    "Arcadia 2001 / Videopac cartridges (*.bin *.rom *.arc *.BIN *.ROM *.ARC);;All files (*)";
+    "Arcadia 2001 cartridges (*.bin *.rom *.arc *.zip *.BIN *.ROM *.ARC *.ZIP);;All files (*)";
 
 QString local(const char *s) { return QString::fromUtf8(s ? s : ""); }
 
@@ -69,31 +69,14 @@ MainWindow::MainWindow(arcsession *session, QWidget *parent)
     : QMainWindow(parent), m_session(session)
 {
     setWindowTitle(QStringLiteral("FujiNet Go Arcadia 2001"));
-    /* the 243 lines three times over, at the TV's 4:3, and the chrome */
+    /* 4:3 at 972 x 729, and the chrome */
     resize(972, 729 + 60);
     setAcceptDrops(true);
 
-    /* the banner over the picture: ROMs the running machine lacks */
     auto *central = new QWidget;
     m_stack = new QVBoxLayout(central);
     m_stack->setContentsMargins(0, 0, 0, 0);
     m_stack->setSpacing(0);
-    m_banner = new QFrame;
-    m_banner->setStyleSheet(QStringLiteral("QFrame { background: rgba(193, 18, 24, 0.16); "
-                                           "border-bottom: 1px solid rgba(193, 18, 24, 0.55); }"));
-    auto *bh = new QHBoxLayout(m_banner);
-    bh->setContentsMargins(10, 4, 10, 4);
-    m_bannerText = new QLabel;
-    /* wrapped: two notices must not widen the window */
-    m_bannerText->setWordWrap(true);
-    m_bannerText->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
-    auto *bannerImport = new QPushButton(QStringLiteral("Import BIOS..."));
-    bannerImport->setFocusPolicy(Qt::NoFocus);
-    connect(bannerImport, &QPushButton::clicked, this, [this] { importRoms(false); });
-    bh->addWidget(m_bannerText, 1);
-    bh->addWidget(bannerImport);
-    m_banner->hide();
-    m_stack->addWidget(m_banner);
 
     auto *gpu = new DisplayWidget(session, central);
     m_display = gpu;
@@ -137,10 +120,9 @@ MainWindow::MainWindow(arcsession *session, QWidget *parent)
 void MainWindow::start()
 {
     if (arcsession_start(m_session, nullptr) != 0)
-        explainRefusal(QStringLiteral("Cannot Start the Console"), local(arcsession_last_error(m_session)),
-                       [this] { start(); });
+        QMessageBox::warning(this, QStringLiteral("Cannot Start the Console"),
+                             local(arcsession_last_error(m_session)));
     updateStatus();
-    updateBanner();
     syncMenus();
     openAtLaunch();
 }
@@ -185,9 +167,6 @@ void MainWindow::buildMenus()
             toast(QStringLiteral("%1 is on the SD host: boot it from the CONFIG client")
                       .arg(QFileInfo(local(dest)).fileName()));
     });
-    machine->addSeparator();
-    machine->addAction(QStringLiteral("Import &BIOS..."), this, [this] { importRoms(false); });
-    machine->addAction(QStringLiteral("Import BIOS from a &Folder..."), this, [this] { importRoms(true); });
     machine->addSeparator();
     m_pauseAction = machine->addAction(QStringLiteral("&Pause"));
     m_pauseAction->setCheckable(true);
@@ -281,11 +260,11 @@ void MainWindow::showAbout()
 {
     QMessageBox::about(this, QStringLiteral("About FujiNet Go Arcadia 2001"),
         QStringLiteral("<b>FujiNet Go Arcadia 2001</b> %1<br><br>"
-                       "The Magnavox Arcadia 2001 and Philips Videopac, with a built-in FujiNet.<br><br>"
-                       "The emulator is MAME's Arcadia 2001 -- the Intel 8048, the 8244/8245 video "
-                       "and sound chip, the Videopac+ G7400's EF9340/41 text chip and The Voice's "
-                       "SP0256 (Peter Trauner, Wilbert Pol, hap, Couriersud, Joseph Zbiciak and "
-                       "the MAME team, BSD-3-Clause) -- transposed to C. The FujiNet firmware "
+                       "The Emerson Arcadia 2001 (and its Bandai and Hanimex-style clones), with a "
+                       "built-in FujiNet.<br><br>"
+                       "The emulator is MAME's Arcadia 2001 -- the Signetics 2650 CPU and the 2637 "
+                       "UVI video and sound chip (Peter Trauner, Wilbert Pol, Couriersud, Miodrag "
+                       "Milanovic, Juergen Buchmueller and the MAME team) -- transposed to C. The FujiNet firmware "
                        "and the cartridge are by Thomas Cherryhomes and the FujiNet "
                        "contributors (GPL-3.0-or-later).<br><br>"
                        "Copyright &copy; 2026 Thomas Cherryhomes -- GPL-3.0-or-later<br>"
@@ -331,14 +310,12 @@ void MainWindow::applyPicture()
 void MainWindow::restartSession()
 {
     if (arcsession_restart(m_session) != 0) {
-        explainRefusal(QStringLiteral("Restart failed"), local(arcsession_last_error(m_session)),
-                       [this] { restartSession(); });
+        QMessageBox::warning(this, QStringLiteral("Restart failed"), local(arcsession_last_error(m_session)));
     } else {
         toast(QStringLiteral("Machine options applied (power cycled)"));
     }
     arcControllersRefresh();
     updateStatus();
-    updateBanner();
     syncMenus();
 }
 
@@ -352,12 +329,8 @@ void MainWindow::toggleControllers()
 void MainWindow::tick()
 {
     drainSysactions();
-    checkNeedsBios();
     if (++m_ticks % 3 == 0) pollGamepads();
-    if (m_ticks % 10 == 0) {
-        updateStatus();
-        updateBanner();
-    }
+    if (m_ticks % 10 == 0) updateStatus();
 }
 
 void MainWindow::drainSysactions()
@@ -414,22 +387,6 @@ void MainWindow::updateStatus()
                             : QStringLiteral("color: gray;"));
 }
 
-/* The banner under the menu: what the running machine lacks and Import BIOS
- * would give it. The 8244's character set is the one every machine needs to
- * show text. */
-void MainWindow::updateBanner()
-{
-    const unsigned missing = arcsession_missing(m_session);
-    QStringList said;
-    if (missing & ARC_MISSING_FONT)
-        said << QStringLiteral("Character set not imported — text will be blank.");
-    if (missing & ARC_MISSING_VOICE)
-        said << QStringLiteral("The Voice's speech ROMs are not imported — it will be silent.");
-    const QString text = said.join(QLatin1Char(' '));
-    if (m_bannerText->text() != text) m_bannerText->setText(text);
-    m_banner->setVisible(!text.isEmpty());
-}
-
 /* ---- toasts ---------------------------------------------------------------- */
 
 void MainWindow::toast(const QString &text)
@@ -458,89 +415,12 @@ void MainWindow::resizeEvent(QResizeEvent *e)
     if (m_toast->isVisible()) placeToast();
 }
 
-/* ---- ROMs and cartridges -------------------------------------------------------- */
-
-void MainWindow::explainRefusal(const QString &title, const QString &why, std::function<void()> retry)
-{
-    /* the session's refusals a ROM import cures all say where to find it */
-    if (!why.contains(QStringLiteral("Import BIOS"))) {
-        QMessageBox::warning(this, title, why);
-        return;
-    }
-    QString headline, detail;
-    if (why.contains(QStringLiteral("Voice"))) {
-        headline = QStringLiteral("The Voice's speech ROMs are needed");
-        detail = why;
-    } else if (why.contains(QStringLiteral("G7400"))) {
-        headline = QStringLiteral("The Videopac+ G7400 needs its BIOS");
-        detail = QStringLiteral("The Videopac+ runs only on its own BIOS, which is not part of this app. "
-                                "Import your own copy and the console starts.");
-    } else {
-        headline = QStringLiteral("This cartridge needs the Arcadia 2001 BIOS");
-        detail = QStringLiteral("Games are written for the console's BIOS, which is not part of this app; "
-                                "CONFIG and the FujiNet apps run without it. Import your own copy "
-                                "(Machine > Import BIOS...) and the console starts the game again.");
-    }
-    /* not exec(): this can run from the timer, and a nested event loop would
-     * run it again */
-    auto *box = new QMessageBox(QMessageBox::Information, title, headline, QMessageBox::NoButton, this);
-    box->setAttribute(Qt::WA_DeleteOnClose);
-    box->setInformativeText(detail);
-    QPushButton *import = box->addButton(QStringLiteral("Import BIOS..."), QMessageBox::AcceptRole);
-    box->addButton(QStringLiteral("Not Now"), QMessageBox::RejectRole);
-    box->setDefaultButton(import);
-    connect(box, &QMessageBox::buttonClicked, this, [this, import, retry](QAbstractButton *b) {
-        if (b != import) return;
-        if (SettingsDialog::importRoms(this, m_session, false) <= 0) return;
-        if (retry) retry(); else afterImport();
-    });
-    box->open();
-}
-
-void MainWindow::importRoms(bool folder, const QString &path)
-{
-    if (SettingsDialog::importRoms(this, m_session, folder, path) > 0) afterImport();
-}
-
-/* The ROMs are read at power-up: power-cycle onto what was running (a
- * cartridge file again, else CONFIG). */
-void MainWindow::afterImport()
-{
-    if (!arcsession_is_running(m_session)) {
-        start();
-        return;
-    }
-    const QString cart = local(arcsession_cart_path(m_session));
-    const int rc = cart.isEmpty() ? arcsession_reset_to_config(m_session)
-                                  : arcsession_load_cart(m_session, cart.toLocal8Bit().constData());
-    if (rc != 0)
-        QMessageBox::warning(this, QStringLiteral("Could not restart"), local(arcsession_last_error(m_session)));
-    else
-        toast(QStringLiteral("ROMs imported: the console was power-cycled to use them"));
-    updateStatus();
-    updateBanner();
-}
-
-/* CONFIG booted a game from the network with no BIOS to run it: say so
- * once, with the way out. Shown again only after the flag has cleared (a
- * power cycle) and come back. */
-void MainWindow::checkNeedsBios()
-{
-    if (!arcsession_needs_bios(m_session)) {
-        m_needsBiosShown = false;
-        return;
-    }
-    if (m_needsBiosShown) return;
-    m_needsBiosShown = true;
-    explainRefusal(QStringLiteral("BIOS needed"),
-                   QStringLiteral("This cartridge needs the Arcadia 2001 BIOS: Machine > Import BIOS..."), nullptr);
-}
+/* ---- cartridges -------------------------------------------------------- */
 
 void MainWindow::openCart(const QString &path)
 {
     if (arcsession_load_cart(m_session, path.toLocal8Bit().constData()) != 0) {
-        explainRefusal(QStringLiteral("Could not open"), local(arcsession_last_error(m_session)),
-                       [this, path] { openCart(path); });
+        QMessageBox::warning(this, QStringLiteral("Could not open"), local(arcsession_last_error(m_session)));
         return;
     }
     toast(QStringLiteral("Running %1").arg(QFileInfo(path).fileName()));
@@ -550,11 +430,6 @@ void MainWindow::openCart(const QString &path)
 void MainWindow::loadMedia(const QString &path)
 {
     const QByteArray p = path.toLocal8Bit();
-    /* a ROM first: one may well be named .bin, as a cartridge can be */
-    if (arcsession_media_is_rom(p.constData())) {
-        importRoms(false, path);
-        return;
-    }
     if (arcsession_media_is_cartridge(p.constData())) {
         openCart(path);
         return;

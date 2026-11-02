@@ -1,14 +1,14 @@
 /*
- * The debugger's Video tab: everything the 8244/8245 knows.
+ * The debugger's Video tab: everything the 2637 UVI knows.
  *
  * Left, the picture the chip draws -- the last frame, the registers
  * re-rendered with the layers and overlays you choose, or the frame as far as
- * the beam has got -- with the object under the pointer named and outlined.
- * Right, the chip in sections: the objects with their positions and rendered
- * bitmaps (4 sprites, 12 single characters, 4 quads of 4), the grid as a
- * diagram, every register $00-$FF decoded (editable while the machine is
- * stopped), the control, status, collision and colour registers, the sound
- * shift register, and the font, shape and palette sheets.
+ * the beam has got -- with the object or character cell under the pointer
+ * named and outlined. Right, the chip in sections: the four objects with their
+ * positions and bitmaps, the 16 x 13 (or 26) character screen with its colour
+ * bits, every register $1800-$1AFF decoded (editable while the machine is
+ * stopped), the control, collision, sound and colour registers, and the glyph
+ * (UDC), object and palette sheets.
  *
  * Refreshed by the debugger window: live while the machine runs (at most ten
  * times a second) and on every stop, only while this tab shows.

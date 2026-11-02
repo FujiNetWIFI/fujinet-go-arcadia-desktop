@@ -1,9 +1,9 @@
 /*
  * SettingsDialog -- see SettingsDialog.h.
  *
- * Pages, like the GNOME and Windows frontends: Machine, ROMs, Display,
+ * Pages, like the GNOME and Windows frontends: Machine, Display,
  * Audio, Input, FujiNet. The settings keys are the session's (the shared
- * settings.ini): machine use_bios voice aspect smooth enable_audio volume
+ * settings.ini): machine aspect smooth enable_audio volume
  * enable_gamepad analog_joystick enable_fujinet fujinet_external
  * fujinet_external_addr.
  *
@@ -18,8 +18,6 @@
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
-#include <QFileDialog>
-#include <QFileInfo>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -36,9 +34,6 @@
 #include <vector>
 
 namespace {
-
-const char *const kRomFilter =
-    "BIOS images and ROM sets (*.zip *.rom *.bin *.ZIP *.ROM *.BIN);;All files (*)";
 
 QString local(const char *s) { return QString::fromUtf8(s ? s : ""); }
 
@@ -71,19 +66,19 @@ QWidget *scrolled(QWidget *page)
 
 /* What needs a power cycle to take effect. */
 struct RestartState {
-    int machine, useBios, voice, fujinet, external, audio, gamepad;
+    int machine, fujinet, external, audio, gamepad;
     QString addr;
     bool operator==(const RestartState &o) const
     {
-        return machine == o.machine && useBios == o.useBios && voice == o.voice && fujinet == o.fujinet
+        return machine == o.machine && fujinet == o.fujinet
                && external == o.external && audio == o.audio && gamepad == o.gamepad && addr == o.addr;
     }
 };
 
 RestartState restartState(arcsession *s)
 {
-    return { arcsession_get_int(s, "machine", ARC_MACHINE_ARCADIA), arcsession_get_int(s, "use_bios", 1),
-             arcsession_get_int(s, "voice", 0), arcsession_get_int(s, "enable_fujinet", 1),
+    return { arcsession_get_int(s, "machine", ARC_MACHINE_ARCADIA),
+             arcsession_get_int(s, "enable_fujinet", 1),
              arcsession_get_int(s, "fujinet_external", 0), arcsession_get_int(s, "enable_audio", 1),
              arcsession_get_int(s, "enable_gamepad", 1),
              local(arcsession_get_str(s, "fujinet_external_addr", "")) };
@@ -92,7 +87,7 @@ RestartState restartState(arcsession *s)
 class PrefsDialog : public QDialog {
 public:
     PrefsDialog(QWidget *parent, arcsession *session);
-    bool restartNeeded() const { return m_imported || !(m_start == restartState(m_s)); }
+    bool restartNeeded() const { return !(m_start == restartState(m_s)); }
 
 protected:
     /* Closing with the external FujiNet switched on and an address that is
@@ -114,23 +109,18 @@ protected:
 
 private:
     QWidget *machinePage();
-    QWidget *romsPage();
     QWidget *displayPage();
     QWidget *audioPage();
     QWidget *inputPage();
     QWidget *fujinetPage();
     void refreshMachineNotes();
-    void refreshRoms();
     void rebuildPads();
-    void importRomsAndRefresh(bool folder);
 
     arcsession *m_s;
     RestartState m_start;
-    bool m_imported = false;
 
     QComboBox *m_machine = nullptr;
-    QLabel *m_machineNote = nullptr, *m_voiceNote = nullptr;
-    std::vector<QLabel *> m_romState;
+    QLabel *m_machineNote = nullptr;
     QFormLayout *m_padForm = nullptr;
     std::vector<QWidget *> m_padRows;
     unsigned m_padGen = 0;
@@ -146,20 +136,18 @@ PrefsDialog::PrefsDialog(QWidget *parent, arcsession *session)
     auto *outer = new QVBoxLayout(this);
     auto *tabs = new QTabWidget;
     tabs->addTab(scrolled(machinePage()), QStringLiteral("Machine"));
-    tabs->addTab(scrolled(romsPage()), QStringLiteral("ROMs"));
     tabs->addTab(scrolled(displayPage()), QStringLiteral("Display"));
     tabs->addTab(scrolled(audioPage()), QStringLiteral("Audio"));
     tabs->addTab(scrolled(inputPage()), QStringLiteral("Input"));
     tabs->addTab(scrolled(fujinetPage()), QStringLiteral("FujiNet"));
     outer->addWidget(tabs, 1);
-    outer->addWidget(note(QStringLiteral("Changes apply as you make them; the machine, BIOS, Voice, audio, "
+    outer->addWidget(note(QStringLiteral("Changes apply as you make them; the machine, audio, "
                                          "gamepad and FujiNet options take effect by power-cycling the console "
                                          "when this window closes.")));
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::accept);
     outer->addWidget(buttons);
     refreshMachineNotes();
-    refreshRoms();
 }
 
 /* ---- Machine --------------------------------------------------------------- */
@@ -182,111 +170,19 @@ QWidget *PrefsDialog::machinePage()
     form->addRow(QStringLiteral("Console"), m_machine);
     m_machineNote = note(QString());
     form->addRow(m_machineNote);
-
-    auto *bios = check(QStringLiteral("Use the imported BIOS"),
-                       QStringLiteral("Off always boots the app's own stand-in, which runs CONFIG and the "
-                                      "FujiNet apps but no games"), m_s, "use_bios", 1);
-    connect(bios, &QCheckBox::toggled, this, [this](bool on) {
-        arcsession_set_int(m_s, "use_bios", on ? 1 : 0);
-    });
-    form->addRow(bios);
-    form->addRow(note(QStringLiteral("The BIOS is never shipped, and only games need it: CONFIG and the "
-                                     "FujiNet apps boot on the app's own stand-in.")));
-
-    auto *voice = check(QStringLiteral("The Voice in front of the cartridge"),
-                        QStringLiteral("Plug the speech module in front of the cartridge. It needs its "
-                                       "speech ROMs (ROMs page)"), m_s, "voice", 0);
-    connect(voice, &QCheckBox::toggled, this, [this](bool on) {
-        arcsession_set_int(m_s, "voice", on ? 1 : 0);
-        refreshMachineNotes();
-    });
-    form->addRow(voice);
-    m_voiceNote = note(QString());
-    form->addRow(m_voiceNote);
+    form->addRow(note(QStringLiteral("The console has no BIOS, so there is nothing to import: games open from "
+                                     "Machine > Open Cartridge. The 16-key Palladium is not supported yet.")));
     return page;
 }
 
 void PrefsDialog::refreshMachineNotes()
 {
     const int machine = m_machine->currentIndex();
-    QString text = arc_machine_is_pal(machine) ? QStringLiteral("PAL, 50 Hz.") : QStringLiteral("NTSC, 60 Hz.");
-    if (machine == ARC_MACHINE_VIDEOPAC_PLUS) {
-        text += QStringLiteral(" The Videopac+ G7400 has its own BIOS and a text chip (EF9340).");
-        if (!arcsession_have_bios(m_s, machine))
-            text += QStringLiteral(" Its BIOS is not imported: import it on the ROMs page before closing this "
-                                   "window, or the console will not start.");
-    }
+    QString text = arc_machine_is_pal(machine)
+                       ? QStringLiteral("PAL clone, 50 Hz, 312 lines, 4.433 MHz / 5. Not verified against MAME, "
+                                        "which runs every clone at NTSC timing.")
+                       : QStringLiteral("NTSC, 60 Hz, 262 lines, Signetics 2650 at 3.58 MHz / 4.");
     m_machineNote->setText(text);
-    const bool wanted = arcsession_get_int(m_s, "voice", 0) != 0;
-    m_voiceNote->setText(wanted && !arcsession_have_voice(m_s)
-                             ? QStringLiteral("The speech ROMs are not imported: The Voice would be silent.")
-                             : QString());
-    m_voiceNote->setVisible(!m_voiceNote->text().isEmpty());
-}
-
-/* ---- ROMs ------------------------------------------------------------------ */
-
-QWidget *PrefsDialog::romsPage()
-{
-    auto *page = new QWidget;
-    auto *v = new QVBoxLayout(page);
-    v->addWidget(note(QStringLiteral("None of these ROMs is part of the app. Import your own dumps from "
-                                     "files, a zip or a folder (MAME's videopac, i8244 and videopacp sets "
-                                     "work); each is recognised by its size and checksum, whatever it is "
-                                     "called. Kept in:")));
-    auto *path = new QLabel(local(arcsession_roms_path(m_s)));
-    path->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    path->setWordWrap(true);
-    v->addWidget(path);
-
-    auto *row = new QHBoxLayout;
-    auto *files = new QPushButton(QStringLiteral("Import BIOS..."));
-    auto *folder = new QPushButton(QStringLiteral("Import from a Folder..."));
-    connect(files, &QPushButton::clicked, this, [this] { importRomsAndRefresh(false); });
-    connect(folder, &QPushButton::clicked, this, [this] { importRomsAndRefresh(true); });
-    row->addWidget(files);
-    row->addWidget(folder);
-    row->addStretch(1);
-    v->addLayout(row);
-
-    /* one group per `group`, each ROM imported or not */
-    QFormLayout *form = nullptr;
-    QString last;
-    for (int i = 0; i < arcsession_rom_item_count(); ++i) {
-        const arc_rom_item *item = arcsession_rom_item(i);
-        if (!item) continue;
-        const QString group = local(item->group);
-        if (!form || group != last) {
-            auto *box = new QGroupBox(group);
-            form = new QFormLayout(box);
-            v->addWidget(box);
-            last = group;
-        }
-        auto *name = new QLabel(local(item->name));
-        name->setToolTip(QStringLiteral("%1, %2 bytes, CRC-32 %3").arg(local(item->file)).arg(item->size)
-                             .arg(item->crc, 8, 16, QLatin1Char('0')));
-        auto *state = new QLabel;
-        form->addRow(name, state);
-        m_romState.push_back(state);
-    }
-    v->addStretch(1);
-    return page;
-}
-
-void PrefsDialog::refreshRoms()
-{
-    for (size_t i = 0; i < m_romState.size(); ++i) {
-        const bool have = arcsession_rom_item_available(m_s, (int)i) != 0;
-        m_romState[i]->setText(have ? QStringLiteral("Imported") : QStringLiteral("Not imported"));
-        m_romState[i]->setStyleSheet(have ? QString() : QStringLiteral("color: palette(placeholder-text);"));
-    }
-    if (m_machineNote) refreshMachineNotes();
-}
-
-void PrefsDialog::importRomsAndRefresh(bool folder)
-{
-    if (SettingsDialog::importRoms(this, m_s, folder) > 0) m_imported = true;
-    refreshRoms();
 }
 
 /* ---- Display, Audio, Input ---------------------------------------------------- */
@@ -345,14 +241,14 @@ QWidget *PrefsDialog::inputPage()
     connect(gp, &QCheckBox::toggled, this, [this](bool on) { arcsession_set_int(m_s, "enable_gamepad", on ? 1 : 0); });
     top->addRow(gp);
     auto *aj = check(QStringLiteral("Analog sticks steer too"),
-                     QStringLiteral("A gamepad's analog stick moves the joystick, as its D-pad does"),
+                     QStringLiteral("A gamepad's left stick moves the disc continuously; off, it acts as a D-pad"),
                      m_s, "analog_joystick", 1);
     connect(aj, &QCheckBox::toggled, this, [this](bool on) { arcsession_set_analog(m_s, on ? 1 : 0); });
     top->addRow(aj);
     v->addLayout(top);
 
     /* one row per pad, refreshed as they come and go */
-    auto *pads = new QGroupBox(QStringLiteral("Gamepads (given a joystick in connection order unless chosen here)"));
+    auto *pads = new QGroupBox(QStringLiteral("Gamepads (given a controller in connection order unless chosen here)"));
     m_padForm = new QFormLayout(pads);
     v->addWidget(pads);
     v->addStretch(1);
@@ -384,11 +280,11 @@ void PrefsDialog::rebuildPads()
         char name[128];
         arcsession_gamepad_name(m_s, i, name, sizeof name);
         auto *box = new QComboBox;
-        box->addItems({ QStringLiteral("Automatic"), QStringLiteral("Stick 1"), QStringLiteral("Stick 2") });
+        box->addItems({ QStringLiteral("Automatic"), QStringLiteral("Controller 1"), QStringLiteral("Controller 2") });
         box->setCurrentIndex(arcsession_gamepad_assignment(m_s, i) + 1);
         const int eff = arcsession_gamepad_effective_port(m_s, i);
-        box->setToolTip(eff >= 0 ? QStringLiteral("Driving stick %1").arg(eff + 1)
-                                 : QStringLiteral("Driving no stick"));
+        box->setToolTip(eff >= 0 ? QStringLiteral("Driving controller %1").arg(eff + 1)
+                                 : QStringLiteral("Driving no controller"));
         connect(box, &QComboBox::currentIndexChanged, box, [this, i](int idx) {
             arcsession_gamepad_assign(m_s, i, idx - 1);
         });
@@ -455,46 +351,6 @@ QWidget *PrefsDialog::fujinetPage()
 }
 
 } // namespace
-
-/* ---- the public entry points ------------------------------------------------ */
-
-int SettingsDialog::importRoms(QWidget *parent, arcsession *session, bool folder, const QString &path)
-{
-    QStringList inputs;
-    if (!path.isEmpty()) {
-        inputs << path;
-    } else if (folder) {
-        const QString dir = QFileDialog::getExistingDirectory(parent, QStringLiteral("Import BIOS from a Folder"));
-        if (dir.isEmpty()) return -1;
-        inputs << dir;
-    } else {
-        inputs = QFileDialog::getOpenFileNames(parent, QStringLiteral("Import BIOS"), QString(),
-                                               QString::fromUtf8(kRomFilter));
-        if (inputs.isEmpty()) return -1;
-    }
-
-    int total = 0;
-    bool trouble = false;
-    QStringList said;
-    for (const QString &in : inputs) {
-        char msg[1024] = "";
-        const int rc = arcsession_rom_import(session, in.toLocal8Bit().constData(), msg, sizeof msg);
-        if (rc > 0) total += rc;
-        if (rc <= 0) trouble = true;
-        QString text = local(msg[0] ? msg : arcsession_last_error(session));
-        if (inputs.size() > 1) text = QStringLiteral("%1: %2").arg(QFileInfo(in).fileName(), text);
-        said << text;
-    }
-    /* the session's message always says what happened: show it whole */
-    const QString text = said.join(QStringLiteral("\n\n"));
-    if (total == 0)
-        QMessageBox::warning(parent, QStringLiteral("Nothing Imported"), text);
-    else if (trouble)
-        QMessageBox::warning(parent, QStringLiteral("BIOS Imported"), text);
-    else
-        QMessageBox::information(parent, QStringLiteral("BIOS Imported"), text);
-    return total;
-}
 
 bool SettingsDialog::run(QWidget *parent, arcsession *session)
 {

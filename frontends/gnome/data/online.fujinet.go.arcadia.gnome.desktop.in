@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
 Name=FujiNet Go Arcadia 2001 (GNOME)
-GenericName=Magnavox Arcadia 2001 / Philips Videopac Emulator
-Comment=Magnavox Arcadia 2001 and Philips Videopac with built-in FujiNet
+GenericName=Emerson Arcadia 2001 Emulator
+Comment=Emerson Arcadia 2001 with a built-in FujiNet cartridge
 Exec=fujinet-go-arcadia-gnome %f
 Icon=online.fujinet.go.arcadia.gnome
 Terminal=false
 Categories=Game;Emulator;
-Keywords=Magnavox;Arcadia 2001;Videopac;Philips;8048;FujiNet;emulator;retro;
+Keywords=Emerson;Arcadia 2001;2650;UVI;FujiNet;emulator;retro;
 StartupNotify=true

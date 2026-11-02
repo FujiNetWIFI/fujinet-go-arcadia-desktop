@@ -35,8 +35,6 @@
  * picture. */
 #define TOAST_SECONDS 3.0
 
-#define BANNER_H 24.0
-
 static NSString *nsstr(const char *s)
 {
     NSString *r = s ? [NSString stringWithUTF8String:s] : nil;
@@ -131,16 +129,11 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
     ArcContentView *_content;
     NSTimer *_statusTimer;
     NSTimer *_sysactTimer;
-    BOOL _needsBiosShown;        /* the "needs the BIOS" alert, once per occurrence */
-    NSString *_refusedCart;      /* a cartridge refused for want of a ROM: retried after an import */
 
     /* the transient message over the picture */
     NSTextField *_toast;
     unsigned _toastGeneration;
     NSUInteger _toastSerial;
-    /* the persistent "ROM missing" strip along the bottom */
-    NSButton *_banner;
-    unsigned _bannerMask;
 
     NSMenuItem *_aspectItem;
     NSMenuItem *_smoothItem;
@@ -176,10 +169,10 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
 {
     (void)note;
 
-    /* The 360x243 picture at the TV's 4:3, three times its 243 lines high:
-     * 972x729, a comfortable first window on any Mac. */
+    /* The 192x262 picture at the TV's 4:3, twice its 262 lines high:
+     * 699x524, a comfortable first window on any Mac. */
     _window = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 972, 729)
+        initWithContentRect:NSMakeRect(0, 0, 699, 524)
                   styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                              NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
                     backing:NSBackingStoreBuffered
@@ -219,17 +212,6 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
     [_toast setAutoresizingMask:NSViewWidthSizable | NSViewMinYMargin];
     [_content addSubview:_toast];
 
-    /* The banner: what is missing, along the bottom, until it is imported. A
-     * click goes to Import BIOS. */
-    _banner = [NSButton buttonWithTitle:@"" target:self action:@selector(importBios:)];
-    [_banner setBordered:NO];
-    [_banner setWantsLayer:YES];
-    _banner.layer.backgroundColor = [ArcAccentColor() CGColor];
-    [_banner setFrame:NSMakeRect(0, 0, [_content bounds].size.width, BANNER_H)];
-    [_banner setAutoresizingMask:NSViewWidthSizable];
-    [_banner setHidden:YES];
-    [_content addSubview:_banner];
-
     [_window setContentView:_content];
     [self buildMenu];
     [_window makeKeyAndOrderFront:nil];
@@ -244,8 +226,7 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
     }];
 
     /* A file from the command line or from Finder is routed as a drop is: it
-     * waits for the machine to be up, then a cartridge boots, a ROM is
-     * imported, anything else goes to the SD folder. */
+     * waits for the machine to be up, then a cartridge boots, anything else goes to the SD folder. */
     NSString *media = _pendingMedia;
     if (!media && _mediaPath)
         media = [[NSFileManager defaultManager] stringWithFileSystemRepresentation:_mediaPath
@@ -274,13 +255,11 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
                              NSApplicationDidUnhideNotification])
         [nc addObserver:self selector:@selector(visibilityChanged:) name:name object:nil];
     [self updateTitle];
-    [self checkMissing];
     [self updateTimers];
 }
 
 /* What the 10 Hz timer does: system actions the gamepad thread resolved (it
- * cannot touch AppKit), gamepads coming and going, and what the running
- * machine is missing. */
+ * cannot touch AppKit), and gamepads coming and going. */
 - (void)sysactTick
 {
     int sa;
@@ -292,7 +271,6 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
         if (arcsession_gamepad_last_event(_session, msg, sizeof msg) > 0)
             [self showToast:nsstr(msg)];
     }
-    [self checkMissing];
 }
 
 - (BOOL)windowCanBeSeen:(NSWindow *)w
@@ -348,88 +326,16 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
     });
 }
 
-/* ---- what the machine is missing ----------------------------------------------------- */
-
-/* The strip along the bottom: the character set (text is blank without it)
- * and The Voice's ROMs. Only touched when the mask changes. */
-- (void)updateBanner:(unsigned)missing
+/* A refusal (power-up or load): the session's message says why. */
+- (void)reportRefusal:(NSString *)why title:(NSString *)title
 {
-    const unsigned mask = missing & (ARC_MISSING_FONT | ARC_MISSING_VOICE);
-    if (mask == _bannerMask) return;
-    _bannerMask = mask;
-    NSString *text = nil;
-    if ((mask & ARC_MISSING_FONT) && (mask & ARC_MISSING_VOICE))
-        text = @"Character set and The Voice's ROMs not imported -- text will be blank. Import BIOS…";
-    else if (mask & ARC_MISSING_FONT)
-        text = @"Character set not imported -- text will be blank. Import BIOS…";
-    else if (mask & ARC_MISSING_VOICE)
-        text = @"The Voice's speech ROMs are not imported -- it will be silent. Import BIOS…";
-    if (!text) {
-        [_banner setHidden:YES];
-        return;
-    }
-    NSMutableParagraphStyle *para = [[NSMutableParagraphStyle alloc] init];
-    para.alignment = NSTextAlignmentCenter;
-    [_banner setAttributedTitle:[[NSAttributedString alloc] initWithString:text attributes:@{
-        NSFontAttributeName: [NSFont boldSystemFontOfSize:12],
-        NSForegroundColorAttributeName: NSColor.whiteColor,
-        NSParagraphStyleAttributeName: para }]];
-    [_banner setHidden:NO];
-}
-
-/* A game met the stand-in (CONFIG network-booted it with no BIOS imported):
- * the console is parked. Said once, as a sheet on the machine's window, until
- * the next power cycle clears it and a game trips it again. */
-- (void)checkMissing
-{
-    const unsigned missing = arcsession_missing(_session);
-    [self updateBanner:missing];
-    if (!(missing & ARC_MISSING_BIOS)) {
-        _needsBiosShown = NO;
-        return;
-    }
-    if (_needsBiosShown) return;
-    _needsBiosShown = YES;
-    [self askForRoms:nil title:@"This cartridge needs the Arcadia 2001 BIOS"];
-}
-
-/* The alert for a ROM the machine needs: Import BIOS… picks the files (and
- * retries the refused cartridge, or restarts into CONFIG), Not Now leaves it. */
-- (void)askForRoms:(NSString *)detail title:(NSString *)title
-{
-    NSAlert *a = [[NSAlert alloc] init];
-    a.messageText = title;
-    a.informativeText = detail.length ? detail
-        : @"Machine ▸ Import BIOS… adds your own dump of it. Arcadia 2001 games are written for the "
-           "real BIOS, so only it runs them; CONFIG and the FujiNet apps run without it.";
-    [a addButtonWithTitle:@"Import BIOS…"];
-    [a addButtonWithTitle:@"Not Now"];
-    [a beginSheetModalForWindow:_window completionHandler:^(NSModalResponse r) {
-        if (r != NSAlertFirstButtonReturn) return;
-        dispatch_async(dispatch_get_main_queue(), ^{ [self importRomsFromPanel:NO]; });
-    }];
-}
-
-/* The session refused to power up or to load something. When importing a ROM
- * would fix it (its message points at Import BIOS) the alert offers that,
- * and the cartridge is retried after; otherwise it is just said. */
-- (void)reportRefusal:(NSString *)why title:(NSString *)plainTitle
-{
-    if (![why containsString:@"Import BIOS"]) {
-        [self alert:plainTitle text:why];
-        return;
-    }
-    NSString *title = [why containsString:@"Voice"] ? @"This cartridge needs The Voice's ROMs"
-                    : [why containsString:@"G7400"] ? @"The Videopac+ G7400 needs its BIOS"
-                    : @"This cartridge needs the Arcadia 2001 BIOS";
-    [self askForRoms:why title:title];
+    [self alert:title text:why];
 }
 
 - (void)runSysaction:(int)sa
 {
     switch (sa) {
     case ARC_SYSACT_RESET_CONFIG:
-        _refusedCart = nil;
         arcsession_sysaction(_session, sa);
         break;
     case ARC_SYSACT_DEBUG_STOP:
@@ -549,8 +455,6 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
     [self item:machine title:@"Open Cartridge…" action:@selector(openCart:) key:@"o"];
     [self item:machine title:@"Eject Cartridge" action:@selector(ejectCart:) key:@""];
     [self item:machine title:@"Import Cartridge to SD…" action:@selector(importToSd:) key:@""];
-    [self item:machine title:@"Import BIOS…" action:@selector(importBios:) key:@""];
-    [self item:machine title:@"Import BIOS from a Folder…" action:@selector(importBiosFolder:) key:@""];
     [machine addItem:[NSMenuItem separatorItem]];
     [self item:machine title:@"Pause" action:@selector(togglePause:) key:@""];
     /* F1 and Escape are bindings (the console's RESET key, Reset to CONFIG),
@@ -621,14 +525,14 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
     (void)sender;
     NSMutableParagraphStyle *para = [[NSMutableParagraphStyle alloc] init];
     para.alignment = NSTextAlignmentCenter;
-    NSString *text = @"Magnavox Arcadia 2001 and Philips Videopac with built-in FujiNet\n\n"
+    NSString *text = @"Emerson Arcadia 2001 with built-in FujiNet\n\n"
                       WEBSITE_URL "\n"
                       "Report issues: " ISSUES_URL "\n\n"
                       "Licensed under the GNU General Public License, version 3 or later "
                       "(GPL-3.0-or-later).\n\n"
-                      "The emulator is MAME's Arcadia 2001 / Videopac code -- the Intel 8048, the "
-                      "8244/8245 video chip, the EF9340/41 and The Voice's SP0256 (BSD-3-Clause; "
-                      "Peter Trauner, Wilbert Pol, hap, Couriersud, Joseph Zbiciak and others) -- "
+                      "The emulator is MAME's Arcadia 2001 code -- the Signetics 2650 and the "
+                      "2637 UVI video chip (BSD-3-Clause CPU, GPL-2.0+ driver; Peter Trauner, "
+                      "Juergen Buchmueller, Martin Buchholz and others) -- "
                       "transposed to C. The FujiNet firmware and the cartridge: Thomas Cherryhomes "
                       "and the FujiNet contributors.";
     NSMutableAttributedString *credits = [[NSMutableAttributedString alloc]
@@ -650,33 +554,21 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
     }];
 }
 
-/* A game while no BIOS is imported is refused with the reason: the session
- * says so; when importing the missing ROM would fix it (its message points at
- * Import BIOS), the alert offers that and the cartridge is retried after. */
 - (void)openCartAtPath:(NSString *)path
 {
-    if (arcsession_load_cart(_session, [path fileSystemRepresentation]) != 0) {
-        NSString *why = [self lastError];
-        if ([why containsString:@"Import BIOS"]) _refusedCart = path;
-        [self reportRefusal:why title:@"Could not open"];
-    } else {
-        _refusedCart = nil;
-    }
+    if (arcsession_load_cart(_session, [path fileSystemRepresentation]) != 0)
+        [self reportRefusal:[self lastError] title:@"Could not open"];
     [self updateTitle];
 }
 
-/* Open, a drop, Finder, the command line: ROM images and zips are imported
- * (together, one report), the first cartridge is opened, anything else goes
- * on FujiNet's SD card. */
+/* Open, a drop, Finder, the command line: the first cartridge is opened,
+ * anything else goes on FujiNet's SD card. */
 - (void)loadMediaPaths:(NSArray<NSString *> *)paths
 {
-    NSMutableArray<NSString *> *roms = [NSMutableArray array];
     NSString *cart = nil;
     for (NSString *p in paths) {
         const char *fs = [p fileSystemRepresentation];
-        if (arcsession_media_is_rom(fs)) {
-            [roms addObject:p];
-        } else if (!cart && arcsession_media_is_cartridge(fs)) {
+        if (!cart && arcsession_media_is_cartridge(fs)) {
             cart = p;
         } else {
             char dest[1024];
@@ -688,7 +580,6 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
                              [nsstr(dest) lastPathComponent]]];
         }
     }
-    if ([roms count]) [self importRomPaths:roms];
     if (cart) [self openCartAtPath:cart];
 }
 
@@ -726,11 +617,11 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
     _panel.allowedContentTypes = sender.indexOfSelectedItem == 0 ? _panelTypes : @[];
 }
 
-/* .bin, .rom or .arc: a raw image of the cartridge. */
+/* .bin, .rom, .arc or a zip of one: the cartridge. */
 - (NSString *)pickCartridge:(NSString *)title
 {
-    return [self pickFile:title types:@[@"bin", @"rom", @"arc"]
-           allFilesBeside:@"Cartridge images (.bin .rom .arc)"];
+    return [self pickFile:title types:@[@"bin", @"rom", @"arc", @"zip"]
+           allFilesBeside:@"Cartridge images (.bin .rom .arc .zip)"];
 }
 
 - (void)openCart:(id)sender
@@ -743,7 +634,6 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
 - (void)ejectCart:(id)sender
 {
     (void)sender;
-    _refusedCart = nil;
     if (arcsession_eject(_session) != 0)
         [self alert:@"Could not eject" text:[self lastError]];
     [self updateTitle];
@@ -762,71 +652,6 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
     [self showToast:[NSString stringWithFormat:@"%@ is on the SD host. Boot it from CONFIG.",
                      [nsstr(dest) lastPathComponent]]];
 }
-
-/* ---- the ROMs ---------------------------------------------------------------------------- */
-
-/* Whatever was imported, the session's messages say what happened -- which ROM
- * it was, an unrecognised dump of the right size, the next power cycle. A
- * successful import takes effect at once when something was missing: the
- * cartridge that was refused is opened again, or the console power-cycles
- * (back onto the cartridge in the slot, or CONFIG). */
-- (void)importRomPaths:(NSArray<NSString *> *)paths
-{
-    NSMutableArray<NSString *> *log = [NSMutableArray array];
-    int imported = 0;
-    for (NSString *p in paths) {
-        char msg[2048];
-        msg[0] = '\0';
-        const int n = arcsession_rom_import(_session, [p fileSystemRepresentation], msg, (int)sizeof msg);
-        if (n > 0) imported += n;
-        if (msg[0]) [log addObject:nsstr(msg)];
-    }
-    [_settings refresh];
-    NSString *text = [log count] ? [log componentsJoinedByString:@"\n"]
-                                 : (imported > 0 ? @"Imported." : @"None of these files is a ROM this app uses.");
-    [self alert:(imported > 0 ? @"BIOS Imported" : @"Nothing Imported") text:text];
-    if (imported <= 0) return;
-
-    /* what is missing is a snapshot from the last power-up: a power cycle
-     * with the new ROMs is what clears it (a machine that could not start has
-     * none to clear) */
-    if (_refusedCart) {
-        NSString *cart = _refusedCart;
-        _refusedCart = nil;
-        [self openCartAtPath:cart];
-    } else if (!arcsession_is_running(_session) || arcsession_missing(_session)) {
-        if (arcsession_restart(_session) != 0)
-            [self reportRefusal:[self lastError] title:@"Could not start"];
-        else
-            [self showToast:@"The console was power-cycled with the new ROMs."];
-    }
-    [self updateTitle];
-    [self checkMissing];
-}
-
-/* Machine > Import BIOS… (files and zips, any number) and Import BIOS from a
- * Folder…: the ROMs are recognised by checksum, so the files may be called
- * anything. */
-- (void)importRomsFromPanel:(BOOL)folder
-{
-    NSOpenPanel *panel = [NSOpenPanel openPanel];
-    [panel setMessage:folder ? @"Import BIOS from a Folder (MAME's ROM folder works)"
-                             : @"Import BIOS: ROM images or zips (MAME's videopac.zip and i8244.zip work)"];
-    [panel setCanChooseDirectories:folder];
-    [panel setCanChooseFiles:!folder];
-    [panel setAllowsMultipleSelection:!folder];
-    NSWindow *host = [NSApp keyWindow] ?: _window;
-    [panel beginSheetModalForWindow:host completionHandler:^(NSModalResponse r) {
-        if (r != NSModalResponseOK) return;
-        NSMutableArray<NSString *> *paths = [NSMutableArray array];
-        for (NSURL *u in [panel URLs]) [paths addObject:[u path]];
-        /* after the sheet: what came in is an alert of its own */
-        dispatch_async(dispatch_get_main_queue(), ^{ [self importRomPaths:paths]; });
-    }];
-}
-
-- (void)importBios:(id)sender { (void)sender; [self importRomsFromPanel:NO]; }
-- (void)importBiosFolder:(id)sender { (void)sender; [self importRomsFromPanel:YES]; }
 
 /* ---- the console ---------------------------------------------------------------------------- */
 
@@ -921,7 +746,6 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
 
 - (void)settingsSetAspect:(int)aspect { [self setAspect:aspect]; }
 - (void)settingsSetSmooth:(BOOL)smooth { [self setSmooth:smooth]; }
-- (void)settingsImportRoms:(BOOL)folder { [self importRomsFromPanel:folder]; }
 - (void)settingsOpenWebUI { [self openWebUI:nil]; }
 
 /* A power cycle for the machine options, a full restart if a host option
@@ -936,7 +760,6 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
     }
     [_controllers refresh];
     [self updateTitle];
-    [self checkMissing];
 }
 
 /* ---- FujiNet console log ----------------------------------------------------------------------- */

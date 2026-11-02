@@ -1,6 +1,7 @@
 /*
- * The Controllers window -- the Arcadia 2001's membrane keyboard and both
- * joysticks drawn like the console's, held keys lit, the gamepads' stick
+ * The Controllers window -- the Arcadia 2001 console drawn like the photo: both
+ * hand controllers (12-key gold keypad, disc, side FIRE button) and the
+ * START / OPTION / SELECT / RESET panel, held keys lit, the gamepads' player
  * assignments, and Map mode for rebinding any control to a key or a gamepad
  * button.
  *

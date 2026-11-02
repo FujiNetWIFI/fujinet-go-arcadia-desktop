@@ -3,7 +3,7 @@
  *
  * Same keys and defaults as the other frontends' Preferences, so a machine
  * configured in one comes up the same in another. The analog stick, the
- * picture and the volume apply live; the machine, the BIOS choices and the
+ * picture and the volume apply live; the machine and the
  * host options power-cycle the console (arcsession_restart) when the window
  * closes, which the app does when told the window closed with changes.
  *
@@ -34,9 +34,7 @@ static NSString *nsstr(const char *s)
     BOOL _dirty;                 /* an option changed that a power cycle applies */
 
     NSPopUpButton *_machinePopup;
-    NSTextField *_biosStatus, *_fontStatus, *_voiceStatus, *_machineWarning;
-    NSMutableArray<NSTextField *> *_romStates;   /* by arcsession_rom_item index */
-    NSTextField *_romPath;
+    NSTextField *_machineNote;
     NSPopUpButton *_aspectPopup;
     NSButton *_smoothBox;
     NSPopUpButton *_padList, *_padPort;
@@ -133,21 +131,13 @@ static NSString *nsstr(const char *s)
     [self refresh];
 }
 
-/* What each ROM row on the Machine page says for the machine chosen. */
+/* The PAL clone is the app's model of the Hanimex/Leisure-Vision class; MAME
+ * itself runs every clone at NTSC, so it is not checked against MAME. */
 - (void)refreshMachineStatus
 {
-    const int m = [self currentMachine];
-    _biosStatus.stringValue = arcsession_have_bios(_session, m)
-        ? @"Imported"
-        : @"Not imported: CONFIG and FujiNet apps run without it, games need it";
-    _fontStatus.stringValue = arcsession_have_font(_session, m)
-        ? @"Imported"
-        : @"Not imported: text is blank";
-    _voiceStatus.stringValue = arcsession_have_voice(_session)
-        ? @"Imported" : @"Not imported";
-    /* the G7400 will not start without its own BIOS: say so as it is picked */
-    _machineWarning.stringValue = (m == ARC_MACHINE_VIDEOPAC_PLUS && !arcsession_have_bios(_session, m))
-        ? @"The Videopac+ G7400 needs its BIOS: Machine ▸ Import BIOS…" : @"";
+    _machineNote.stringValue = arc_machine_is_pal([self currentMachine])
+        ? @"PAL clone: 4.433 MHz / 5, 50 Hz, 312 lines. Not verified against MAME."
+        : @"NTSC: 3.58 MHz / 4, 60 Hz. The console has no BIOS to import.";
 }
 
 - (NSView *)machinePage
@@ -159,81 +149,15 @@ static NSString *nsstr(const char *s)
     _machinePopup.target = self;
     _machinePopup.action = @selector(machineChanged:);
 
-    _biosStatus = [self label:@""];
-    _fontStatus = [self label:@""];
-    _voiceStatus = [self label:@""];
-    _machineWarning = [self label:@""];
-    _machineWarning.textColor = NSColor.systemRedColor;
+    _machineNote = [self note:@""];
+    [self refreshMachineStatus];
 
     NSArray<NSArray<NSView *> *> *rows = @[
         @[ [self heading:@"Machine"], [self note:@"applies with a power cycle when this window closes"] ],
         @[ [self label:@"Console"], _machinePopup ],
-        @[ [self label:@""], _machineWarning ],
-        @[ [self label:@""], [self checkBoxForKey:"use_bios" title:@"Use the imported BIOS" fallback:1] ],
-        @[ [self label:@""],
-           [self note:@"off: the app's own stand-in always, which runs CONFIG and FujiNet apps but no games"] ],
-        @[ [self label:@""],
-           [self checkBoxForKey:"voice" title:@"The Voice in front of the cartridge" fallback:0] ],
-        @[ [self label:@""], [self note:@"needs The Voice's speech ROMs (the ROMs page)"] ],
-        @[ [self heading:@"ROMs for this machine"], [self label:@""] ],
-        @[ [self label:@"BIOS"], _biosStatus ],
-        @[ [self label:@"Character set"], _fontStatus ],
-        @[ [self label:@"The Voice"], _voiceStatus ],
+        @[ [self label:@""], _machineNote ],
     ];
     return [self pageWithRows:rows extras:@[]];
-}
-
-/* ---- the ROMs ---------------------------------------------------------------------------- */
-
-- (void)importClicked:(NSButton *)sender
-{
-    [_delegate settingsImportRoms:sender.tag != 0];
-}
-
-- (void)refreshRoms
-{
-    for (NSUInteger i = 0; i < [_romStates count]; i++)
-        _romStates[i].stringValue = arcsession_rom_item_available(_session, (int)i) ? @"Imported" : @"Not imported";
-    _romPath.stringValue = [NSString stringWithFormat:@"Kept in %@", nsstr(arcsession_roms_path(_session))];
-}
-
-- (NSView *)romsPage
-{
-    NSTextField *intro = [self note:@"The console's BIOS, the video chip's character set and The Voice's speech "
-                                    @"ROMs are not part of the app. Import your own dumps from files, a zip or "
-                                    @"a folder; they are recognised by their checksums, whatever they are called."];
-    intro.preferredMaxLayoutWidth = 560;
-    NSButton *files = [NSButton buttonWithTitle:@"Import BIOS…" target:self action:@selector(importClicked:)];
-    files.tag = 0;
-    NSButton *folder = [NSButton buttonWithTitle:@"Import from a Folder…" target:self action:@selector(importClicked:)];
-    folder.tag = 1;
-    NSStackView *buttons = [NSStackView stackViewWithViews:@[files, folder]];
-    buttons.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    buttons.spacing = 8;
-    _romPath = [self label:@""];
-    _romPath.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
-    _romPath.textColor = NSColor.secondaryLabelColor;
-    _romPath.selectable = YES;
-
-    NSMutableArray<NSArray<NSView *> *> *rows = [NSMutableArray array];
-    _romStates = [NSMutableArray array];
-    NSString *group = nil;
-    for (int i = 0; i < arcsession_rom_item_count(); i++) {
-        const arc_rom_item *item = arcsession_rom_item(i);
-        if (!item) {
-            [_romStates addObject:[self label:@""]];
-            continue;
-        }
-        if (!group || ![group isEqualToString:nsstr(item->group)]) {
-            group = nsstr(item->group);
-            [rows addObject:@[ [self heading:group], [self label:@""] ]];
-        }
-        NSTextField *state = [self label:@""];
-        state.textColor = NSColor.secondaryLabelColor;
-        [_romStates addObject:state];
-        [rows addObject:@[ [self label:nsstr(item->name)], state ]];
-    }
-    return [self pageWithRows:rows extras:@[intro, buttons, _romPath]];
 }
 
 /* ---- display, audio, input, FujiNet --------------------------------------------------------- */
@@ -297,7 +221,7 @@ static NSString *nsstr(const char *s)
         /* through the menu: a button's own addItemWithTitle: drops an earlier
          * item of the same title, and two pads can share a name */
         [[_padList menu] addItemWithTitle:(eff >= 0
-            ? [NSString stringWithFormat:@"%d: %s  [stick %d]", i + 1, name, eff + 1]
+            ? [NSString stringWithFormat:@"%d: %s  [player %d]", i + 1, name, eff + 1]
             : [NSString stringWithFormat:@"%d: %s  [unused]", i + 1, name])
                                    action:nil keyEquivalent:@""];
     }
@@ -328,7 +252,7 @@ static NSString *nsstr(const char *s)
     _padList.target = self;
     _padList.action = @selector(padSelected:);
     _padPort = [[NSPopUpButton alloc] init];
-    [_padPort addItemsWithTitles:@[@"Automatic", @"Stick 1", @"Stick 2"]];
+    [_padPort addItemsWithTitles:@[@"Automatic", @"Player 1", @"Player 2"]];
     _padPort.target = self;
     _padPort.action = @selector(padPortChanged:);
     NSStackView *padRow = [NSStackView stackViewWithViews:@[_padList, _padPort]];
@@ -337,7 +261,7 @@ static NSString *nsstr(const char *s)
     NSArray<NSArray<NSView *> *> *rows = @[
         @[ [self heading:@"Input"], [self note:@"applied immediately; gamepads on/off power-cycles"] ],
         @[ [self label:@""],
-           [self checkBoxForKey:"analog_joystick" title:@"Analog sticks steer too" fallback:1] ],
+           [self checkBoxForKey:"analog_joystick" title:@"Analog sticks steer the disc" fallback:1] ],
         @[ [self label:@""], [self checkBoxForKey:"enable_gamepad" title:@"Gamepads" fallback:1] ],
         @[ [self label:@"Gamepads"], padRow ],
         @[ [self label:@""], [self note:@"Keys and gamepad buttons are re-mapped in the Controllers window (Map)."] ],
@@ -346,7 +270,7 @@ static NSString *nsstr(const char *s)
 }
 
 /* The external-FujiNet address field: valid text (or none, meaning
- * 127.0.0.1:11520) is saved; anything else is shown in red and not saved. */
+ * 127.0.0.1:11522) is saved; anything else is shown in red and not saved. */
 - (void)externalAddrChanged:(id)sender
 {
     NSTextField *field = sender;
@@ -382,7 +306,7 @@ static NSString *nsstr(const char *s)
 - (NSView *)fujinetPage
 {
     _externalField = [NSTextField textFieldWithString:nsstr(arcsession_get_str(_session, "fujinet_external_addr", ""))];
-    _externalField.placeholderString = @"127.0.0.1:11520";
+    _externalField.placeholderString = @"127.0.0.1:11522";
     [_externalField.widthAnchor constraintEqualToConstant:240].active = YES;
     _externalField.enabled = arcsession_get_int(_session, "fujinet_external", 0) != 0;
     _externalField.target = self;
@@ -433,7 +357,6 @@ static NSString *nsstr(const char *s)
 {
     if (!_window) return;
     [self refreshMachineStatus];
-    [self refreshRoms];
     [self refreshWebUi];
 }
 
@@ -473,7 +396,7 @@ static NSString *nsstr(const char *s)
 {
     if (!_window) {
         NSTabView *tabs = [[NSTabView alloc] initWithFrame:NSMakeRect(0, 0, WINDOW_W, WINDOW_H)];
-        NSArray *pages = @[ @[@"Machine", [self machinePage]], @[@"ROMs", [self romsPage]],
+        NSArray *pages = @[ @[@"Machine", [self machinePage]],
                             @[@"Display", [self displayPage]], @[@"Audio", [self audioPage]],
                             @[@"Input", [self inputPage]], @[@"FujiNet", [self fujinetPage]] ];
         for (NSArray *page in pages) {

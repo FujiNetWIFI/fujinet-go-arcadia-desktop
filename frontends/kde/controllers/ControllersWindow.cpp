@@ -1,35 +1,37 @@
 /*
  * ControllersWindow -- see ControllersWindow.h.
  *
- * The membrane keyboard is painted from the session's layout table
- * (arcsession_keyboard_layout: every key cap at its x/y/w/h in key units), so
- * every frontend shows the same keys for the machine, and the Videopac+
- * G7400's extra keys appear when that machine is selected. Under it, the two
- * joysticks as the console's are: a black base, the red fire button in the
- * corner, a stick with four direction pads.
+ * The console as photographed: a charcoal case with a wood strip, two hand
+ * controllers (a gold disc over a gold 12-key keypad, the fire button on the
+ * side) and the START / OPTION / SELECT / RESET keys between them. The keys
+ * are painted from the session's layout table (arcsession_keyboard_layout:
+ * every cap at its x/y/w/h in key units), so every frontend shows the same
+ * keys.
  *
- * Keys and stick controls act on mouse press AND release, not "clicked": the
- * console scans its keyboard and samples its sticks once a frame, so a press
+ * Keys and disc controls act on mouse press AND release, not "clicked": the
+ * console scans its keypads and samples its pots once a frame, so a press
  * present only for the instant of a click would fall between frames. A key
- * is HELD while the mouse is down on it; dragging off it releases it, and so
- * do hiding the window and losing the focus (only what the mouse holds here:
- * the main window releases its own keys).
+ * is HELD while the mouse is down on it; dragging off it releases it (on a
+ * disc, dragging moves from one direction to the next), and so do hiding the
+ * window and losing the focus (only what the mouse holds here: the main
+ * window releases its own keys).
  *
  * What the console sees held -- host keyboard, gamepads and this window -- is
- * lit in the accent (the Arcadia 2001's red), so the window doubles as an input
- * tester for a new pad. Keys typed with it active go to the console as in the
- * main window.
+ * lit in the accent (the keypad's gold), so the window doubles as an input
+ * tester for a new pad; the disc's knob shows the pot position, analog from a
+ * pad's stick. Keys typed with it active go to the console as in the main
+ * window.
  *
  * FIXED SIZE: the drawing is a fixed number of pixels per key unit, Map
  * legends are elided into the caps, and gamepad names are elided, so neither
- * Map mode nor a long name resizes the window; only a machine change does.
- * A singleton, hidden rather than destroyed, so a half-done remap survives
- * closing it. A timer runs only while it is visible.
+ * Map mode nor a long name resizes the window. A singleton, hidden rather
+ * than destroyed, so a half-done remap survives closing it. A timer runs only
+ * while it is visible.
  *
- * MAP MODE: Map arms a two-step rebind -- click a key cap or a stick control,
- * then press a host key or a gamepad button. Rebinding steals the key from
- * whatever held it (named in the hint). Esc cancels; while Map is armed
- * nothing is typed into the console.
+ * MAP MODE: Map arms a two-step rebind -- click a key cap, a disc direction or
+ * a fire button, then press a host key or a gamepad button. Rebinding steals
+ * the key from whatever held it (named in the hint). Esc cancels; while Map is
+ * armed nothing is typed into the console.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -68,14 +70,12 @@
 namespace {
 
 constexpr int kUnit = 42;        /* pixels per key unit */
-constexpr int kLeft = 26;        /* the keys' origin inside the panel */
-constexpr int kTop = 30;
-constexpr int kPadRight = 26;
-constexpr int kPadBottom = 22;
-constexpr int kGroupGapY = 16;   /* the printed groups are set apart */
-constexpr int kGroupGapX = 12;
-constexpr int kStickW = 200;
-constexpr int kStickH = 150;
+constexpr int kLeft = 48;        /* the keys' origin inside the case (room for the fire buttons) */
+constexpr int kWood = 16;        /* the wood strip along the top */
+constexpr int kDiscTop = 36;
+constexpr int kDiscR = 56;       /* the disc's radius */
+constexpr int kKeysTop = kDiscTop + 2 * kDiscR + 18;
+constexpr int kBottom = 40;
 constexpr int kMaxPads = 8;
 
 const QString kGray = QStringLiteral("color: gray;");
@@ -186,39 +186,22 @@ private:
     int m_lines;
 };
 
-/* ---- ConsoleWidget: the membrane keyboard ---------------------------------------- */
+/* ---- ConsoleWidget: the console, as photographed ------------------------------------- */
 
+/* The charcoal case with its wood strip, the START / OPTION / SELECT / RESET
+ * keys between, and the two hand controllers: each a gold disc over a gold
+ * 12-key keypad, with the side fire button on its outer edge. The caps come
+ * from the session's layout (the keypads and the panel keys); the discs and
+ * the fire buttons are drawn here. */
 class ConsoleWidget : public QWidget {
 public:
     ConsoleWidget(arcsession *session, std::function<void(int, bool)> onPress)
         : m_session(session), m_onPress(std::move(onPress))
     {
         setFocusPolicy(Qt::NoFocus);
+        load();
     }
 
-    /* The machine changed: its keys (the Videopac+ G7400 has more). */
-    void load(int machine)
-    {
-        int n = 0;
-        float w = 0, h = 0;
-        const arc_keycap *caps = arcsession_keyboard_layout(machine, &n, &w, &h);
-        m_groups = machine != ARC_MACHINE_VIDEOPAC_PLUS;   /* its printed groups are known only for the Arcadia */
-        m_caps.clear();
-        qreal right = 0, bottom = 0;
-        for (int i = 0; i < n; ++i) {
-            Cap c;
-            c.cap = caps[i];
-            c.target = capTarget(caps[i]);
-            c.rect = capRect(caps[i]);
-            right = qMax(right, c.rect.right());
-            bottom = qMax(bottom, c.rect.bottom());
-            m_caps.push_back(c);
-        }
-        m_held.assign(m_caps.size(), 0);
-        m_pressed = -1;
-        setFixedSize(qCeil(right) + kPadRight, qCeil(bottom) + kPadBottom);
-        update();
-    }
     /* -2 idle, -1 armed, >= 0 waiting for a key or pad button for that target */
     void setMap(int state)
     {
@@ -230,8 +213,8 @@ public:
         m_keyNames = on;
         update();
     }
-    /* What the console sees held (and the cap the mouse holds); repaints only
-     * on a change. */
+    /* What the console sees held (and the control the mouse holds); repaints
+     * only on a change. */
     void pollHeld(int mouseTarget)
     {
         bool changed = false;
@@ -242,13 +225,23 @@ public:
                 changed = true;
             }
         }
+        for (int port = 0; port < 2; ++port) {
+            for (int act = 0; act < ARC_ACT_PER_PORT; ++act) {
+                const char on = heldNow(m_session, ARC_TARGET_PORT(port, act), mouseTarget);
+                if (on != m_dheld[port][act]) {
+                    m_dheld[port][act] = on;
+                    changed = true;
+                }
+            }
+            int x = 0, y = 0;
+            arcsession_disc_get(m_session, port, &x, &y);
+            if (x != m_dx[port] || y != m_dy[port]) {
+                m_dx[port] = x;
+                m_dy[port] = y;
+                changed = true;
+            }
+        }
         if (changed) update();
-    }
-    /* The target of the cap at pos, or -1. */
-    int targetAt(const QPointF &pos) const
-    {
-        const int i = capAt(pos);
-        return i < 0 ? -1 : m_caps[(size_t)i].target;
     }
 
 protected:
@@ -256,57 +249,55 @@ protected:
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
-
-        /* the console's silver panel, and the black keyboard plate in it */
-        const QRectF panel(0.5, 0.5, width() - 1.0, height() - 1.0);
-        QLinearGradient silver(0, 0, 0, height());
-        silver.setColorAt(0, QColor(0xDB, 0xD9, 0xD7));
-        silver.setColorAt(1, QColor(0xB1, 0xAE, 0xAC));
-        p.setPen(QColor(0x8A, 0x87, 0x85));
-        p.setBrush(silver);
-        p.drawRoundedRect(panel, 12, 12);
-        p.setPen(QColor(0x05, 0x05, 0x05));
-        p.setBrush(QColor(0x16, 0x16, 0x16));
-        p.drawRoundedRect(panel.adjusted(10, 10, -10, -10), 9, 9);
-
-        if (m_groups) paintGroups(p);
+        paintCase(p);
+        for (int port = 0; port < 2; ++port) paintController(p, port);
         for (size_t i = 0; i < m_caps.size(); ++i) paintCap(p, i);
     }
 
     void mousePressEvent(QMouseEvent *e) override
     {
         if (e->button() != Qt::LeftButton) return;
-        const int i = capAt(e->position());
-        if (i < 0) return;
-        m_pressed = i;
-        m_onPress(m_caps[(size_t)i].target, true);
+        const int t = targetAt(e->position(), -1);
+        if (t < 0) return;
+        m_pressed = t;
+        m_pressedDisc = discPortAt(e->position());
+        m_onPress(t, true);
     }
 
-    /* Dragging off a key must release it. */
+    /* Dragging off a key releases it; on a disc it follows the pointer from
+     * one direction to the next. */
     void mouseMoveEvent(QMouseEvent *e) override
     {
-        if (m_pressed >= 0 && !m_caps[(size_t)m_pressed].rect.contains(e->position())) release();
+        if (m_pressed < 0) return;
+        const int t = targetAt(e->position(), m_pressedDisc);
+        if (t == m_pressed) return;
+        const int old = m_pressed;
+        m_pressed = -1;
+        m_onPress(old, false);
+        if (t >= 0 && m_pressedDisc >= 0) {
+            m_pressed = t;
+            m_onPress(t, true);
+        }
     }
 
     void mouseReleaseEvent(QMouseEvent *e) override
     {
-        if (e->button() == Qt::LeftButton) release();
+        if (e->button() != Qt::LeftButton || m_pressed < 0) return;
+        const int t = m_pressed;
+        m_pressed = -1;
+        m_pressedDisc = -1;
+        m_onPress(t, false);
     }
 
     bool event(QEvent *e) override
     {
         if (e->type() == QEvent::ToolTip) {
             auto *he = static_cast<QHelpEvent *>(e);
-            const int i = capAt(he->pos());
-            if (i < 0) {
+            const int t = targetAt(he->pos(), -1);
+            if (t < 0)
                 QToolTip::hideText();
-            } else {
-                const Cap &c = m_caps[(size_t)i];
-                QString tip = bindingTip(m_session, c.target);
-                if (c.cap.target == 44 || c.cap.target == 45)
-                    tip += QStringLiteral(" (YES and Y are one key on the console, and so are NO and N)");
-                QToolTip::showText(he->globalPos(), tip, this, c.rect.toRect());
-            }
+            else
+                QToolTip::showText(he->globalPos(), bindingTip(m_session, t), this);
             return true;
         }
         return QWidget::event(e);
@@ -319,80 +310,227 @@ private:
         QRectF rect;
     };
 
-    /* A key cap's rectangle: the layout's, and, for the Arcadia 2001's printed
-     * groups (numeric, function, input, alpha), a little room between them
-     * for their outlines and names. */
-    QRectF capRect(const arc_keycap &c) const
+    void load()
     {
-        qreal x = c.x * kUnit, y = c.y * kUnit;
-        if (m_groups) {
-            if (c.y > 0.5f) y += kGroupGapY;
-            if (c.y > 1.5f) y += kGroupGapY;
-            if (c.y > 0.5f && c.y < 1.5f) {
-                if (c.x > 4.95f) x += kGroupGapX;
-                if (c.x > 9.3f) x += kGroupGapX;
-            }
+        int n = 0;
+        float w = 0, h = 0;
+        const arc_keycap *caps = arcsession_keyboard_layout(ARC_MACHINE_ARCADIA, &n, &w, &h);
+        m_caps.clear();
+        for (int i = 0; i < n; ++i) {
+            Cap c;
+            c.cap = caps[i];
+            c.target = capTarget(caps[i]);
+            c.rect = QRectF(kLeft + caps[i].x * kUnit, kKeysTop + caps[i].y * kUnit, caps[i].w * kUnit,
+                            caps[i].h * kUnit);
+            m_caps.push_back(c);
         }
-        return QRectF(kLeft + x, kTop + y, c.w * kUnit, c.h * kUnit);
+        m_held.assign(m_caps.size(), 0);
+        m_panelW = qCeil(w * kUnit) + 2 * kLeft;
+        m_panelH = kKeysTop + qCeil(h * kUnit) + kBottom;
+        setFixedSize(m_panelW, m_panelH);
     }
 
-    int capAt(const QPointF &pos) const
+    /* The controller's keypad (the caps of `port`) and its disc. */
+    QRectF keypadRect(int port) const
     {
-        for (size_t i = 0; i < m_caps.size(); ++i)
-            if (m_caps[i].rect.contains(pos)) return (int)i;
+        QRectF r;
+        for (const Cap &c : m_caps)
+            if (c.cap.port == port) r = r.isNull() ? c.rect : r.united(c.rect);
+        return r;
+    }
+    QPointF discCentre(int port) const
+    {
+        const QRectF k = keypadRect(port);
+        return QPointF(k.center().x(), kDiscTop + kDiscR);
+    }
+    QRectF fireRect(int port) const
+    {
+        const QRectF k = keypadRect(port);
+        const qreal w = 24;
+        const qreal x = port == 0 ? k.left() - w - 10 : k.right() + 10;
+        return QRectF(x, k.top() + 8, w, k.height() - 16);
+    }
+    /* The panel's red RESET sits at the centre in the layout: a cap of its own. */
+
+    /* Which disc `pos` is over (inside its circle, or a bit past), or -1. */
+    int discPortAt(const QPointF &pos) const
+    {
+        for (int port = 0; port < 2; ++port) {
+            const QPointF d = pos - discCentre(port);
+            if (QPointF::dotProduct(d, d) <= (kDiscR + 6.0) * (kDiscR + 6.0)) return port;
+        }
         return -1;
     }
 
-    void release()
+    /* The direction a point on a disc means: the dominant axis, nothing
+     * inside the hub unless mapping (a click on a wedge picks it). */
+    int discTarget(int port, const QPointF &pos) const
     {
-        if (m_pressed < 0) return;
-        const int i = m_pressed;
-        m_pressed = -1;
-        m_onPress(m_caps[(size_t)i].target, false);
+        const QPointF d = pos - discCentre(port);
+        const qreal ax = qAbs(d.x()), ay = qAbs(d.y());
+        if (m_map == -2 && ax < 14 && ay < 14) return -1;
+        int act;
+        if (ax > ay) act = d.x() > 0 ? ARC_ACT_RIGHT : ARC_ACT_LEFT;
+        else act = d.y() > 0 ? ARC_ACT_DOWN : ARC_ACT_UP;
+        return ARC_TARGET_PORT(port, act);
     }
 
-    /* The printed outlines round the groups of keys, each with its name in
-     * its top edge (the function and input legends in red, as printed). */
-    void paintGroups(QPainter &p)
+    /* The control under pos, or -1. With `discOnly` >= 0 only that disc's
+     * directions count (a drag that began on it). */
+    int targetAt(const QPointF &pos, int discOnly) const
     {
-        static const char *const names[5] = { "NUMERIC", "FUNCTION", "INPUT", "RESET", "ALPHA" };
-        QRectF box[5];
-        for (const Cap &c : m_caps) {
-            int g = 4;
-            if (c.cap.kind == ARC_KEYCAP_FUNCTION) g = 1;
-            else if (c.cap.kind == ARC_KEYCAP_INPUT) g = 2;
-            else if (c.cap.kind == ARC_KEYCAP_RESET) g = 3;
-            else if (c.cap.y < 0.5f) g = 0;
-            box[g] = box[g].isNull() ? c.rect : box[g].united(c.rect);
+        if (discOnly >= 0) {
+            const QPointF d = pos - discCentre(discOnly);
+            if (QPointF::dotProduct(d, d) > 4.0 * kDiscR * kDiscR) return -1;
+            return discTarget(discOnly, pos);
         }
-        const QFont f = scaledFont(font(), 0.62, true);
-        const QFontMetricsF fm(f);
-        for (int g = 0; g < 5; ++g) {
-            if (box[g].isNull()) continue;
-            const QColor line = (g == 0 || g == 4) ? QColor(0xA8, 0xA8, 0xA8) : QColor(0xC8, 0x2A, 0x32);
-            const QRectF r = box[g].adjusted(-5, -5, 5, 5);
-            const QString name = QString::fromLatin1(names[g]);
-            const qreal tw = fm.horizontalAdvance(name) + 8;
-            p.setPen(QPen(line, 1.2));
-            p.setBrush(Qt::NoBrush);
-            /* the outline, broken at the top where its name sits */
-            const qreal gapL = r.center().x() - tw / 2, gapR = r.center().x() + tw / 2;
-            QPainterPath path;
-            path.moveTo(gapL, r.top());
-            path.lineTo(r.left() + 6, r.top());
-            path.quadTo(r.left(), r.top(), r.left(), r.top() + 6);
-            path.lineTo(r.left(), r.bottom() - 6);
-            path.quadTo(r.left(), r.bottom(), r.left() + 6, r.bottom());
-            path.lineTo(r.right() - 6, r.bottom());
-            path.quadTo(r.right(), r.bottom(), r.right(), r.bottom() - 6);
-            path.lineTo(r.right(), r.top() + 6);
-            path.quadTo(r.right(), r.top(), r.right() - 6, r.top());
-            path.lineTo(gapR, r.top());
-            p.drawPath(path);
-            p.setFont(f);
-            p.setPen(line);
-            p.drawText(QRectF(gapL, r.top() - fm.height() / 2, tw, fm.height()), Qt::AlignCenter, name);
+        for (const Cap &c : m_caps)
+            if (c.rect.contains(pos)) return c.target;
+        for (int port = 0; port < 2; ++port) {
+            if (fireRect(port).contains(pos)) return ARC_TARGET_PORT(port, ARC_ACT_FIRE);
+            if (discPortAt(pos) == port) return discTarget(port, pos);
         }
+        return -1;
+    }
+
+    void paintCase(QPainter &p)
+    {
+        /* the charcoal case, a wood strip along the top, the gold name plate */
+        const QRectF body(0.5, 0.5, width() - 1.0, height() - 1.0);
+        QLinearGradient charcoal(0, 0, 0, height());
+        charcoal.setColorAt(0, QColor(0x3A, 0x3A, 0x3C));
+        charcoal.setColorAt(1, QColor(0x1E, 0x1E, 0x20));
+        p.setPen(QColor(0x0C, 0x0C, 0x0D));
+        p.setBrush(charcoal);
+        p.drawRoundedRect(body, 14, 14);
+
+        QPainterPath clip;
+        clip.addRoundedRect(body, 14, 14);
+        p.save();
+        p.setClipPath(clip);
+        const QRectF strip(0, 0, width(), kWood);
+        QLinearGradient wood(strip.topLeft(), strip.bottomLeft());
+        wood.setColorAt(0, QColor(0x9A, 0x66, 0x3A));
+        wood.setColorAt(0.5, QColor(0x7C, 0x4C, 0x28));
+        wood.setColorAt(1, QColor(0x5E, 0x38, 0x1C));
+        p.setPen(Qt::NoPen);
+        p.setBrush(wood);
+        p.drawRect(strip);
+        p.setPen(QPen(QColor(0x4A, 0x2C, 0x16, 120), 1));      /* the grain */
+        for (int y = 5; y < kWood; y += 6) p.drawLine(QPointF(0, y), QPointF(width(), y + 1));
+        p.restore();
+
+        const QRectF mid(keypadRect(0).right() + 14, kWood + 16, keypadRect(1).left() - keypadRect(0).right() - 28, 56);
+        p.setPen(arcAccentColor());
+        drawFitted(p, mid, QStringLiteral("ARCADIA\n2001"), scaledFont(font(), 1.5, true));
+        p.setPen(QColor(0x9A, 0x9A, 0xA0));
+        p.setFont(scaledFont(font(), 0.65, true));
+        p.drawText(mid.translated(0, 58), Qt::AlignHCenter | Qt::AlignTop, QStringLiteral("with FujiNet"));
+    }
+
+    void paintController(QPainter &p, int port)
+    {
+        const bool mapping = m_map != -2;
+        const QRectF k = keypadRect(port);
+        /* the controller body behind its keypad and disc */
+        const QRectF body(k.left() - 16 - (port == 0 ? 36 : 0), kWood + 8, k.width() + 32 + 36, height() - kWood - 16);
+        (void)body;
+
+        /* the keypad's tray */
+        p.setPen(QColor(0, 0, 0));
+        p.setBrush(QColor(0x14, 0x14, 0x16));
+        p.drawRoundedRect(k.adjusted(-8, -8, 8, 8), 8, 8);
+
+        /* the disc: a gold dish, four wedges, a hub, and a knob that leans the
+         * way the pot is */
+        const QPointF c = discCentre(port);
+        QRadialGradient dish(c + QPointF(-12, -14), kDiscR * 1.5);
+        dish.setColorAt(0, QColor(0xC8, 0xAE, 0x82));
+        dish.setColorAt(1, QColor(0x7A, 0x63, 0x40));
+        p.setPen(QPen(QColor(0x1A, 0x14, 0x0A), 1.5));
+        p.setBrush(dish);
+        p.drawEllipse(c, kDiscR, kDiscR);
+
+        const QFont small = scaledFont(font(), 0.62, true);
+        for (int act = 0; act < 4; ++act) {
+            const int target = ARC_TARGET_PORT(port, act);
+            const bool lit = mapping ? target == m_map : m_dheld[port][act] != 0;
+            /* the wedge: a 90-degree sector centred on its direction */
+            const int centreDeg = act == ARC_ACT_UP ? 90 : act == ARC_ACT_RIGHT ? 0 : act == ARC_ACT_DOWN ? 270 : 180;
+            QPainterPath wedge;
+            wedge.moveTo(c);
+            wedge.arcTo(QRectF(c.x() - kDiscR + 3, c.y() - kDiscR + 3, 2 * kDiscR - 6, 2 * kDiscR - 6),
+                        centreDeg - 45, 90);
+            wedge.closeSubpath();
+            if (lit) {
+                p.setPen(Qt::NoPen);
+                p.setBrush(arcAccentColor().lighter(135));
+                p.drawPath(wedge);
+            }
+            const QPointF dir(act == ARC_ACT_RIGHT ? 1 : act == ARC_ACT_LEFT ? -1 : 0,
+                              act == ARC_ACT_DOWN ? 1 : act == ARC_ACT_UP ? -1 : 0);
+            const QPointF tip = c + dir * (kDiscR - 14);
+            if (mapping) {
+                p.setPen(QColor(0x1B, 0x14, 0x08));
+                const QPointF at = c + dir * (dir.x() != 0 ? kDiscR - 30 : kDiscR - 24);
+                const qreal w = dir.x() != 0 ? 46 : 70;
+                drawFitted(p, QRectF(at.x() - w / 2, at.y() - 13, w, 26), bindingText(m_session, target), small);
+            } else {
+                p.setPen(Qt::NoPen);
+                p.setBrush(lit ? QColor(0x1B, 0x14, 0x08) : QColor(0x4A, 0x3A, 0x20));
+                QPolygonF tri;
+                const QPointF perp(-dir.y(), dir.x());
+                tri << tip + dir * 5 << tip - dir * 5 + perp * 7 << tip - dir * 5 - perp * 7;
+                p.drawPolygon(tri);
+            }
+        }
+        p.setPen(QPen(QColor(0x1A, 0x14, 0x0A, 160), 1));
+        p.drawLine(c + QPointF(-kDiscR + 3, 0), c + QPointF(kDiscR - 3, 0));
+        p.drawLine(c + QPointF(0, -kDiscR + 3), c + QPointF(0, kDiscR - 3));
+
+        /* the knob: where the pot is (analog when a pad drives it, else the
+         * digital ends) */
+        qreal dx = m_dx[port] / 127.0, dy = m_dy[port] / 127.0;
+        if (m_dx[port] == 0 && m_dy[port] == 0) {
+            dx = (m_dheld[port][ARC_ACT_RIGHT] ? 1 : 0) - (m_dheld[port][ARC_ACT_LEFT] ? 1 : 0);
+            dy = (m_dheld[port][ARC_ACT_DOWN] ? 1 : 0) - (m_dheld[port][ARC_ACT_UP] ? 1 : 0);
+        }
+        const QPointF knobAt = c + QPointF(dx, dy) * (kDiscR - 24);
+        QRadialGradient knob(knobAt + QPointF(-4, -4), 20);
+        knob.setColorAt(0, QColor(0x4C, 0x4C, 0x52));
+        knob.setColorAt(1, QColor(0x14, 0x14, 0x16));
+        p.setPen(QColor(0, 0, 0));
+        p.setBrush(knob);
+        p.drawEllipse(knobAt, 15, 15);
+
+        /* the side fire button */
+        const int ft = ARC_TARGET_PORT(port, ARC_ACT_FIRE);
+        const bool flit = mapping ? ft == m_map : m_dheld[port][ARC_ACT_FIRE] != 0;
+        const QRectF fr = fireRect(port);
+        QLinearGradient fg(fr.topLeft(), fr.topRight());
+        const QColor ff = flit ? arcAccentColor().lighter(135) : QColor(0xB0, 0x30, 0x34);
+        fg.setColorAt(0, ff.lighter(120));
+        fg.setColorAt(1, ff.darker(115));
+        p.setPen(flit ? QPen(QColor(0xFF, 0xF4, 0xDC), 1.5) : QPen(QColor(0, 0, 0), 1));
+        p.setBrush(fg);
+        p.drawRoundedRect(fr, 8, 8);
+        p.setPen(flit ? QColor(0x1B, 0x14, 0x08) : Qt::white);
+        /* the legend runs up the button */
+        p.save();
+        p.translate(fr.center());
+        p.rotate(-90);
+        const QRectF rot(-fr.height() / 2, -fr.width() / 2, fr.height(), fr.width());
+        if (mapping) {
+            drawFitted(p, rot.adjusted(4, 0, -4, 0), bindingText(m_session, ft).replace(QLatin1Char('\n'), QLatin1Char(' ')), small);
+        } else {
+            p.setFont(small);
+            p.drawText(rot, Qt::AlignCenter, QStringLiteral("FIRE"));
+        }
+        p.restore();
+        p.setPen(QColor(0x9A, 0x9A, 0xA0));
+        p.setFont(small);
+        p.drawText(QRectF(k.left(), k.bottom() + 8, k.width(), 14), Qt::AlignCenter,
+                   QStringLiteral("CONTROLLER %1").arg(port + 1));
     }
 
     void paintCap(QPainter &p, size_t i)
@@ -401,30 +539,40 @@ private:
         const bool mapping = m_map != -2;
         const bool lit = mapping ? c.target == m_map : m_held[i] != 0;
         const bool reset = c.cap.kind == ARC_KEYCAP_RESET;
+        const bool panel = c.cap.port < 0;
         const QRectF r = c.rect.adjusted(0.5, 0.5, -0.5, -2.5);
 
-        QColor top, bottom, legend;
+        QColor top, bottom, legend, side;
         if (lit) {
-            top = bottom = arcAccentColor();
-            legend = Qt::white;
+            top = arcAccentColor().lighter(135);
+            bottom = arcAccentColor();
+            legend = QColor(0x1B, 0x14, 0x08);
+            side = arcAccentDarkColor();
         } else if (reset) {
-            top = QColor(0xB0, 0x30, 0x34);
-            bottom = arcAccentDarkColor();
+            top = QColor(0xC0, 0x38, 0x3C);
+            bottom = QColor(0x8E, 0x1E, 0x24);
             legend = Qt::white;
+            side = QColor(0x4A, 0x0C, 0x10);
+        } else if (panel) {
+            top = QColor(0x5A, 0x5A, 0x60);
+            bottom = QColor(0x3A, 0x3A, 0x3E);
+            legend = QColor(0xE6, 0xD3, 0xA8);
+            side = QColor(0x16, 0x16, 0x18);
         } else {
-            top = QColor(0xFC, 0xFB, 0xF7);
-            bottom = QColor(0xDD, 0xDA, 0xD0);
-            legend = c.cap.kind == ARC_KEYCAP_FUNCTION ? QColor(0xB3, 0x14, 0x1B) : QColor(0x1B, 0x1B, 0x1B);
+            top = QColor(0xB8, 0x9E, 0x74);
+            bottom = QColor(0x8C, 0x74, 0x4E);
+            legend = QColor(0x1B, 0x14, 0x08);
+            side = QColor(0x4E, 0x3E, 0x24);
         }
         /* the cap's side, then its face */
         p.setPen(Qt::NoPen);
-        p.setBrush(lit ? arcAccentDarkColor() : reset ? QColor(0x5C, 0x12, 0x14) : QColor(0x8E, 0x8B, 0x80));
+        p.setBrush(side);
         p.drawRoundedRect(r.translated(0, 2.5), 6, 6);
         QLinearGradient face(r.topLeft(), r.bottomLeft());
         face.setColorAt(0, top);
         face.setColorAt(1, bottom);
         p.setBrush(face);
-        p.setPen(lit && reset ? QPen(Qt::white, 1.5) : QPen(QColor(0x2A, 0x2A, 0x2A), 0.8));
+        p.setPen(lit ? QPen(QColor(0xFF, 0xF4, 0xDC), 1.5) : QPen(QColor(0x1A, 0x14, 0x0A), 0.8));
         p.drawRoundedRect(r, 6, 6);
 
         p.setPen(legend);
@@ -442,14 +590,14 @@ private:
             p.drawPolygon(QPolygonF({ c0 + QPointF(0, -7), c0 + QPointF(-8, 6), c0 + QPointF(8, 6) }));
         } else {
             drawFitted(p, in.adjusted(0, m_keyNames ? -3 : 0, 0, 0), label,
-                       scaledFont(font(), label.size() > 1 ? 0.78 : 1.15, true));
+                       scaledFont(font(), label.size() > 1 ? 0.72 : 1.15, true));
         }
         if (m_keyNames) {
             const QString name = keyName(m_session, c.target);
             if (!name.isEmpty()) {
                 const QFont nf = scaledFont(font(), 0.6);
                 p.setFont(nf);
-                p.setPen(lit ? QColor(255, 255, 255, 200) : QColor(0x6A, 0x68, 0x62));
+                p.setPen(lit ? QColor(0x1B, 0x14, 0x08, 200) : (panel ? QColor(255, 255, 255, 170) : QColor(0x2A, 0x20, 0x10, 200)));
                 p.drawText(in.adjusted(0, 0, -1, 0), Qt::AlignRight | Qt::AlignBottom,
                            QFontMetrics(nf).elidedText(name, Qt::ElideRight, qFloor(in.width())));
             }
@@ -460,194 +608,13 @@ private:
     std::function<void(int, bool)> m_onPress;
     std::vector<Cap> m_caps;
     std::vector<char> m_held;
-    bool m_groups = true;
+    char m_dheld[2][ARC_ACT_PER_PORT] = {};
+    int m_dx[2] = {}, m_dy[2] = {};
     bool m_keyNames = false;
     int m_map = -2;
-    int m_pressed = -1;
-};
-
-/* ---- StickWidget: one joystick ---------------------------------------------------- */
-
-class StickWidget : public QWidget {
-public:
-    StickWidget(arcsession *session, int port, std::function<void(int, bool)> onPress)
-        : m_session(session), m_port(port), m_onPress(std::move(onPress))
-    {
-        setFocusPolicy(Qt::NoFocus);
-        setMouseTracking(false);
-        setFixedSize(kStickW, kStickH);
-    }
-
-    void setMap(int state)
-    {
-        m_map = state;
-        update();
-    }
-    void pollHeld(int mouseTarget)
-    {
-        bool changed = false;
-        for (int act = 0; act < ARC_ACT_PER_PORT; ++act) {
-            const char on = heldNow(m_session, ARC_TARGET_PORT(m_port, act), mouseTarget);
-            if (on != m_held[act]) {
-                m_held[act] = on;
-                changed = true;
-            }
-        }
-        if (changed) update();
-    }
-
-protected:
-    void paintEvent(QPaintEvent *) override
-    {
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing);
-        const QRectF all(0.5, 0.5, width() - 1.0, height() - 1.0);
-
-        /* the controller's black base with its raised top plate */
-        QLinearGradient base(0, 0, 0, height());
-        base.setColorAt(0, QColor(0x2A, 0x2A, 0x2E));
-        base.setColorAt(1, QColor(0x12, 0x12, 0x14));
-        p.setPen(QColor(0, 0, 0));
-        p.setBrush(base);
-        p.drawRoundedRect(all, 12, 12);
-        p.setPen(QColor(0x34, 0x34, 0x38));
-        p.setBrush(QColor(0x1B, 0x1B, 0x1E));
-        p.drawRoundedRect(all.adjusted(6, 6, -6, -6), 9, 9);
-
-        const bool mapping = m_map != -2;
-        const QFont small = scaledFont(font(), 0.65, true);
-
-        /* the stick: a socket, and a knob that leans the way it is held */
-        const QPointF c = centre();
-        p.setPen(QPen(QColor(0x3C, 0x3C, 0x42), 2));
-        p.setBrush(QColor(0x0A, 0x0A, 0x0B));
-        p.drawEllipse(c, 22, 22);
-        const qreal dx = (m_held[ARC_ACT_RIGHT] ? 5 : 0) - (m_held[ARC_ACT_LEFT] ? 5 : 0);
-        const qreal dy = (m_held[ARC_ACT_DOWN] ? 5 : 0) - (m_held[ARC_ACT_UP] ? 5 : 0);
-        QRadialGradient knob(c + QPointF(dx - 3, dy - 3), 18);
-        knob.setColorAt(0, QColor(0x7C, 0x7C, 0x84));
-        knob.setColorAt(1, QColor(0x1C, 0x1C, 0x20));
-        p.setPen(QColor(0, 0, 0));
-        p.setBrush(knob);
-        p.drawEllipse(c + QPointF(dx, dy), 14, 14);
-
-        /* the four direction pads, and the red fire button in the corner */
-        for (int act = 0; act < ARC_ACT_PER_PORT; ++act) {
-            const int target = ARC_TARGET_PORT(m_port, act);
-            const QRectF r = padRect(act);
-            const bool lit = mapping ? target == m_map : m_held[act] != 0;
-            const bool fire = act == ARC_ACT_FIRE;
-            QColor fill;
-            if (lit) fill = arcAccentColor();
-            else if (fire) fill = arcAccentDarkColor();
-            else fill = QColor(0x2E, 0x2E, 0x33);
-            QLinearGradient g(r.topLeft(), r.bottomLeft());
-            g.setColorAt(0, fill.lighter(fire ? 135 : 125));
-            g.setColorAt(1, fill);
-            p.setPen(lit && fire ? QPen(Qt::white, 1.5) : QPen(QColor(0, 0, 0), 1));
-            p.setBrush(g);
-            p.drawRoundedRect(r, 5, 5);
-            p.setPen(Qt::white);
-            if (mapping) {
-                drawFitted(p, r.adjusted(2, 1, -2, -1), bindingText(m_session, target), small);
-            } else if (fire) {
-                p.setFont(small);
-                p.drawText(r, Qt::AlignCenter, QStringLiteral("FIRE"));
-            } else {
-                p.setBrush(lit ? QColor(Qt::white) : QColor(0xCF, 0xCF, 0xD4));
-                p.setPen(Qt::NoPen);
-                p.drawPolygon(arrow(act, r.center()));
-            }
-        }
-        p.setPen(QColor(0x8A, 0x8A, 0x90));
-        p.setFont(small);
-        p.drawText(QRectF(14, kStickH - 24, 90, 16), Qt::AlignLeft | Qt::AlignVCenter,
-                   QStringLiteral("STICK %1").arg(m_port + 1));
-    }
-
-    void mousePressEvent(QMouseEvent *e) override
-    {
-        if (e->button() != Qt::LeftButton) return;
-        const int act = actAt(e->position());
-        if (act < 0) return;
-        m_pressed = act;
-        m_onPress(ARC_TARGET_PORT(m_port, act), true);
-    }
-
-    /* Dragging off a pad releases it; onto another, holds that one. */
-    void mouseMoveEvent(QMouseEvent *e) override
-    {
-        if (m_pressed < 0) return;
-        const int act = actAt(e->position());
-        if (act == m_pressed) return;
-        const int old = m_pressed;
-        m_pressed = act;
-        m_onPress(ARC_TARGET_PORT(m_port, old), false);
-        if (act >= 0) m_onPress(ARC_TARGET_PORT(m_port, act), true);
-    }
-
-    void mouseReleaseEvent(QMouseEvent *e) override
-    {
-        if (e->button() != Qt::LeftButton || m_pressed < 0) return;
-        const int act = m_pressed;
-        m_pressed = -1;
-        m_onPress(ARC_TARGET_PORT(m_port, act), false);
-    }
-
-    bool event(QEvent *e) override
-    {
-        if (e->type() == QEvent::ToolTip) {
-            auto *he = static_cast<QHelpEvent *>(e);
-            const int act = actAt(he->pos());
-            if (act < 0)
-                QToolTip::hideText();
-            else
-                QToolTip::showText(he->globalPos(), bindingTip(m_session, ARC_TARGET_PORT(m_port, act)), this,
-                                   padRect(act).toRect());
-            return true;
-        }
-        return QWidget::event(e);
-    }
-
-private:
-    static QPointF centre() { return QPointF(124, 78); }
-
-    /* The pads around the stick (a plus), and the fire button. */
-    static QRectF padRect(int act)
-    {
-        const QPointF c = centre();
-        switch (act) {
-        case ARC_ACT_UP:    return QRectF(c.x() - 23, c.y() - 44, 46, 28);
-        case ARC_ACT_DOWN:  return QRectF(c.x() - 23, c.y() + 16, 46, 28);
-        case ARC_ACT_LEFT:  return QRectF(c.x() - 62, c.y() - 14, 46, 28);
-        case ARC_ACT_RIGHT: return QRectF(c.x() + 16, c.y() - 14, 46, 28);
-        default:           return QRectF(14, 12, 58, 30);
-        }
-    }
-
-    static QPolygonF arrow(int act, QPointF c)
-    {
-        switch (act) {
-        case ARC_ACT_UP:    return QPolygonF({ c + QPointF(0, -6), c + QPointF(-8, 5), c + QPointF(8, 5) });
-        case ARC_ACT_DOWN:  return QPolygonF({ c + QPointF(0, 6), c + QPointF(-8, -5), c + QPointF(8, -5) });
-        case ARC_ACT_LEFT:  return QPolygonF({ c + QPointF(-7, 0), c + QPointF(5, -7), c + QPointF(5, 7) });
-        default:           return QPolygonF({ c + QPointF(7, 0), c + QPointF(-5, -7), c + QPointF(-5, 7) });
-        }
-    }
-
-    int actAt(const QPointF &pos) const
-    {
-        for (int act = 0; act < ARC_ACT_PER_PORT; ++act)
-            if (padRect(act).contains(pos)) return act;
-        return -1;
-    }
-
-    arcsession *m_session;
-    int m_port;
-    std::function<void(int, bool)> m_onPress;
-    char m_held[ARC_ACT_PER_PORT] = {};
-    int m_map = -2;
-    int m_pressed = -1;
+    int m_pressed = -1;          /* the target the mouse holds */
+    int m_pressedDisc = -1;      /* ... and the disc it began on, if any */
+    int m_panelW = 0, m_panelH = 0;
 };
 
 /* ---- ControllersWindow --------------------------------------------------------------- */
@@ -668,7 +635,6 @@ protected:
     bool focusNextPrevChild(bool) override { return false; }
 
 private:
-    int machineNow() const;
     void rebuild();
     void onPress(int target, bool down);
     void letGo();
@@ -682,10 +648,9 @@ private:
 
     arcsession *m_session;
     ConsoleWidget *m_console = nullptr;
-    StickWidget *m_stick[2] = {};
     QVBoxLayout *m_padBox = nullptr;
     std::vector<QWidget *> m_padRows;
-    std::vector<QLabel *> m_padEff;       /* each pad's "drives stick N" */
+    std::vector<QLabel *> m_padEff;       /* each pad's "drives controller N" */
     unsigned m_padGen = ~0u;
     QPushButton *m_mapButton = nullptr;
     QCheckBox *m_keyNames = nullptr;
@@ -693,7 +658,6 @@ private:
     QTimer m_captureTimer;
     QTimer m_heldTimer;
     QTimer m_slowTimer;
-    int m_builtMachine = -1;              /* what the keyboard was built for */
     int m_mouseTarget = -1;               /* the target the mouse holds here, or -1 */
     uint32_t m_swallow = 0;               /* the key Map took: its repeats and release too */
     /* -2 idle, -1 armed and waiting for a target, >= 0 waiting for a key or
@@ -720,16 +684,6 @@ ControllersWindow::ControllersWindow(arcsession *session, QWidget *parent)
     m_console = new ConsoleWidget(session, press);
     root->addWidget(m_console, 0, Qt::AlignHCenter);
 
-    auto *sticks = new QHBoxLayout;
-    sticks->setSpacing(14);
-    sticks->addStretch(1);
-    for (int port = 0; port < 2; ++port) {
-        m_stick[port] = new StickWidget(session, port, press);
-        sticks->addWidget(m_stick[port]);
-    }
-    sticks->addStretch(1);
-    root->addLayout(sticks);
-
     /* Gamepads: one row per pad, rebuilt as they come and go */
     auto *pads = new QGroupBox(QStringLiteral("Gamepads"));
     m_padBox = new QVBoxLayout(pads);
@@ -746,7 +700,7 @@ ControllersWindow::ControllersWindow(arcsession *session, QWidget *parent)
     connect(defaults, &QPushButton::clicked, this, [this] {
         arcsession_bindings_reset(m_session);
         setMapState(m_mapState == -2 ? -2 : -1);
-        m_hint->setText(QStringLiteral("Every key and stick control is back to its default."));
+        m_hint->setText(QStringLiteral("Every key and control is back to its default."));
     });
     m_keyNames = new QCheckBox(QStringLiteral("Key names"));
     m_keyNames->setFocusPolicy(Qt::NoFocus);
@@ -772,23 +726,15 @@ ControllersWindow::ControllersWindow(arcsession *session, QWidget *parent)
     rebuild();
 }
 
-int ControllersWindow::machineNow() const
-{
-    const int m = arcsession_get_int(m_session, "machine", ARC_MACHINE_ARCADIA);
-    return m >= 0 && m < ARC_MACHINE_COUNT ? m : ARC_MACHINE_ARCADIA;
-}
-
 void ControllersWindow::rebuild()
 {
     letGo();
-    m_builtMachine = machineNow();
-    m_console->load(m_builtMachine);
     pollHeld();
 }
 
 /* ---- pressing -------------------------------------------------------------------------- */
 
-/* A key cap or a stick control was pressed or let go with the mouse. */
+/* A key cap, a disc direction or a fire button was pressed or let go with the mouse. */
 void ControllersWindow::onPress(int target, bool down)
 {
     if (m_mapState != -2) {
@@ -825,13 +771,13 @@ void ControllersWindow::setMapState(int state)
         arcsession_gamepad_capture_cancel(m_session);
         m_mapButton->setText(QStringLiteral("Map"));
         m_mapButton->setStyleSheet(QString());
-        m_hint->setText(QStringLiteral("Click and hold a key or stick control to press it."));
+        m_hint->setText(QStringLiteral("Click and hold a key, a disc direction or a fire button to press it."));
     } else if (state == -1) {
         m_captureTimer.stop();
         arcsession_gamepad_capture_cancel(m_session);
         m_mapButton->setText(QStringLiteral("Done"));
         m_mapButton->setStyleSheet(arcAccentFill());
-        m_hint->setText(QStringLiteral("Click a key cap or a stick control to remap it. Esc leaves Map."));
+        m_hint->setText(QStringLiteral("Click a key cap, a disc direction or a fire button to remap it. Esc leaves Map."));
     } else {
         letGo();
         m_hint->setText(QStringLiteral("Press a key or a gamepad button for %1 (Esc cancels).")
@@ -840,7 +786,6 @@ void ControllersWindow::setMapState(int state)
         m_captureTimer.start(50);
     }
     m_console->setMap(m_mapState);
-    for (StickWidget *s : m_stick) s->setMap(m_mapState);
     pollHeld();
 }
 
@@ -869,11 +814,9 @@ void ControllersWindow::pollCapture()
 void ControllersWindow::pollHeld()
 {
     m_console->pollHeld(m_mouseTarget);
-    for (StickWidget *s : m_stick) s->pollHeld(m_mouseTarget);
 }
 
-/* Hot-plugged pads and auto-assignment changes; the machine changed in
- * Preferences. */
+/* Hot-plugged pads and auto-assignment changes. */
 void ControllersWindow::pollSlow()
 {
     const unsigned gen = arcsession_gamepad_generation(m_session);
@@ -883,7 +826,6 @@ void ControllersWindow::pollSlow()
     } else {
         refreshPadPorts();
     }
-    if (machineNow() != m_builtMachine) rebuild();
 }
 
 /* ---- gamepads --------------------------------------------------------------------------- */
@@ -892,12 +834,12 @@ void ControllersWindow::refreshPadPorts()
 {
     for (int i = 0; i < (int)m_padEff.size(); ++i) {
         const int eff = arcsession_gamepad_effective_port(m_session, i);
-        const QString text = eff >= 0 ? QStringLiteral("drives stick %1").arg(eff + 1) : QStringLiteral("drives nothing");
+        const QString text = eff >= 0 ? QStringLiteral("drives controller %1").arg(eff + 1) : QStringLiteral("drives nothing");
         if (m_padEff[(size_t)i]->text() != text) m_padEff[(size_t)i]->setText(text);
     }
 }
 
-/* One row per pad: its name, the stick it drives and the stick it is set to. */
+/* One row per pad: its name, the controller it drives and the one it is set to. */
 void ControllersWindow::rebuildPads()
 {
     for (QWidget *w : m_padRows) delete w;
@@ -922,10 +864,10 @@ void ControllersWindow::rebuildPads()
         label->setToolTip(local(name));
         auto *eff = new QLabel;
         eff->setStyleSheet(kGray);
-        /* -1 = automatic (connection order), 0-1 = that stick */
+        /* -1 = automatic (connection order), 0-1 = that controller */
         auto *box = new QComboBox;
         box->setFocusPolicy(Qt::NoFocus);
-        box->addItems({ QStringLiteral("Automatic"), QStringLiteral("Stick 1"), QStringLiteral("Stick 2") });
+        box->addItems({ QStringLiteral("Automatic"), QStringLiteral("Controller 1"), QStringLiteral("Controller 2") });
         const int assign = arcsession_gamepad_assignment(m_session, i);
         box->setCurrentIndex(assign < 0 || assign > 1 ? 0 : assign + 1);
         connect(box, &QComboBox::currentIndexChanged, this, [this, i](int idx) {
@@ -946,7 +888,6 @@ void ControllersWindow::rebuildPads()
 
 void ControllersWindow::present()
 {
-    if (machineNow() != m_builtMachine) rebuild();
     m_padGen = arcsession_gamepad_generation(m_session);
     rebuildPads();
     show();
@@ -956,12 +897,10 @@ void ControllersWindow::present()
 void ControllersWindow::refresh()
 {
     if (isVisible()) rebuild();
-    else m_builtMachine = -1;   /* rebuilt when next shown */
 }
 
 void ControllersWindow::showEvent(QShowEvent *e)
 {
-    if (machineNow() != m_builtMachine) rebuild();
     pollHeld();
     m_heldTimer.start(40);
     m_slowTimer.start(250);

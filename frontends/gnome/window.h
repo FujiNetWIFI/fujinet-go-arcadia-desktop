@@ -25,7 +25,7 @@ void arc_window_message(ArcWindow *self, const char *heading, const char *body);
 void arc_window_apply_aspect(ArcWindow *self, int aspect);
 /* Smooth (bilinear) scaling of the picture, or the sharp pixels. */
 void arc_window_apply_smooth(ArcWindow *self, gboolean smooth);
-/* A dropped or command-line file: a BIOS or ROM set is imported, a cartridge
+/* A dropped or command-line file: a cartridge is
  * opened, anything else copied to FujiNet's SD folder. */
 void arc_window_load_media(ArcWindow *self, const char *path);
 /* A system action (ARC_SYSACT_*) from any window's keys, with the main
@@ -41,19 +41,7 @@ gboolean arc_window_key(ArcWindow *self, guint keyval, guint keycode,
  * holds (and forget which system-action keys were down). */
 void arc_window_release_keys(ArcWindow *self);
 
-/* Import BIOS...: asks for files (a zip of them too) or, with `folder`, a
- * folder; imports what the session recognises and says what happened in a
- * dialog over `over`. With `apply`, an import that supplies something the
- * running machine was missing power-cycles it (opening `retry` again, if it
- * is a cartridge that was refused for want of the BIOS); without, the caller
- * applies it at its own next power cycle (Preferences, on close).
- * done(imported, user_data) runs afterwards, imported = items taken. */
-void arc_window_import_bios(ArcWindow *self, GtkWidget *over, gboolean folder,
-                           gboolean apply, const char *retry,
-                           void (*done)(int imported, gpointer user_data),
-                           gpointer user_data);
-
-/* The accent colour (ARCSESSION_ACCENT_RGB, the Arcadia's power-button red) as
+/* The accent colour (ARCSESSION_ACCENT_RGB, the keypad gold) as
  * CSS classes every window can use: ".arc-accent" paints a widget's
  * background in it (with white text), ".arc-accent-text" its label (a tint of
  * it on a dark theme, the darker red on a light one), and ".arc-pill" makes a

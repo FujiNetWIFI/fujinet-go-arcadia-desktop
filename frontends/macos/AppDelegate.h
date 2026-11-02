@@ -9,7 +9,7 @@
 #include "arcsession.h"
 
 @interface ArcAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
-/* mediaPath: a file named on the command line (a cartridge, a BIOS or
+/* mediaPath: a file named on the command line (a cartridge or
  * anything for the SD folder), or NULL. */
 - (instancetype)initWithSession:(arcsession *)session mediaPath:(const char *)mediaPath;
 @end

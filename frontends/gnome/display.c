@@ -7,16 +7,17 @@
  *    compositor's vsync, so its tick callback is the most accurate ~60 Hz
  *    signal available, and feeding it to the session lets the emulator run
  *    one frame per tick instead of racing its own timer against the panel's.
- *    (The Arcadia 2001 runs at 59.83 Hz, near enough a 60 Hz panel to lock;
- *    the Videopac's 49.70 Hz and any panel far from the console's rate are
- *    paced on the wall clock by the session.)
+ *    (The Arcadia 2001 runs at 60 Hz, which a 60 Hz panel locks to; the
+ *    PAL clone's 50 Hz and any panel far from the console's rate are paced
+ *    on the wall clock by the session.)
  *
  *  - Frames are pulled by serial, not pushed. copy_frame does nothing when
  *    the emulator has not produced a new frame, so a tick that arrives
  *    between frames costs a mutex and no memcpy.
  *
- * The 8244/8245's frame is always 360 x 243 (MAME's visible area), XRGB, so
- * the texture is the same size every time.
+ * The UVI's frame is always ARCSESSION_FB_WIDTH x ARCSESSION_FB_HEIGHT
+ * (192 x 262: the 128-pixel playfield plus 32 pixels of border each side,
+ * MAME's visible area), XRGB, so the texture is the same size every time.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -29,8 +30,11 @@
 #define FB_W ARCSESSION_FB_WIDTH
 #define FB_H ARCSESSION_FB_HEIGHT
 
-/* A television showed the whole visible area at 4:3, so the 8244's pixels
- * are not square on it (a little narrower than they are tall). */
+/* A television showed the whole visible area at 4:3, so the UVI's pixels are
+ * not square on it: 192 x 262 stretched to 4:3 makes each about 1.8 times as
+ * wide as tall (the 128-pixel playfield really was that coarse). MAME's own
+ * default is square pixels (192:262, a tall picture), kept as the "square
+ * pixels" choice. */
 #define TV_ASPECT (4.0 / 3.0)
 
 /* ---- frame buffer pool ----------------------------------------------------

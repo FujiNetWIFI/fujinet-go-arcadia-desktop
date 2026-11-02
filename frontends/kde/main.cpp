@@ -53,8 +53,7 @@ int main(int argc, char **argv)
     app.setApplicationDisplayName(QStringLiteral("FujiNet Go Arcadia 2001"));
     app.setDesktopFileName(QStringLiteral("online.fujinet.go.arcadia.kde"));
 
-    /* a path on the command line goes where Open would put it: a ROM is
-     * imported, a cartridge boots in place of CONFIG, anything else goes to
+    /* a path on the command line goes where Open would put it: a cartridge boots in place of CONFIG, anything else goes to
      * the SD folder, once the window is up to say so */
     const QString arg = argc > 1 ? QFileInfo(QString::fromLocal8Bit(argv[1])).absoluteFilePath() : QString();
     const QString socketPath = instanceSocket();

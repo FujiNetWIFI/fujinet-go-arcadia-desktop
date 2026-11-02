@@ -1,7 +1,6 @@
 /*
  * What the debugger window's files share: the small widget helpers, and the
- * entry points of the two tabs that live in dbg_video.c (the 8244 and the
- * G7400's EF9340).
+ * entry points of the Video tab that lives in dbg_video.c (the 2637 UVI).
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -37,17 +36,16 @@ int dbg_parse_num(const char *text, long *out);
 void dbg_set_rgb(cairo_t *cr, guint32 rgb, double alpha);
 /* The theme's text colour, for lines and labels drawn by hand. */
 void dbg_set_fg(cairo_t *cr, GtkWidget *w, double alpha);
-/* The accent as a line colour: lightened on a dark theme, the darker red on
- * a light one. */
+/* The accent as a line colour: lightened on a dark theme, the darker bronze
+ * on a light one. */
 guint32 dbg_accent_line_rgb(void);
 /* Text centred in a cell, in the widget's font (monospace when asked). */
 void dbg_draw_centred(cairo_t *cr, GtkWidget *w, const char *text, double x, double y,
                       double cw, double ch, gboolean mono);
 
-/* ---- the Video tab (the 8244/8245) and the EF9340 tab: dbg_video.c ---------- */
+/* ---- the Video tab (the 2637 UVI): dbg_video.c ----------------------------- */
 
 typedef struct DbgVideo DbgVideo;
-typedef struct DbgEf DbgEf;
 
 /* The tab's widget is returned in *root. */
 DbgVideo *dbg_video_new(arcsession *session, arcdebug *dbg, GtkWidget **root);
@@ -57,9 +55,5 @@ DbgVideo *dbg_video_new(arcsession *session, arcdebug *dbg, GtkWidget **root);
  * while the tab is on screen. */
 void dbg_video_refresh(DbgVideo *v, gboolean live);
 void dbg_video_free(DbgVideo *v);
-
-DbgEf *dbg_ef_new(arcsession *session, arcdebug *dbg, GtkWidget **root);
-void dbg_ef_refresh(DbgEf *e);
-void dbg_ef_free(DbgEf *e);
 
 G_END_DECLS

@@ -1,19 +1,22 @@
 /*
- * ArcControllersWindow -- the AppKit Controllers panel: the Arcadia 2001's
- * membrane keyboard (drawn from the session's layout table, so every frontend
- * shows the same caps for the machine), the console's red RESET key, the two
- * joysticks drawn like the console's (a black base, the red fire button in its
- * corner, a stick with four direction pads), the gamepads and the stick each
- * drives, and Map mode.
+ * ArcControllersWindow -- the AppKit Controllers panel: the Emerson Arcadia
+ * 2001 drawn like the photo (charcoal case, wood strip, gold keypads and
+ * discs): two hand controllers each with the 12-key keypad (1-9, CLEAR, 0,
+ * ENTER, from the session's layout table, so every frontend shows the same
+ * caps), the disc (drag it; it shows where it is, analog or digital) and the
+ * side fire button, the console's START / OPTION / SELECT and its red RESET,
+ * the gamepads and the controller each drives, and Map mode.
  *
  * One custom-drawn view (ArcConsoleView) paints the console and takes the
- * mouse. Every key cap and stick control is an ArcCtl with a rectangle and a
+ * mouse. Every key cap, disc and fire button is an ArcCtl with a rectangle and a
  * binding TARGET (arcsession.h): pressing it is arcsession_press(target), Map
  * rebinds that target. A control acts on mouseDown AND mouseUp, not on a
  * click: the console samples its keyboard and sticks once a frame, so a press
  * that lasted only the instant of a click would fall between frames. A cap is
  * HELD while the mouse is down on it, like the real key; dragging off lets it
- * go. Hiding, losing the key window and rebuilding let go of what the mouse
+ * go. The disc is held in the direction the mouse is from its centre (eight
+ * ways, the digital directions: the core drives the pots to their ends).
+ * Hiding, losing the key window and rebuilding let go of what the mouse
  * holds here (only that: the main window releases its own keys).
  *
  * What the console sees held -- host keyboard, gamepads and this panel -- is
@@ -23,11 +26,10 @@
  * the first responder.
  *
  * FIXED SIZE: an NSPanel without a resize mask, sized from its contents. Only
- * a machine change resizes it (the G7400's keyboard is wider); the top edge
- * stays put. Hidden at start, ordered out rather than closed, so its
+ * a rebuild resizes it; the top edge stays put. Hidden at start, ordered out rather than closed, so its
  * position survives. The 30 Hz poll runs only while the panel can be seen.
  *
- * MAP MODE: Map arms a two-step rebind -- click a key cap or a stick control,
+ * MAP MODE: Map arms a two-step rebind -- click a key cap, a disc direction or a fire button,
  * then press a key or a gamepad button; the next one is bound and whatever
  * held it is told so in the status line. Esc cancels the pick; typed keys are
  * not typed while Map is armed. Rebinding steals the key from its old target.
@@ -46,13 +48,14 @@
 #include <math.h>
 #include <string.h>
 
-#define KBD_UNIT_MAX 44.0   /* points per key unit */
-#define KBD_WIDTH_MAX 740.0 /* the G7400's wider keyboard is squeezed to this */
+#define KBD_UNIT_MAX 40.0   /* points per key unit */
+#define KBD_WIDTH_MAX 740.0 /* the keypads are squeezed to this */
 #define PLATE_PAD    10.0   /* the black keyboard plate around the caps */
 #define MARGIN       14.0
-#define HEADER_H     30.0   /* the console's nameplate above the plate */
+#define WOOD_H       12.0   /* the wood strip along the top of the case */
+#define HEADER_H     38.0   /* the wood strip and the nameplate above the plate */
 #define STICK_W     214.0
-#define STICK_H     176.0
+#define STICK_H     160.0
 #define STICK_GAP    20.0
 #define SECTION_GAP  14.0
 #define TITLE_H      18.0
@@ -64,8 +67,9 @@
 #define SLOW_TICKS    8     /* the 30 Hz tick's 250 ms part */
 
 /* The kinds of control beyond the layout's arc_keycap_kind (0-4). */
-#define O2CTL_DIR   10      /* a joystick direction pad */
-#define O2CTL_FIRE  11      /* a joystick's red fire button */
+#define ARCCTL_DISC  10     /* a hand controller's disc: its target is the port's UP */
+#define ARCCTL_FIRE  11     /* a hand controller's side fire button */
+#define DISC_R       62.0   /* the disc's radius */
 
 static NSString *nsstr(const char *s)
 {
@@ -131,13 +135,16 @@ static void drawFitted(NSString *text, NSRect r, CGFloat size, BOOL bold, NSColo
 - (BOOL)isFlipped { return YES; }
 @end
 
-/* One key cap or stick control. */
+/* One key cap, disc or fire button. */
 @interface ArcCtl : NSObject
 @property (nonatomic) NSRect rect;
 @property (nonatomic, copy) NSString *face;
 @property (nonatomic) int target;     /* the binding target: what a press applies and Map rebinds */
-@property (nonatomic) int kind;       /* arc_keycap_kind, O2CTL_DIR or O2CTL_FIRE */
+@property (nonatomic) int kind;       /* arc_keycap_kind, ARCCTL_DISC or ARCCTL_FIRE */
 @property (nonatomic) BOOL lit;       /* held by any source */
+@property (nonatomic) int port;       /* a disc's controller */
+@property (nonatomic) unsigned mask;  /* a disc: directions held (bit = arc_action) */
+@property (nonatomic) int ax, ay;     /* a disc: the analog deflection, -128..127 */
 @end
 
 @implementation ArcCtl
@@ -151,18 +158,20 @@ static void drawFitted(NSString *text, NSRect r, CGFloat size, BOOL bold, NSColo
 
 @interface ArcControllersWindow () <NSWindowDelegate>
 - (void)ctlPressed:(ArcCtl *)c down:(BOOL)down;
+- (void)discHold:(unsigned)mask port:(int)port;
+- (void)discPick:(int)target;
 - (NSString *)legendForTarget:(int)target;
 - (void)panelKeyDown:(NSEvent *)e;
 - (void)panelKeyUp:(NSEvent *)e;
 - (void)panelFlagsChanged:(NSEvent *)e;
 @end
 
-/* The console: the silver case, the black keyboard plate with its caps, and
- * the two joystick bases. Everything on it is drawn here and hit-tested here. */
+/* The console: the charcoal case with its wood strip, the plate with the two
+ * keypads and the panel, and the two hand controllers. Everything on it is drawn here and hit-tested here. */
 @interface ArcConsoleView : ArcCtlFlippedView
 @property (nonatomic, weak) ArcControllersWindow *owner;
 @property (nonatomic, copy) NSArray<ArcCtl *> *controls;
-@property (nonatomic, copy) NSArray<NSValue *> *stickBoxes;   /* two rects */
+@property (nonatomic, copy) NSArray<NSValue *> *stickBoxes;   /* two rects: the hand controllers */
 @property (nonatomic) NSRect plate;
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic) BOOL mapping;          /* Map armed: bindings shown, nothing lit */
@@ -181,6 +190,7 @@ static void drawFitted(NSString *text, NSRect r, CGFloat size, BOOL bold, NSColo
 
 - (void)drawControl:(ArcCtl *)c
 {
+    if (c.kind == ARCCTL_DISC) return;     /* drawn with its controller */
     const NSRect r = NSInsetRect(c.rect, 0.5, 0.5);
     const BOOL sel = self.mapping && c.target == self.mapTarget;
     const BOOL on = c.lit || sel;
@@ -190,46 +200,34 @@ static void drawFitted(NSString *text, NSRect r, CGFloat size, BOOL bold, NSColo
     BOOL bold = YES;
 
     switch (c.kind) {
-    case O2CTL_DIR:
-        fill = on ? accent : rgb(0x2a2a2e);
-        ink = on ? [NSColor whiteColor] : rgb(0xd0d0d4);
-        edge = on ? [NSColor whiteColor] : rgb(0x56565c);
-        size = 15;
-        break;
-    case O2CTL_FIRE:
+    case ARCCTL_FIRE:
         fill = on ? accent : rgb(0x6e1315);
-        ink = on ? [NSColor whiteColor] : rgb(0xf0c8c8);
+        ink = on ? rgb(0x1a1408) : rgb(0xf0c8c8);
         edge = on ? [NSColor whiteColor] : rgb(0x3a0a0b);
         size = 12;
         break;
     case ARC_KEYCAP_RESET:
-        fill = on ? accent : rgb(ARCSESSION_ACCENT_DARK_RGB);
-        ink = [NSColor whiteColor];
+        fill = on ? accent : rgb(0x9a1c20);
+        ink = on ? rgb(0x1a1408) : [NSColor whiteColor];
         edge = on ? [NSColor whiteColor] : rgb(0x5a1516);
-        size = 10;
+        size = 12;
         break;
     case ARC_KEYCAP_FUNCTION:
-        fill = on ? accent : rgb(0xF1EFE8);
-        ink = on ? [NSColor whiteColor] : rgb(ARCSESSION_ACCENT_RGB);
-        edge = on ? [NSColor whiteColor] : rgb(0x7a7770);
-        size = 18;
+        fill = on ? accent : rgb(0x3a3a3f);
+        ink = on ? rgb(0x1a1408) : accent;
+        edge = on ? [NSColor whiteColor] : rgb(ARCSESSION_ACCENT_DARK_RGB);
+        size = 13;
         break;
     case ARC_KEYCAP_INPUT:
-        fill = on ? accent : rgb(0xF1EFE8);
-        ink = on ? [NSColor whiteColor] : rgb(0x1a1a1a);
-        edge = on ? [NSColor whiteColor] : rgb(0x7a7770);
+        fill = on ? accent : rgb(ARCSESSION_ACCENT_DARK_RGB);
+        ink = on ? rgb(0x1a1408) : rgb(0xf3e6c8);
+        edge = on ? [NSColor whiteColor] : rgb(0x4a3c24);
         size = 10;
         break;
-    case ARC_KEYCAP_SPACE:
-        fill = on ? accent : rgb(0xF1EFE8);
-        ink = on ? [NSColor whiteColor] : rgb(0x1a1a1a);
-        edge = on ? [NSColor whiteColor] : rgb(0x7a7770);
-        size = 11;
-        break;
-    default:
-        fill = on ? accent : rgb(0xF1EFE8);
-        ink = on ? [NSColor whiteColor] : rgb(0x1a1a1a);
-        edge = on ? [NSColor whiteColor] : rgb(0x7a7770);
+    default:       /* a gold keypad key */
+        fill = on ? accent : rgb(ARCSESSION_ACCENT_DARK_RGB);
+        ink = on ? rgb(0x1a1408) : rgb(0xf3e6c8);
+        edge = on ? [NSColor whiteColor] : rgb(0x4a3c24);
         size = 16;
         break;
     }
@@ -252,10 +250,75 @@ static void drawFitted(NSString *text, NSRect r, CGFloat size, BOOL bold, NSColo
                    size, bold, ink);
         drawFitted(legend, NSMakeRect(inner.origin.x, inner.origin.y + top, inner.size.width,
                                       inner.size.height - top),
-                   8, NO, on ? [NSColor whiteColor] : rgb(0x6a6a6a));
+                   8, NO, on ? rgb(0x1a1408) : rgb(0xd8c8a4));
     } else {
         drawFitted(c.face, inner, size, bold, ink);
     }
+}
+
+/* One hand controller's disc: a gold dish with its four directions marked, a
+ * knob where the disc is (the analog deflection when there is one, else the
+ * digital directions held), the held directions lit, and in Map mode the
+ * direction waiting for a key. */
+- (void)drawDisc:(ArcCtl *)c
+{
+    NSColor *accent = rgb(ARCSESSION_ACCENT_RGB);
+    const NSRect r = c.rect;
+    const NSPoint mid = NSMakePoint(NSMidX(r), NSMidY(r));
+    NSBezierPath *dish = [NSBezierPath bezierPathWithOvalInRect:NSInsetRect(r, 1, 1)];
+    [rgb(ARCSESSION_ACCENT_DARK_RGB) setFill];
+    [dish fill];
+    [rgb(0x4a3c24) setStroke];
+    dish.lineWidth = 2;
+    [dish stroke];
+    NSBezierPath *inner = [NSBezierPath bezierPathWithOvalInRect:NSInsetRect(r, 9, 9)];
+    [rgb(0x8f774f) setFill];
+    [inner fill];
+
+    static const struct { const char *glyph; int dx, dy; } dirs[ARC_ACT_FIRE] = {
+        { "▲", 0, -1 }, { "▶", 1, 0 }, { "▼", 0, 1 }, { "◀", -1, 0 },
+    };
+    for (int a = 0; a < ARC_ACT_FIRE; a++) {
+        const int target = ARC_TARGET_PORT(c.port, a);
+        const BOOL held = (c.mask >> a) & 1u;
+        const BOOL sel = self.mapping && target == self.mapTarget;
+        const NSRect cell = NSMakeRect(mid.x + dirs[a].dx * 42 - 15, mid.y + dirs[a].dy * 42 - 11, 30, 22);
+        if (held || sel) {
+            NSBezierPath *hot = [NSBezierPath bezierPathWithRoundedRect:cell xRadius:6 yRadius:6];
+            [accent setFill];
+            [hot fill];
+            [[NSColor whiteColor] setStroke];
+            hot.lineWidth = 2;
+            [hot stroke];
+        }
+        NSString *legend = (self.mapping || self.showKeys) ? [self.owner legendForTarget:target] : nil;
+        NSColor *ink = (held || sel) ? rgb(0x1a1408) : rgb(0xf3e6c8);
+        if (legend.length) {
+            drawFitted(nsstr(dirs[a].glyph), NSMakeRect(cell.origin.x, cell.origin.y - 4, cell.size.width, 14), 11, YES, ink);
+            drawFitted(legend, NSMakeRect(cell.origin.x - 4, cell.origin.y + 10, cell.size.width + 8, 12), 8, NO, ink);
+        } else {
+            drawFitted(nsstr(dirs[a].glyph), cell, 14, YES, ink);
+        }
+    }
+
+    /* the knob: the analog position when the pad deflects it, else the held
+     * directions at the dish's ends (diagonals on the circle) */
+    double kx = c.ax / 127.0, ky = c.ay / 127.0;
+    if (c.ax == 0 && c.ay == 0) {
+        kx = ((c.mask >> ARC_ACT_RIGHT) & 1u) - ((c.mask >> ARC_ACT_LEFT) & 1u);
+        ky = ((c.mask >> ARC_ACT_DOWN) & 1u) - ((c.mask >> ARC_ACT_UP) & 1u);
+        if (kx != 0 && ky != 0) { kx *= 0.7071; ky *= 0.7071; }
+    }
+    const double len = sqrt(kx * kx + ky * ky);
+    if (len > 1.0) { kx /= len; ky /= len; }
+    const double travel = DISC_R - 22;
+    const NSRect knob = NSMakeRect(mid.x + kx * travel - 9, mid.y + ky * travel - 9, 18, 18);
+    NSBezierPath *k = [NSBezierPath bezierPathWithOvalInRect:knob];
+    [(len > 0.01 ? accent : rgb(0x1a1408)) setFill];
+    [k fill];
+    [rgb(0xf3e6c8) setStroke];
+    k.lineWidth = 1.5;
+    [k stroke];
 }
 
 - (void)drawRect:(NSRect)dirty
@@ -263,51 +326,76 @@ static void drawFitted(NSString *text, NSRect r, CGFloat size, BOOL bold, NSColo
     (void)dirty;
     const NSRect b = [self bounds];
 
-    /* the silver case (ARCSESSION's family colour for this console) */
-    [rgb(0xC3C0BF) setFill];
+    /* the charcoal case with its wood strip */
+    [rgb(0x2e2e32) setFill];
     NSRectFill(b);
-    [rgb(0x9d9a99) setFill];
+    [rgb(0x1f1f22) setFill];
     NSRectFill(NSMakeRect(0, b.size.height - 1, b.size.width, 1));
+    NSRect wood = NSMakeRect(0, 0, b.size.width, WOOD_H);
+    [rgb(0x7a5230) setFill];
+    NSRectFill(wood);
+    [rgb(0x5d3c20) setFill];
+    for (CGFloat y = 3; y < WOOD_H; y += 4) NSRectFill(NSMakeRect(0, y, b.size.width, 1));
+    [rgb(0x1f1f22) setFill];
+    NSRectFill(NSMakeRect(0, WOOD_H, b.size.width, 1));
 
     NSDictionary *nameplate = @{ NSFontAttributeName: [NSFont boldSystemFontOfSize:12],
-                                 NSForegroundColorAttributeName: rgb(0x2b2b2b) };
-    [self.title drawAtPoint:NSMakePoint(MARGIN, 8) withAttributes:nameplate];
+                                 NSForegroundColorAttributeName: rgb(0xcfcfd2) };
+    [self.title drawAtPoint:NSMakePoint(MARGIN, WOOD_H + 8) withAttributes:nameplate];
 
-    /* the keyboard plate */
+    /* the plate under the keypads and the panel */
     NSBezierPath *plate = [NSBezierPath bezierPathWithRoundedRect:self.plate xRadius:8 yRadius:8];
-    [rgb(0x17171a) setFill];
+    [rgb(0x161618) setFill];
     [plate fill];
 
-    /* the joysticks' bases, their sockets and their names */
+    /* the hand controllers' bodies and their names */
     NSDictionary *name = @{ NSFontAttributeName: [NSFont boldSystemFontOfSize:11],
                             NSForegroundColorAttributeName: rgb(0xa8a8ad) };
     for (NSUInteger i = 0; i < [self.stickBoxes count]; i++) {
         const NSRect sb = [self.stickBoxes[i] rectValue];
         NSBezierPath *base = [NSBezierPath bezierPathWithRoundedRect:sb xRadius:10 yRadius:10];
-        [rgb(0x1d1d20) setFill];
+        [rgb(0x232326) setFill];
         [base fill];
-        [rgb(0x34343a) setStroke];
+        [rgb(0x3e3e44) setStroke];
         base.lineWidth = 1;
         [base stroke];
         [[NSString stringWithFormat:@"PLAYER %lu", (unsigned long)(i + 1)]
-            drawAtPoint:NSMakePoint(sb.origin.x + 108, sb.origin.y + 16) withAttributes:name];
-        const NSPoint c = NSMakePoint(sb.origin.x + 107, sb.origin.y + 100);
-        NSBezierPath *socket = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(c.x - 18, c.y - 18, 36, 36)];
-        [rgb(0x3c3c40) setFill];
-        [socket fill];
-        NSBezierPath *knob = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(c.x - 8, c.y - 8, 16, 16)];
-        [rgb(0x131316) setFill];
-        [knob fill];
+            drawAtPoint:NSMakePoint(sb.origin.x + 10, sb.origin.y + 8) withAttributes:name];
     }
 
-    for (ArcCtl *c in self.controls) [self drawControl:c];
+    for (ArcCtl *c in self.controls) {
+        if (c.kind == ARCCTL_DISC) [self drawDisc:c];
+        else [self drawControl:c];
+    }
 }
 
 - (ArcCtl *)controlAt:(NSPoint)p
 {
-    for (ArcCtl *c in self.controls)
-        if (NSPointInRect(p, c.rect)) return c;
+    for (ArcCtl *c in self.controls) {
+        if (c.kind == ARCCTL_DISC) {     /* round */
+            const double dx = p.x - NSMidX(c.rect), dy = p.y - NSMidY(c.rect);
+            if (dx * dx + dy * dy <= DISC_R * DISC_R) return c;
+        } else if (NSPointInRect(p, c.rect)) {
+            return c;
+        }
+    }
     return nil;
+}
+
+/* The directions a point on a disc holds: eight ways from its centre, none in
+ * the middle. */
+static unsigned discMask(ArcCtl *c, NSPoint p)
+{
+    const double dx = p.x - NSMidX(c.rect), dy = p.y - NSMidY(c.rect);
+    const double len = sqrt(dx * dx + dy * dy);
+    if (len < DISC_R * 0.25) return 0;
+    const double ux = dx / len, uy = dy / len;
+    unsigned m = 0;
+    if (uy < -0.38) m |= 1u << ARC_ACT_UP;
+    if (uy > 0.38) m |= 1u << ARC_ACT_DOWN;
+    if (ux > 0.38) m |= 1u << ARC_ACT_RIGHT;
+    if (ux < -0.38) m |= 1u << ARC_ACT_LEFT;
+    return m;
 }
 
 - (void)mouseDown:(NSEvent *)e
@@ -316,15 +404,33 @@ static void drawFitted(NSString *text, NSRect r, CGFloat size, BOOL bold, NSColo
     const NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
     ArcCtl *c = [self controlAt:p];
     if (!c) return;
+    if (c.kind == ARCCTL_DISC) {
+        const unsigned m = discMask(c, p);
+        if (self.mapping) {
+            /* Map: the quadrant clicked is the direction to rebind */
+            const double dx = p.x - NSMidX(c.rect), dy = p.y - NSMidY(c.rect);
+            const int act = fabs(dx) > fabs(dy) ? (dx > 0 ? ARC_ACT_RIGHT : ARC_ACT_LEFT)
+                                                : (dy > 0 ? ARC_ACT_DOWN : ARC_ACT_UP);
+            [self.owner discPick:ARC_TARGET_PORT(c.port, act)];
+            return;
+        }
+        _down = c;
+        [self.owner discHold:m port:c.port];
+        return;
+    }
     _down = c;
     [self.owner ctlPressed:c down:YES];
 }
 
-/* Dragging off a control must let it go. */
+/* Dragging off a control must let it go; a disc follows the mouse. */
 - (void)mouseDragged:(NSEvent *)e
 {
     if (!_down) return;
     const NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
+    if (_down.kind == ARCCTL_DISC) {
+        [self.owner discHold:discMask(_down, p) port:_down.port];
+        return;
+    }
     if (NSPointInRect(p, _down.rect)) return;
     ArcCtl *c = _down;
     _down = nil;
@@ -337,7 +443,8 @@ static void drawFitted(NSString *text, NSRect r, CGFloat size, BOOL bold, NSColo
     if (!_down) return;
     ArcCtl *c = _down;
     _down = nil;
-    [self.owner ctlPressed:c down:NO];
+    if (c.kind == ARCCTL_DISC) [self.owner discHold:0 port:c.port];
+    else [self.owner ctlPressed:c down:NO];
 }
 
 /* The owner let go (hide, rebuild): the mouse no longer holds anything. */
@@ -368,7 +475,7 @@ static void drawFitted(NSString *text, NSRect r, CGFloat size, BOOL bold, NSColo
     NSTextField *_padsTitle;
     NSTextField *_noPads;
     NSTextField *_padName[MAX_PAD_ROWS];
-    NSTextField *_padEff[MAX_PAD_ROWS];     /* each pad's "drives stick N" */
+    NSTextField *_padEff[MAX_PAD_ROWS];     /* each pad's "drives controller N" */
     NSPopUpButton *_padAssign[MAX_PAD_ROWS];
     int _padRows;
     unsigned _padGeneration;
@@ -381,6 +488,7 @@ static void drawFitted(NSString *text, NSRect r, CGFloat size, BOOL bold, NSColo
     int _builtMachine;
     CGFloat _consoleW, _consoleH;
     int _heldTarget;                        /* what the mouse holds here, or -1 */
+    unsigned _discMask[2];                  /* the directions the mouse holds on each disc */
     uint32_t _swallowKey;                   /* the key Map took: its repeats and release too */
     /* -2 idle, -1 armed and waiting for a control, >= 0 waiting for a key or
      * gamepad button to bind to that target */
@@ -423,7 +531,7 @@ static void drawFitted(NSString *text, NSRect r, CGFloat size, BOOL bold, NSColo
     _console.showKeys = arcsession_get_int(_session, "show_bindings", 0) != 0;
     [_content addSubview:_console];
 
-    /* Gamepads: one row per pad, its name, the stick it drives and the one it
+    /* Gamepads: one row per pad, its name, the controller it drives and the one it
      * is set to; rows reserved, so pads coming and going keep the size. */
     _padsTitle = [NSTextField labelWithString:@"Gamepads"];
     [_padsTitle setFont:[NSFont boldSystemFontOfSize:12]];
@@ -439,9 +547,9 @@ static void drawFitted(NSString *text, NSRect r, CGFloat size, BOOL bold, NSColo
         [_padEff[i] setTextColor:[NSColor secondaryLabelColor]];
         [_padEff[i] setAlignment:NSTextAlignmentRight];
         [_content addSubview:_padEff[i]];
-        /* -1 = automatic (connection order), 0 and 1 = that stick */
+        /* -1 = automatic (connection order), 0 and 1 = that controller */
         _padAssign[i] = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-        [_padAssign[i] addItemsWithTitles:@[@"Automatic", @"Stick 1", @"Stick 2"]];
+        [_padAssign[i] addItemsWithTitles:@[@"Automatic", @"Player 1", @"Player 2"]];
         _padAssign[i].tag = i;
         _padAssign[i].target = self;
         _padAssign[i].action = @selector(padAssignChanged:);
@@ -506,21 +614,16 @@ static CGFloat snap(CGFloat v)
     return floor(v + 0.5);
 }
 
-/* One joystick's five controls in its base. */
+/* One hand controller's disc and side fire button in its body. */
 - (void)addStick:(int)port box:(NSRect)sb to:(NSMutableArray<ArcCtl *> *)ctls
 {
-    const CGFloat cx = sb.origin.x + 107, cy = sb.origin.y + 100;
-    [ctls addObject:[self ctlWithFace:@"FIRE"
-                                 rect:NSMakeRect(sb.origin.x + 10, sb.origin.y + 10, 72, 34)
-                               target:ARC_TARGET_PORT(port, ARC_ACT_FIRE) kind:O2CTL_FIRE]];
-    [ctls addObject:[self ctlWithFace:@"▲" rect:NSMakeRect(cx - 22, cy - 62, 44, 36)
-                               target:ARC_TARGET_PORT(port, ARC_ACT_UP) kind:O2CTL_DIR]];
-    [ctls addObject:[self ctlWithFace:@"▶" rect:NSMakeRect(cx + 26, cy - 18, 44, 36)
-                               target:ARC_TARGET_PORT(port, ARC_ACT_RIGHT) kind:O2CTL_DIR]];
-    [ctls addObject:[self ctlWithFace:@"▼" rect:NSMakeRect(cx - 22, cy + 26, 44, 36)
-                               target:ARC_TARGET_PORT(port, ARC_ACT_DOWN) kind:O2CTL_DIR]];
-    [ctls addObject:[self ctlWithFace:@"◀" rect:NSMakeRect(cx - 70, cy - 18, 44, 36)
-                               target:ARC_TARGET_PORT(port, ARC_ACT_LEFT) kind:O2CTL_DIR]];
+    const CGFloat cx = sb.origin.x + 80, cy = sb.origin.y + 92;
+    ArcCtl *disc = [self ctlWithFace:@"" rect:NSMakeRect(cx - DISC_R, cy - DISC_R, 2 * DISC_R, 2 * DISC_R)
+                              target:ARC_TARGET_PORT(port, ARC_ACT_UP) kind:ARCCTL_DISC];
+    disc.port = port;
+    [ctls addObject:disc];
+    [ctls addObject:[self ctlWithFace:@"FIRE" rect:NSMakeRect(sb.origin.x + 154, sb.origin.y + 58, 50, 68)
+                               target:ARC_TARGET_PORT(port, ARC_ACT_FIRE) kind:ARCCTL_FIRE]];
 }
 
 /* The console's drawing area and everything on it, for the machine. */
@@ -623,10 +726,35 @@ static CGFloat snap(CGFloat v)
 - (void)letGo
 {
     [_console forgetMouse];
+    for (int port = 0; port < 2; port++) {
+        for (int a = 0; a < ARC_ACT_FIRE; a++)
+            if ((_discMask[port] >> a) & 1u) arcsession_press(_session, ARC_TARGET_PORT(port, a), 0);
+        _discMask[port] = 0;
+    }
     if (_heldTarget >= 0) {
         arcsession_press(_session, _heldTarget, 0);
         _heldTarget = -1;
     }
+}
+
+/* The mouse holds `mask` on a disc: press and release the difference. */
+- (void)discHold:(unsigned)mask port:(int)port
+{
+    if (_mapState != -2) return;
+    const unsigned old = _discMask[port];
+    for (int a = 0; a < ARC_ACT_FIRE; a++) {
+        const unsigned bit = 1u << a;
+        if ((mask & bit) != (old & bit))
+            arcsession_press(_session, ARC_TARGET_PORT(port, a), (mask & bit) ? 1 : 0);
+    }
+    _discMask[port] = mask;
+    [self pollHeld];
+}
+
+/* Map: a disc direction was clicked. */
+- (void)discPick:(int)target
+{
+    if (_mapState != -2) [self setMapState:target];
 }
 
 - (void)ctlPressed:(ArcCtl *)c down:(BOOL)down
@@ -654,6 +782,18 @@ static CGFloat snap(CGFloat v)
     const unsigned sticks[2] = { arcsession_buttons_held(_session, 0), arcsession_buttons_held(_session, 1) };
     for (ArcCtl *c in _ctls) {
         const int t = c.target;
+        if (c.kind == ARCCTL_DISC) {
+            int ax = 0, ay = 0;
+            arcsession_disc_get(_session, c.port, &ax, &ay);
+            const unsigned m = (sticks[c.port] | _discMask[c.port]) & ((1u << ARC_ACT_FIRE) - 1u);
+            if (m != c.mask || ax != c.ax || ay != c.ay) {
+                c.mask = m;
+                c.ax = ax;
+                c.ay = ay;
+                [_console setNeedsDisplayInRect:NSInsetRect(c.rect, -4, -4)];
+            }
+            continue;
+        }
         BOOL on;
         if (t < 2 * ARC_ACT_PER_PORT)
             on = ((sticks[t / ARC_ACT_PER_PORT] >> (t % ARC_ACT_PER_PORT)) & 1u) != 0;
@@ -694,7 +834,7 @@ static CGFloat snap(CGFloat v)
     _console.mapping = mapping;
     _console.mapTarget = _mapState >= 0 ? _mapState : -1;
     if (mapping)
-        for (ArcCtl *c in _ctls) c.lit = NO;
+        for (ArcCtl *c in _ctls) { c.lit = NO; c.mask = 0; c.ax = c.ay = 0; }
     [_console setNeedsDisplay:YES];
     [self pollHeld];
 }
@@ -709,8 +849,8 @@ static CGFloat snap(CGFloat v)
                              nsstr(arc_target_name(state)), [self bindingText:state]];
     } else {
         arcsession_gamepad_capture_cancel(_session);
-        _hint.stringValue = state == -1 ? @"Click a key or a stick control to remap"
-                                        : @"Click and hold to press a key or a stick control.";
+        _hint.stringValue = state == -1 ? @"Click a key, a disc direction or a fire button to remap"
+                                        : @"Click and hold to press a key; drag a disc.";
     }
     [_mapButton setTitle:(state == -2 ? @"Map" : @"Done")];
     _mapButton.bezelColor = state == -2 ? nil : rgb(ARCSESSION_ACCENT_RGB);
@@ -777,7 +917,7 @@ static CGFloat snap(CGFloat v)
 {
     for (int i = 0; i < _padRows; i++) {
         const int eff = arcsession_gamepad_effective_port(_session, i);
-        NSString *text = eff >= 0 ? [NSString stringWithFormat:@"drives stick %d", eff + 1] : @"drives nothing";
+        NSString *text = eff >= 0 ? [NSString stringWithFormat:@"drives controller %d", eff + 1] : @"drives nothing";
         if (![_padEff[i].stringValue isEqualToString:text]) _padEff[i].stringValue = text;
     }
 }
@@ -816,7 +956,7 @@ static CGFloat snap(CGFloat v)
 
 /* 30 Hz while the panel can be seen: what is held and the gamepad capture;
  * every 250 ms the hot-plugged pads, auto-assignment and a machine change in
- * Preferences. */
+ * Settings. */
 - (void)tick
 {
     if (_mapState >= 0) [self pollCapture];

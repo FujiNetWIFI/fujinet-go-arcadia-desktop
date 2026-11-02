@@ -32,14 +32,13 @@
   <!-- .arc is the Arcadia 2001 cartridge dump's own extension, so the app owns
        it. A raw .bin is every other machine's too: the app takes it as an
        alternate (listed in Finder's Open With, never the default), as it does
-       .rom and the ROM sets (MAME's videopac.zip, i8244.zip) a zip carries,
-       which it imports. No UTI is invented for any of them: Launch Services
-       matches by extension. -->
+       .rom and a zip holding one cartridge image. No UTI is invented for any
+       of them: Launch Services matches by extension. -->
   <key>CFBundleDocumentTypes</key>
   <array>
     <dict>
       <key>CFBundleTypeName</key>
-      <string>Magnavox Arcadia 2001 / Videopac cartridge image</string>
+      <string>Emerson Arcadia 2001 cartridge image</string>
       <key>CFBundleTypeRole</key>
       <string>Viewer</string>
       <key>LSHandlerRank</key>
@@ -64,7 +63,7 @@
     </dict>
     <dict>
       <key>CFBundleTypeName</key>
-      <string>Arcadia 2001 ROM set</string>
+      <string>Zipped Arcadia 2001 cartridge</string>
       <key>CFBundleTypeRole</key>
       <string>Viewer</string>
       <key>LSHandlerRank</key>

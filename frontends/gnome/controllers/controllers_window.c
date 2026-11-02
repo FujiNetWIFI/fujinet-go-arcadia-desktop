@@ -1,44 +1,50 @@
 /*
- * The Controllers window -- the Arcadia 2001's membrane keyboard (drawn from the
- * session's layout table, so every frontend shows the same caps for the
- * machine: the console's, or the Videopac+ G7400's), both joysticks drawn like
- * the console's (a black base, the red fire button in its corner, a stick
- * with four direction pads), the console's Reset to CONFIG and debugger
- * buttons, the gamepads and the stick each drives, and Map mode.
+ * The Controllers window -- the Arcadia 2001 console drawn like the photo: a
+ * charcoal case with its wood strip, the two hand controllers (each a 12-key
+ * gold keypad, the gold disc and the side FIRE button) with the console's
+ * START / OPTION / SELECT / RESET between them. The keypads and the panel are
+ * drawn from the session's layout table (arcsession_keyboard_layout), so
+ * every frontend shows the same caps.
  *
  * Every control is pressed on the raw button press and released on the
  * raw release (a GtkGestureDrag, not a click: a click gesture gives up when
- * the pointer wobbles), because the console scans its keyboard and samples
- * the sticks once per frame -- a press present only for the instant of a click
- * falls between frames and a polling program never sees it. A key on screen
- * is HELD for as long as the mouse button is down, exactly like the real one,
- * and dragging off a cap lets it go. Losing the focus, hiding and rebuilding
- * let go of whatever the mouse holds here (only that: the main window
- * releases its own keys).
+ * the pointer wobbles), because the console samples its keypads and discs
+ * once per frame -- a press present only for the instant of a click falls
+ * between frames and a polling program never sees it. A key on screen is HELD
+ * for as long as the mouse button is down, exactly like the real one, and
+ * dragging off a cap lets it go. The disc is dragged: press anywhere on it and
+ * move the pointer, and the directions follow it (up to two at once, the
+ * diagonals), the knob showing where the pot is. Losing the focus, hiding and
+ * rebuilding let go of whatever the mouse holds here (only that: the main
+ * window releases its own keys).
  *
  * What the console sees held -- host keyboard, gamepads and this window
  * together (arcsession_key_held, arcsession_buttons_held) -- is painted in the
- * accent colour, so the window doubles as an input tester for a new gamepad.
+ * accent colour (the keypads' gold, lightened), and the disc knob follows the
+ * pot: the gamepad's analog stick when there is one
+ * (arcsession_disc_get), else the held directions. The window doubles as an
+ * input tester for a new gamepad.
  *
  * Keys typed with the window active go through the main window
  * (arc_window_key), so the console, F9 and the shortcuts behave the same
  * whichever window has the focus.
  *
- * FIXED SIZE: the drawn parts have fixed sizes (key caps at a fixed number of
- * pixels per key unit), labels ellipsize rather than grow, so neither Map mode
- * nor a long gamepad name resizes the window, and tiling compositors float
- * it. The keyboard is rebuilt when the machine changes.
+ * FIXED SIZE, FLOATING: the drawn parts have fixed sizes (key caps at a fixed
+ * number of pixels per key unit), labels ellipsize rather than grow, so
+ * neither Map mode nor a long gamepad name resizes the window, and the window
+ * is not resizable, so tiling compositors float it. It is hidden at startup
+ * (F9 or the View menu shows it).
  *
  * SINGLETON, hidden rather than destroyed, so a remap survives closing it.
  * Its timers run only while it is on screen.
  *
- * MAP MODE: the Map button arms a two-step rebind -- click a key cap, a
- * joystick control or a console button to pick the target, then press a
- * keyboard key OR a gamepad button. While armed the same gestures pick the
+ * MAP MODE: the Map button arms a two-step rebind -- click a key cap, a disc
+ * direction, a FIRE button or a console button to pick the target, then press
+ * a keyboard key OR a gamepad button. While armed the same gestures pick the
  * target instead of pressing, every control shows the key bound to it, and
  * typed keys are not typed into the console; once a target is picked the
  * other controls are greyed. Rebinding steals the key from whatever held it.
- * Escape cancels.
+ * Escape cancels. Defaults puts every binding back.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -52,42 +58,43 @@
 #include <pango/pangocairo.h>
 #include <string.h>
 
-#define PANEL_PAD 14            /* the silver case around the plate */
-#define PLATE_PAD 12            /* the black keyboard plate around the caps */
-#define KBD_WIDTH_PX 560.0      /* the unit is chosen to land near this */
-#define UNIT_MAX 44             /* pixels per key unit */
-#define UNIT_MIN 30
-#define STICK_W 214
-#define STICK_H 172
+#define CASE_PAD 18             /* the charcoal case around everything */
+#define WOOD_H 24               /* the wood strip along the top */
+#define UNIT 38                 /* pixels per key unit */
+#define DISC_R1 (1.55 * UNIT)   /* the disc's outer radius */
+#define DISC_R0 (0.5 * UNIT)    /* ... and the dome's */
+#define FIRE_W UNIT
+#define FIRE_H (1.7 * UNIT)
+#define FIRE_GAP 10
+#define STRIP_BW 214
 #define STRIP_GAP 12
 #define STRIP_H 34
 #define MAX_ITEMS 80
 #define MAX_PADS 8
 
-/* the pad rings: radii and the angle each pad spans, as drawn and as hit */
-#define RING_R0 24.0
-#define RING_R1 56.0
+/* the disc's directional pads: the angle each spans, as drawn and as hit */
 #define PAD_DRAW_SPAN (38.0 * G_PI / 180.0)
 #define PAD_HIT_SPAN (45.0 * G_PI / 180.0)
 
-enum { PANE_KBD, PANE_STICK0, PANE_STICK1, PANE_STRIP, PANE_COUNT };
+enum { PANE_CONSOLE, PANE_STRIP, PANE_COUNT };
 enum { SH_RECT, SH_WEDGE };
 /* kinds beyond arc_keycap_kind */
-enum { K_FIRE = 100, K_PAD, K_BUTTON };
+enum { K_FIRE = 100, K_PAD, K_DISC, K_BUTTON };
 
 typedef struct {
     int shape;
     int kind;                   /* arc_keycap_kind, or K_* */
     int target;                 /* what a press drives and Map rebinds */
+    int port;                   /* a disc's pad / fire / the disc itself */
     const char *label;
-    double x, y, w, h;          /* SH_RECT */
+    double x, y, w, h;          /* SH_RECT; a wedge or disc: x, y the centre,
+                                   w the inner radius, h the outer */
     double a;                   /* SH_WEDGE: the pad's centre angle */
     gboolean lit;               /* what the console sees held */
 } Item;
 
 typedef struct {
     GtkWidget *area;
-    int port;                   /* a stick pane's */
     Item items[MAX_ITEMS];
     int n;
     int pressed;                /* the item the mouse holds, or -1 */
@@ -102,6 +109,14 @@ static arcsession *g_session;
 static AdwWindowTitle *g_title;
 static Pane g_pane[PANE_COUNT];
 
+/* The disc the mouse is dragging, and the directions it holds. */
+static struct {
+    gboolean active;
+    int port;
+    unsigned mask;              /* bit per arc_action */
+} g_drag = { FALSE, 0, 0 };
+static int g_last_disc[2][2];   /* the analog deflection last painted */
+
 /* Map mode: -2 idle, -1 armed and waiting for a target, >= 0 waiting for a
  * key or pad button to bind to that target. */
 static int g_map_state = -2;
@@ -114,14 +129,12 @@ static guint g_held_timer;
 static guint g_pad_timer;
 
 static GtkWidget *g_pad_box;
-static GtkWidget *g_pad_port[MAX_PADS];     /* each pad's "drives stick N" */
+static GtkWidget *g_pad_port[MAX_PADS];     /* each pad's "drives player N" */
 static int g_npad_rows;
 static unsigned g_pad_generation = (unsigned)-1;
 
-/* what the keyboard was built for */
+/* what the console was built for */
 static int g_built_machine = -1;
-static int g_unit = UNIT_MAX;
-static double g_kbd_w, g_kbd_h; /* in key units */
 
 static void refresh_all(void);
 
@@ -210,6 +223,8 @@ static gboolean is_sysact(int target)
 static gboolean item_held(const Item *it, const unsigned held[2])
 {
     int t = it->target;
+    if (t < 0)
+        return FALSE;
     if (t < 2 * ARC_ACT_PER_PORT)
         return ((held[t / ARC_ACT_PER_PORT] >> (t % ARC_ACT_PER_PORT)) & 1) != 0;
     if (t < ARC_TARGET_SWITCH(0))
@@ -225,21 +240,21 @@ static gboolean showing_bindings(void)
            gtk_check_button_get_active(GTK_CHECK_BUTTON(g_show_bindings));
 }
 
+
 /* ---- drawing ------------------------------------------------------------------- */
 
-#define COL_SILVER_TOP 0xD2CFCE
-#define COL_SILVER_BOT 0xB1AEAD
-#define COL_SILVER_EDGE 0x7D7A79
-#define COL_PLATE 0x171717
-#define COL_CAP 0xF0EBDF
-#define COL_CAP_SIDE 0xA39E91
-#define COL_LEGEND 0x1E1E1E
-#define COL_FUNC 0x2E2222
-#define COL_FUNC_SIDE 0x120B0B
-#define COL_FUNC_LEGEND 0xFF5C54
-#define COL_RESET_SIDE 0x7A0B10
-#define COL_BASE 0x222222
-#define COL_PAD 0x3D3D3D
+#define COL_CASE_TOP 0x3C3C3F
+#define COL_CASE_BOT 0x232325
+#define COL_CASE_EDGE 0x0C0C0D
+#define COL_GOLD ARCSESSION_ACCENT_RGB
+#define COL_GOLD_DARK ARCSESSION_ACCENT_DARK_RGB
+#define COL_GOLD_LIGHT 0xEBD6A6
+#define COL_LEGEND 0x1E1A14
+#define COL_FUNC 0x3A3A3E
+#define COL_FUNC_SIDE 0x121214
+#define COL_RESET 0xB5322A
+#define COL_RESET_SIDE 0x5E120E
+#define COL_RESET_HELD 0xFF6A5C
 
 typedef struct {
     gboolean held, selected, dim, hot;
@@ -269,24 +284,33 @@ static void bound_text(int target, char *dst, int dstsz)
         g_snprintf(dst, dstsz, "\xe2\x80\x94");
 }
 
+static void rgba_rgb(cairo_pattern_t *g, double off, guint32 c)
+{
+    cairo_pattern_add_color_stop_rgb(g, off, ((c >> 16) & 0xFF) / 255.0,
+                                     ((c >> 8) & 0xFF) / 255.0, (c & 0xFF) / 255.0);
+}
+
 static void draw_cap(cairo_t *cr, GtkWidget *w, const Pane *p, int i)
 {
     const Item *it = &p->items[i];
     const ItemState st = item_state(p, i);
-    guint32 face = COL_CAP, side = COL_CAP_SIDE, ink = COL_LEGEND;
+    guint32 face = COL_GOLD, side = COL_GOLD_DARK, ink = COL_LEGEND;
     double fh = it->h - 3, ly = it->y, lh = fh;
     char bound[40];
     const int units = (int)g_utf8_strlen(it->label, -1);
     double px;
 
-    if (it->kind == ARC_KEYCAP_FUNCTION) {
-        face = COL_FUNC; side = COL_FUNC_SIDE; ink = COL_FUNC_LEGEND;
+    if (it->kind == ARC_KEYCAP_INPUT) {
+        face = mix(COL_GOLD, 0x000000, 0.14);
+    } else if (it->kind == ARC_KEYCAP_FUNCTION) {
+        face = COL_FUNC; side = COL_FUNC_SIDE; ink = COL_GOLD_LIGHT;
     } else if (it->kind == ARC_KEYCAP_RESET) {
-        face = ARCSESSION_ACCENT_RGB; side = COL_RESET_SIDE; ink = 0xFFFFFF;
+        face = COL_RESET; side = COL_RESET_SIDE; ink = 0xFFFFFF;
     }
     if (st.held || st.selected) {
-        face = ARCSESSION_ACCENT_RGB; side = ARCSESSION_ACCENT_DARK_RGB; ink = 0xFFFFFF;
-        if (it->kind == ARC_KEYCAP_RESET) face = 0xE8353C;
+        face = it->kind == ARC_KEYCAP_RESET ? COL_RESET_HELD : COL_GOLD_LIGHT;
+        side = it->kind == ARC_KEYCAP_RESET ? COL_RESET : COL_GOLD;
+        ink = COL_LEGEND;
     } else if (st.hot) {
         face = mix(face, 0xFFFFFF, 0.18);
     }
@@ -298,167 +322,109 @@ static void draw_cap(cairo_t *cr, GtkWidget *w, const Pane *p, int i)
     rrect(cr, it->x, it->y, it->w, fh, 5);
     rgb(cr, face);
     cairo_fill_preserve(cr);
-    rgb(cr, mix(face, 0x000000, 0.35));
-    cairo_set_line_width(cr, 1);
+    rgb(cr, st.held || st.selected ? 0xFFFFFF : mix(face, 0x000000, 0.45));
+    cairo_set_line_width(cr, st.held || st.selected ? 2 : 1);
     cairo_stroke(cr);
 
     bound_text(it->target, bound, sizeof bound);
     if (bound[0]) {
         lh = fh * 0.62;
-        legend(cr, w, bound, MAX(7.0, g_unit * 0.2), FALSE,
+        legend(cr, w, bound, MAX(7.0, UNIT * 0.2), FALSE,
                mix(ink, face, 0.35), it->x, it->y + lh - 2, it->w, fh - lh);
     }
-    if (it->kind == ARC_KEYCAP_RESET) {
-        /* the console's RESET cap carries a triangle */
-        double cx = it->x + it->w / 2, cy = ly + lh / 2, r = MIN(it->w, lh) * 0.22;
-        cairo_move_to(cr, cx, cy - r);
-        cairo_line_to(cr, cx + r * 1.1, cy + r * 0.8);
-        cairo_line_to(cr, cx - r * 1.1, cy + r * 0.8);
-        cairo_close_path(cr);
-        rgb(cr, ink);
-        cairo_set_line_width(cr, 1.6);
-        cairo_stroke(cr);
-    } else {
-        px = it->kind == ARC_KEYCAP_SPACE ? g_unit * 0.22
-           : units <= 1 ? g_unit * 0.36 : units <= 3 ? g_unit * 0.25 : g_unit * 0.21;
-        legend(cr, w, it->label, px, it->kind != ARC_KEYCAP_SPACE, ink, it->x, ly, it->w, lh);
-    }
+    px = units <= 1 ? UNIT * 0.40 : units <= 3 ? UNIT * 0.28 : UNIT * 0.22;
+    legend(cr, w, it->label, px, TRUE, ink, it->x, ly, it->w, lh);
     if (st.dim) {
         cairo_pop_group_to_source(cr);
         cairo_paint_with_alpha(cr, 0.4);
     }
 }
 
-static void draw_kbd(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer ud)
+/* The wood strip along the top of the case: a brown gradient with a few
+ * wandering grain lines. */
+static void draw_wood(cairo_t *cr, double x, double y, double w, double h)
 {
-    Pane *p = ud;
-    cairo_pattern_t *g = cairo_pattern_create_linear(0, 0, 0, h);
+    cairo_pattern_t *g = cairo_pattern_create_linear(0, y, 0, y + h);
     int i;
-    (void)area;
-
-    /* the case */
-    cairo_pattern_add_color_stop_rgb(g, 0, ((COL_SILVER_TOP >> 16) & 0xFF) / 255.0,
-                                     ((COL_SILVER_TOP >> 8) & 0xFF) / 255.0,
-                                     (COL_SILVER_TOP & 0xFF) / 255.0);
-    cairo_pattern_add_color_stop_rgb(g, 1, ((COL_SILVER_BOT >> 16) & 0xFF) / 255.0,
-                                     ((COL_SILVER_BOT >> 8) & 0xFF) / 255.0,
-                                     (COL_SILVER_BOT & 0xFF) / 255.0);
-    rrect(cr, 0.5, 0.5, w - 1, h - 1, 14);
+    rgba_rgb(g, 0, 0x9A6B3C);
+    rgba_rgb(g, 0.5, 0x7C5028);
+    rgba_rgb(g, 1, 0x5E3A1B);
+    rrect(cr, x, y, w, h, 4);
     cairo_set_source(cr, g);
     cairo_fill_preserve(cr);
-    rgb(cr, COL_SILVER_EDGE);
+    cairo_pattern_destroy(g);
+    cairo_save(cr);
+    cairo_clip(cr);
+    cairo_set_line_width(cr, 0.8);
+    for (i = 0; i < 9; i++) {
+        double yy = y + 2.5 + i * (h - 5) / 8.0, xx;
+        rgb(cr, i % 2 ? 0x6A4322 : 0xA77A4A);
+        cairo_move_to(cr, x, yy);
+        for (xx = x; xx <= x + w; xx += 8)
+            cairo_line_to(cr, xx, yy + 1.6 * sin(xx * 0.045 + i * 1.7));
+        cairo_stroke(cr);
+    }
+    cairo_restore(cr);
+    rrect(cr, x, y, w, h, 4);
+    rgb(cr, 0x2A1809);
     cairo_set_line_width(cr, 1);
     cairo_stroke(cr);
-    cairo_pattern_destroy(g);
-
-    /* the keyboard plate */
-    rrect(cr, PANEL_PAD, PANEL_PAD, w - 2 * PANEL_PAD, h - 2 * PANEL_PAD, 8);
-    rgb(cr, COL_PLATE);
-    cairo_fill(cr);
-
-    for (i = 0; i < p->n; i++)
-        draw_cap(cr, GTK_WIDGET(area), p, i);
 }
 
-/* A stick: the base, the fire corner, the pad ring and the knob. */
-static void draw_stick(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer ud)
+/* The disc: a gold plate, four direction pads and a dome that follows the
+ * pot. */
+static void draw_disc(cairo_t *cr, GtkWidget *w, const Pane *p, int port)
 {
-    Pane *p = ud;
-    GtkWidget *widget = GTK_WIDGET(area);
-    const double cx = STICK_W - 86, cy = STICK_H - 64;
-    double kx = 0, ky = 0;
-    char name[24], bound[40];
-    int i;
+    double cx = 0, cy = 0, r0 = DISC_R0, r1 = DISC_R1, kx = 0, ky = 0;
+    int ax, ay, i;
+    gboolean any = FALSE, analog;
+    char bound[40];
 
-    rrect(cr, 0.5, 0.5, w - 1, h - 1, 14);
-    rgb(cr, COL_BASE);
-    cairo_fill_preserve(cr);
-    rgb(cr, 0x000000);
-    cairo_set_line_width(cr, 1);
-    cairo_stroke(cr);
-    /* the lit top edge of the moulding */
-    cairo_move_to(cr, 16, 2.5);
-    cairo_line_to(cr, w - 16, 2.5);
-    rgb(cr, 0x454545);
-    cairo_set_line_width(cr, 1.5);
-    cairo_stroke(cr);
-
-    /* the well the pads sit in */
-    cairo_arc(cr, cx, cy, RING_R1 + 5, 0, 2 * G_PI);
-    rgb(cr, 0x151515);
-    cairo_fill(cr);
-
-    for (i = 0; i < p->n; i++) {
-        const Item *it = &p->items[i];
-        const ItemState st = item_state(p, i);
-        guint32 face, ink = 0xFFFFFF;
-
-        if (it->kind == K_PAD) {
-            const double mid = (RING_R0 + RING_R1) / 2;
-            const double px = cx + cos(it->a) * mid, py = cy + sin(it->a) * mid;
-            face = st.held || st.selected ? ARCSESSION_ACCENT_RGB
-                 : st.hot ? mix(COL_PAD, 0xFFFFFF, 0.15) : COL_PAD;
-            if (st.dim) cairo_push_group(cr);
-            cairo_arc(cr, cx, cy, RING_R1, it->a - PAD_DRAW_SPAN, it->a + PAD_DRAW_SPAN);
-            cairo_arc_negative(cr, cx, cy, RING_R0, it->a + PAD_DRAW_SPAN, it->a - PAD_DRAW_SPAN);
-            cairo_close_path(cr);
-            rgb(cr, face);
-            cairo_fill(cr);
-            bound_text(it->target, bound, sizeof bound);
-            if (bound[0]) {
-                legend(cr, widget, bound, 9, TRUE, st.held || st.selected ? ink : 0xBDBDBD,
-                       px - 20, py - 9, 40, 18);
-            } else {
-                /* an arrow pointing the way the pad pushes */
-                const double ux = cos(it->a), uy = sin(it->a);
-                cairo_move_to(cr, px + ux * 6, py + uy * 6);
-                cairo_line_to(cr, px - ux * 4 - uy * 6, py - uy * 4 + ux * 6);
-                cairo_line_to(cr, px - ux * 4 + uy * 6, py - uy * 4 - ux * 6);
-                cairo_close_path(cr);
-                rgb(cr, st.held || st.selected ? ink : 0xBDBDBD);
-                cairo_fill(cr);
-            }
-            if (st.dim) {
-                cairo_pop_group_to_source(cr);
-                cairo_paint_with_alpha(cr, 0.4);
-            }
-            if (st.held) {
-                /* the stick leans toward the direction held */
-                kx += cos(it->a) * 7;
-                ky += sin(it->a) * 7;
-            }
+    for (i = 0; i < p->n; i++)
+        if (p->items[i].kind == K_DISC && p->items[i].port == port) {
+            cx = p->items[i].x; cy = p->items[i].y; r1 = p->items[i].w; any = TRUE;
         }
-    }
+    if (!any) return;
 
-    /* the stick: a knob on its shaft */
-    cairo_arc(cr, cx + kx, cy + ky, 19, 0, 2 * G_PI);
-    rgb(cr, 0x0B0B0B);
+    /* the well and the plate */
+    cairo_arc(cr, cx, cy, r1 + 5, 0, 2 * G_PI);
+    rgb(cr, 0x111112);
     cairo_fill(cr);
-    cairo_arc(cr, cx + kx - 5, cy + ky - 5, 6, 0, 2 * G_PI);
-    rgb(cr, 0x4A4A4A);
+    cairo_arc(cr, cx, cy, r1 + 1, 0, 2 * G_PI);
+    rgb(cr, COL_GOLD_DARK);
     cairo_fill(cr);
 
-    /* the fire button, in its corner */
     for (i = 0; i < p->n; i++) {
         const Item *it = &p->items[i];
         const ItemState st = item_state(p, i);
-        if (it->kind != K_FIRE) continue;
+        const double mid = (it->w + it->h) / 2;
+        const double px = cx + cos(it->a) * mid, py = cy + sin(it->a) * mid;
+        guint32 face, ink = COL_LEGEND;
+
+        if (it->kind != K_PAD || it->port != port) continue;
+        face = st.held || st.selected ? COL_GOLD_LIGHT
+             : st.hot ? mix(COL_GOLD, 0xFFFFFF, 0.2) : COL_GOLD;
         if (st.dim) cairo_push_group(cr);
-        rrect(cr, it->x, it->y + 3, it->w, it->h - 3, 6);
-        rgb(cr, COL_RESET_SIDE);
-        cairo_fill(cr);
-        rrect(cr, it->x, it->y, it->w, it->h - 3, 6);
-        rgb(cr, st.held || st.selected ? 0xFF4048 : st.hot ? 0xD8262D : ARCSESSION_ACCENT_RGB);
+        cairo_arc(cr, cx, cy, it->h, it->a - PAD_DRAW_SPAN, it->a + PAD_DRAW_SPAN);
+        cairo_arc_negative(cr, cx, cy, it->w, it->a + PAD_DRAW_SPAN, it->a - PAD_DRAW_SPAN);
+        cairo_close_path(cr);
+        rgb(cr, face);
         cairo_fill_preserve(cr);
-        rgb(cr, st.held || st.selected ? 0xFFFFFF : 0x6B0A0E);
+        rgb(cr, st.held || st.selected ? 0xFFFFFF : mix(face, 0x000000, 0.45));
         cairo_set_line_width(cr, st.held || st.selected ? 2 : 1);
         cairo_stroke(cr);
         bound_text(it->target, bound, sizeof bound);
         if (bound[0]) {
-            legend(cr, widget, "FIRE", 12, TRUE, 0xFFFFFF, it->x, it->y + 2, it->w, 16);
-            legend(cr, widget, bound, 9, FALSE, 0xFFD9D9, it->x, it->y + 17, it->w, 12);
+            legend(cr, w, bound, 9, TRUE, ink, px - 20, py - 9, 40, 18);
         } else {
-            legend(cr, widget, "FIRE", 13, TRUE, 0xFFFFFF, it->x, it->y, it->w, it->h - 3);
+            /* an arrow pointing the way the pad pushes */
+            const double ux = cos(it->a), uy = sin(it->a);
+            cairo_move_to(cr, px + ux * 6, py + uy * 6);
+            cairo_line_to(cr, px - ux * 4 - uy * 6, py - uy * 4 + ux * 6);
+            cairo_line_to(cr, px - ux * 4 + uy * 6, py - uy * 4 - ux * 6);
+            cairo_close_path(cr);
+            rgb(cr, ink);
+            cairo_fill(cr);
         }
         if (st.dim) {
             cairo_pop_group_to_source(cr);
@@ -466,11 +432,107 @@ static void draw_stick(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer
         }
     }
 
-    g_snprintf(name, sizeof name, "STICK %d", p->port + 1);
-    legend(cr, widget, name, 11, TRUE, 0x8A8A8A, 12, h - 28, 64, 16);
+    /* the dome follows the pot: the analog deflection, else the held pads */
+    arcsession_disc_get(g_session, port, &ax, &ay);
+    analog = ax != 0 || ay != 0;
+    if (analog) {
+        kx = ax / 127.0; ky = ay / 127.0;
+    } else {
+        for (i = 0; i < p->n; i++)
+            if (p->items[i].kind == K_PAD && p->items[i].port == port &&
+                (p->items[i].lit || (g_drag.active && g_drag.port == port &&
+                 ((g_drag.mask >> (p->items[i].target % ARC_ACT_PER_PORT)) & 1)))) {
+                kx += cos(p->items[i].a);
+                ky += sin(p->items[i].a);
+            }
+        if (kx != 0 && ky != 0) { kx *= 0.7071; ky *= 0.7071; }
+    }
+    kx *= r0 * 0.9; ky *= r0 * 0.9;
+    cairo_arc(cr, cx + kx, cy + ky + 2, r0 + 1, 0, 2 * G_PI);
+    rgb(cr, 0x050505);
+    cairo_fill(cr);
+    cairo_arc(cr, cx + kx, cy + ky, r0, 0, 2 * G_PI);
+    rgb(cr, 0x2C2C30);
+    cairo_fill(cr);
+    cairo_arc(cr, cx + kx - r0 * 0.28, cy + ky - r0 * 0.28, r0 * 0.34, 0, 2 * G_PI);
+    rgb(cr, 0x55555B);
+    cairo_fill(cr);
 }
 
-/* The console buttons under the sticks. */
+/* The FIRE button on the controller's side. */
+static void draw_fire(cairo_t *cr, GtkWidget *w, const Pane *p, int i)
+{
+    const Item *it = &p->items[i];
+    const ItemState st = item_state(p, i);
+    const gboolean on = st.held || st.selected;
+    char bound[40];
+
+    if (st.dim) cairo_push_group(cr);
+    rrect(cr, it->x, it->y + 3, it->w, it->h - 3, 8);
+    rgb(cr, COL_FUNC_SIDE);
+    cairo_fill(cr);
+    rrect(cr, it->x, it->y, it->w, it->h - 3, 8);
+    rgb(cr, on ? COL_GOLD_LIGHT : st.hot ? mix(COL_FUNC, 0xFFFFFF, 0.15) : COL_FUNC);
+    cairo_fill_preserve(cr);
+    rgb(cr, on ? 0xFFFFFF : COL_GOLD);
+    cairo_set_line_width(cr, on ? 2 : 1.5);
+    cairo_stroke(cr);
+    bound_text(it->target, bound, sizeof bound);
+    if (bound[0]) {
+        legend(cr, w, "FIRE", 10, TRUE, on ? COL_LEGEND : COL_GOLD_LIGHT, it->x,
+               it->y + 6, it->w, 16);
+        legend(cr, w, bound, 9, FALSE, on ? COL_LEGEND : COL_GOLD, it->x,
+               it->y + it->h / 2, it->w, 16);
+    } else {
+        legend(cr, w, "FIRE", 11, TRUE, on ? COL_LEGEND : COL_GOLD_LIGHT, it->x, it->y,
+               it->w, it->h - 3);
+    }
+    if (st.dim) {
+        cairo_pop_group_to_source(cr);
+        cairo_paint_with_alpha(cr, 0.4);
+    }
+}
+
+static void draw_console(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer ud)
+{
+    Pane *p = ud;
+    GtkWidget *widget = GTK_WIDGET(area);
+    cairo_pattern_t *g = cairo_pattern_create_linear(0, 0, 0, h);
+    int i, port;
+    (void)area;
+
+    /* the case */
+    rgba_rgb(g, 0, COL_CASE_TOP);
+    rgba_rgb(g, 1, COL_CASE_BOT);
+    rrect(cr, 0.5, 0.5, w - 1, h - 1, 16);
+    cairo_set_source(cr, g);
+    cairo_fill_preserve(cr);
+    rgb(cr, COL_CASE_EDGE);
+    cairo_set_line_width(cr, 1);
+    cairo_stroke(cr);
+    cairo_pattern_destroy(g);
+    /* the lit top edge of the moulding */
+    cairo_move_to(cr, 18, 2.5);
+    cairo_line_to(cr, w - 18, 2.5);
+    rgb(cr, 0x58585C);
+    cairo_set_line_width(cr, 1.5);
+    cairo_stroke(cr);
+
+    draw_wood(cr, CASE_PAD, CASE_PAD, w - 2 * CASE_PAD, WOOD_H);
+    legend(cr, widget, "ARCADIA 2001", 11, TRUE, COL_GOLD, w / 2.0 - 70,
+           CASE_PAD + WOOD_H + 6 + 4.3 * UNIT + 22, 140, 16);
+
+    for (port = 0; port < 2; port++)
+        draw_disc(cr, widget, p, port);
+    for (i = 0; i < p->n; i++) {
+        if (p->items[i].kind == K_FIRE)
+            draw_fire(cr, widget, p, i);
+        else if (p->items[i].kind != K_PAD && p->items[i].kind != K_DISC)
+            draw_cap(cr, widget, p, i);
+    }
+}
+
+/* The console buttons under the case. */
 static void draw_strip(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer ud)
 {
     Pane *p = ud;
@@ -509,14 +571,15 @@ static void draw_strip(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer
 
 static gboolean item_hit(const Item *it, double x, double y)
 {
+    if (it->kind == K_DISC)
+        return FALSE;           /* the disc as a whole is dragged, not mapped */
     if (it->shape == SH_RECT)
         return x >= it->x && x < it->x + it->w && y >= it->y && y < it->y + it->h;
     {
-        const double cx = STICK_W - 86, cy = STICK_H - 64;
-        const double dx = x - cx, dy = y - cy;
+        const double dx = x - it->x, dy = y - it->y;
         const double r = sqrt(dx * dx + dy * dy);
         double d;
-        if (r < RING_R0 || r > RING_R1) return FALSE;
+        if (r < it->w || r > it->h) return FALSE;
         d = remainder(atan2(dy, dx) - it->a, 2 * G_PI);
         return fabs(d) <= PAD_HIT_SPAN;
     }
@@ -529,6 +592,59 @@ static int pane_hit(const Pane *p, double x, double y)
         if (item_hit(&p->items[i], x, y))
             return i;
     return -1;
+}
+
+/* The disc under the point (any part of it, the dome included), or -1. */
+static int disc_at(const Pane *p, double x, double y)
+{
+    int i;
+    for (i = 0; i < p->n; i++) {
+        const Item *it = &p->items[i];
+        if (it->kind == K_DISC && hypot(x - it->x, y - it->y) <= it->w)
+            return it->port;
+    }
+    return -1;
+}
+
+/* The pointer's place on a disc becomes the held directions: beyond a dead
+ * zone in an axis presses that way, so a corner is a diagonal. */
+static void disc_follow(const Pane *p, double x, double y)
+{
+    unsigned mask = 0;
+    double cx = 0, cy = 0, r = DISC_R1;
+    int i, act;
+
+    for (i = 0; i < p->n; i++)
+        if (p->items[i].kind == K_DISC && p->items[i].port == g_drag.port) {
+            cx = p->items[i].x; cy = p->items[i].y; r = p->items[i].w;
+        }
+    {
+        const double dz = r * 0.28, dx = x - cx, dy = y - cy;
+        if (dx > dz) mask |= 1u << ARC_ACT_RIGHT;
+        if (dx < -dz) mask |= 1u << ARC_ACT_LEFT;
+        if (dy > dz) mask |= 1u << ARC_ACT_DOWN;
+        if (dy < -dz) mask |= 1u << ARC_ACT_UP;
+    }
+    for (act = ARC_ACT_UP; act < ARC_ACT_FIRE; act++) {
+        unsigned bit = 1u << act;
+        if ((mask & bit) != (g_drag.mask & bit))
+            arcsession_press(g_session, ARC_TARGET_PORT(g_drag.port, act), (mask & bit) != 0);
+    }
+    g_drag.mask = mask;
+    gtk_widget_queue_draw(g_pane[PANE_CONSOLE].area);
+}
+
+static void disc_release(void)
+{
+    int act;
+    if (!g_drag.active) return;
+    for (act = ARC_ACT_UP; act < ARC_ACT_FIRE; act++)
+        if ((g_drag.mask >> act) & 1)
+            arcsession_press(g_session, ARC_TARGET_PORT(g_drag.port, act), 0);
+    g_drag.active = FALSE;
+    g_drag.mask = 0;
+    if (g_pane[PANE_CONSOLE].area)
+        gtk_widget_queue_draw(g_pane[PANE_CONSOLE].area);
 }
 
 /* ---- pressing ------------------------------------------------------------- */
@@ -563,6 +679,7 @@ static void mouse_release(void)
     int i;
     for (i = 0; i < PANE_COUNT; i++)
         pane_release(&g_pane[i], FALSE);
+    disc_release();
 }
 
 static void stop_capture(void)
@@ -629,12 +746,22 @@ static void set_map_state(int state)
     refresh_all();
 }
 
+
 static void on_drag_begin(GtkGestureDrag *g, double x, double y, gpointer ud)
 {
     Pane *p = ud;
-    int i = pane_hit(p, x, y);
+    int i, port;
     const Item *it;
     (void)g;
+    if (g_map_state == -2 && (port = disc_at(p, x, y)) >= 0) {
+        mouse_release();
+        g_drag.active = TRUE;
+        g_drag.port = port;
+        g_drag.mask = 0;
+        disc_follow(p, x, y);
+        return;
+    }
+    i = pane_hit(p, x, y);
     if (i < 0) return;
     it = &p->items[i];
     if (g_map_state != -2) {
@@ -649,15 +776,25 @@ static void on_drag_begin(GtkGestureDrag *g, double x, double y, gpointer ud)
     gtk_widget_queue_draw(p->area);
 }
 
+static void on_drag_update(GtkGestureDrag *g, double ox, double oy, gpointer ud)
+{
+    double sx, sy;
+    if (!g_drag.active) return;
+    gtk_gesture_drag_get_start_point(g, &sx, &sy);
+    disc_follow(ud, sx + ox, sy + oy);
+}
+
 static void on_drag_end(GtkGestureDrag *g, double ox, double oy, gpointer ud)
 {
     (void)g; (void)ox; (void)oy;
+    disc_release();
     pane_release(ud, TRUE);
 }
 
 static void on_cancel(GtkGesture *g, GdkEventSequence *seq, gpointer ud)
 {
     (void)g; (void)seq;
+    disc_release();
     pane_release(ud, FALSE);
 }
 
@@ -686,6 +823,7 @@ static void on_leave(GtkEventControllerMotion *c, gpointer ud)
     }
 }
 
+
 static gboolean on_query_tooltip(GtkWidget *w, int x, int y, gboolean kbd,
                                  GtkTooltip *tip, gpointer ud)
 {
@@ -705,13 +843,14 @@ static gboolean on_query_tooltip(GtkWidget *w, int x, int y, gboolean kbd,
     return TRUE;
 }
 
+
 static void pane_init(Pane *p, int port, GtkDrawingAreaDrawFunc draw)
 {
     GtkGesture *drag = gtk_gesture_drag_new();
     GtkEventController *motion = gtk_event_controller_motion_new();
 
     p->area = gtk_drawing_area_new();
-    p->port = port;
+    (void)port;
     p->pressed = p->hover = -1;
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(p->area), draw, p, NULL);
     gtk_widget_set_halign(p->area, GTK_ALIGN_CENTER);
@@ -723,6 +862,7 @@ static void pane_init(Pane *p, int port, GtkDrawingAreaDrawFunc draw)
 
     gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(drag), GDK_BUTTON_PRIMARY);
     g_signal_connect(drag, "drag-begin", G_CALLBACK(on_drag_begin), p);
+    g_signal_connect(drag, "drag-update", G_CALLBACK(on_drag_update), p);
     g_signal_connect(drag, "drag-end", G_CALLBACK(on_drag_end), p);
     g_signal_connect(drag, "cancel", G_CALLBACK(on_cancel), p);
     gtk_widget_add_controller(p->area, GTK_EVENT_CONTROLLER(drag));
@@ -752,60 +892,65 @@ static int machine_now(void)
     return m >= 0 && m < ARC_MACHINE_COUNT ? m : ARC_MACHINE_ARCADIA;
 }
 
-static void build_keyboard(void)
+/* The console: the layout table's keypads and panel, then under each keypad
+ * its controller's disc, with the FIRE button on the outer side. */
+static void build_console(void)
 {
-    Pane *p = &g_pane[PANE_KBD];
+    static const double angles[ARC_ACT_FIRE] = { -G_PI / 2, 0, G_PI / 2, G_PI };
+    Pane *p = &g_pane[PANE_CONSOLE];
     float kw, kh;
-    int n, i;
+    int n, i, port, act;
     const arc_keycap *caps = arcsession_keyboard_layout(g_built_machine, &n, &kw, &kh);
-    const double off = PANEL_PAD + PLATE_PAD;
-
-    g_kbd_w = kw;
-    g_kbd_h = kh;
-    g_unit = (int)(KBD_WIDTH_PX / kw);
-    if (g_unit > UNIT_MAX) g_unit = UNIT_MAX;
-    if (g_unit < UNIT_MIN) g_unit = UNIT_MIN;
+    const double x0 = CASE_PAD + FIRE_W + FIRE_GAP;
+    const double y0 = CASE_PAD + WOOD_H + 12;
+    const double ytop = y0 + kh * UNIT + 14;
+    double lo[2] = { 1e9, 1e9 }, hi[2] = { -1e9, -1e9 };
+    Item *it;
 
     p->n = 0;
     p->pressed = p->hover = -1;
     for (i = 0; i < n; i++) {
         const arc_keycap *c = &caps[i];
-        Item *it = pane_add(p, SH_RECT, c->kind,
-                            c->target >= 0 ? ARC_TARGET_KEY(c->target)
-                                           : ARC_TARGET_SWITCH(ARC_SW_RESET), c->label);
+        it = pane_add(p, SH_RECT, c->kind,
+                      c->target >= 0 ? ARC_TARGET_KEY(c->target)
+                                     : ARC_TARGET_SWITCH(ARC_SW_RESET), c->label);
         if (!it) break;
-        it->x = off + c->x * g_unit;
-        it->y = off + c->y * g_unit;
-        it->w = c->w * g_unit;
-        it->h = c->h * g_unit;
+        it->x = x0 + c->x * UNIT;
+        it->y = y0 + c->y * UNIT;
+        it->w = c->w * UNIT;
+        it->h = c->h * UNIT;
+        if (c->port >= 0 && c->port < 2) {
+            lo[c->port] = MIN(lo[c->port], it->x);
+            hi[c->port] = MAX(hi[c->port], it->x + it->w);
+        }
     }
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(p->area), (int)(kw * g_unit + 2 * off));
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(p->area), (int)(kh * g_unit + 2 * off));
-}
-
-static void build_stick(int port)
-{
-    static const double angles[ARC_ACT_FIRE] = { -G_PI / 2, 0, G_PI / 2, G_PI };
-    Pane *p = &g_pane[PANE_STICK0 + port];
-    Item *it;
-    int act;
-
-    p->n = 0;
-    p->pressed = p->hover = -1;
-    it = pane_add(p, SH_RECT, K_FIRE, ARC_TARGET_PORT(port, ARC_ACT_FIRE), "FIRE");
-    it->x = 14; it->y = 14; it->w = 78; it->h = 38;
-    for (act = ARC_ACT_UP; act < ARC_ACT_FIRE; act++) {
-        it = pane_add(p, SH_WEDGE, K_PAD, ARC_TARGET_PORT(port, act), "");
-        it->a = angles[act];
+    for (port = 0; port < 2; port++) {
+        const double cx = (lo[port] + hi[port]) / 2, cy = ytop + DISC_R1 + 5;
+        it = pane_add(p, SH_WEDGE, K_DISC, -1, "");
+        it->port = port;
+        it->x = cx; it->y = cy; it->w = DISC_R1;
+        for (act = ARC_ACT_UP; act < ARC_ACT_FIRE; act++) {
+            it = pane_add(p, SH_WEDGE, K_PAD, ARC_TARGET_PORT(port, act), "");
+            it->port = port;
+            it->a = angles[act];
+            it->x = cx; it->y = cy; it->w = DISC_R0 + 4; it->h = DISC_R1;
+        }
+        it = pane_add(p, SH_RECT, K_FIRE, ARC_TARGET_PORT(port, ARC_ACT_FIRE), "FIRE");
+        it->port = port;
+        it->w = FIRE_W; it->h = FIRE_H;
+        it->x = port == 0 ? lo[0] - FIRE_GAP - FIRE_W : hi[1] + FIRE_GAP;
+        it->y = cy - FIRE_H / 2;
     }
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(p->area), STICK_W);
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(p->area), STICK_H);
+    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(p->area),
+                                       (int)(kw * UNIT + 2 * x0));
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(p->area),
+                                        (int)(ytop + 2 * DISC_R1 + 10 + CASE_PAD));
 }
 
 static void build_strip(void)
 {
     Pane *p = &g_pane[PANE_STRIP];
-    const int bw = STICK_W;
+    const int bw = STRIP_BW;
     Item *it;
 
     p->n = 0;
@@ -824,9 +969,7 @@ static void rebuild(void)
 {
     mouse_release();
     g_built_machine = machine_now();
-    build_keyboard();
-    build_stick(0);
-    build_stick(1);
+    build_console();
     build_strip();
     adw_window_title_set_subtitle(g_title, arc_machine_name(g_built_machine));
     refresh_all();
@@ -841,19 +984,30 @@ static void refresh_all(void)
 }
 
 /* What the console sees held, painted in the accent. Redraws only what
- * changed. */
+ * changed (the disc knob too: the analog deflection moves it with no pad
+ * changing). */
 static gboolean held_tick(gpointer d)
 {
     unsigned held[2];
-    int i, k;
+    int i, k, port;
+    gboolean knob = FALSE;
     (void)d;
     if (!g_window || !gtk_widget_get_visible(g_window))
         return G_SOURCE_CONTINUE;
     held[0] = arcsession_buttons_held(g_session, 0);
     held[1] = arcsession_buttons_held(g_session, 1);
+    for (port = 0; port < 2; port++) {
+        int ax, ay;
+        arcsession_disc_get(g_session, port, &ax, &ay);
+        if (ax != g_last_disc[port][0] || ay != g_last_disc[port][1]) {
+            g_last_disc[port][0] = ax;
+            g_last_disc[port][1] = ay;
+            knob = TRUE;
+        }
+    }
     for (i = 0; i < PANE_COUNT; i++) {
         Pane *p = &g_pane[i];
-        gboolean changed = FALSE;
+        gboolean changed = i == PANE_CONSOLE && knob;
         for (k = 0; k < p->n; k++) {
             gboolean on = item_held(&p->items[k], held);
             if (on != p->items[k].lit) {
@@ -875,7 +1029,7 @@ static void refresh_pad_ports(void)
     for (i = 0; i < g_npad_rows; i++) {
         int effective = arcsession_gamepad_effective_port(g_session, i);
         char text[32];
-        if (effective >= 0) g_snprintf(text, sizeof text, "drives stick %d", effective + 1);
+        if (effective >= 0) g_snprintf(text, sizeof text, "drives player %d", effective + 1);
         else g_snprintf(text, sizeof text, "drives nothing");
         if (strcmp(gtk_label_get_text(GTK_LABEL(g_pad_port[i])), text) != 0)
             gtk_label_set_text(GTK_LABEL(g_pad_port[i]), text);
@@ -887,16 +1041,16 @@ static void on_assign_changed(GObject *o, GParamSpec *ps, gpointer user_data)
     int idx = GPOINTER_TO_INT(user_data);
     guint sel = gtk_drop_down_get_selected(GTK_DROP_DOWN(o));
     (void)ps;
-    /* 0 = automatic (connection order), 1-2 = that stick */
+    /* 0 = automatic (connection order), 1-2 = that player */
     arcsession_gamepad_assign(g_session, idx, sel == 0 ? -1 : (int)sel - 1);
     refresh_pad_ports();
 }
 
 /* Rebuilt whenever a pad comes or goes (the session's generation counter):
- * one row per pad, its name, the stick it drives and the stick it is set to. */
+ * one row per pad, its name, the player it drives and the player it is set to. */
 static void refresh_pads(void)
 {
-    static const char *const choices[] = { "Automatic", "Stick 1", "Stick 2", NULL };
+    static const char *const choices[] = { "Automatic", "Player 1", "Player 2", NULL };
     GtkWidget *child;
     int n, i;
 
@@ -1094,9 +1248,10 @@ static void on_destroy(GtkWidget *w, gpointer d)
     g_map_state = -2;
 }
 
+
 static void build_window(GtkWindow *parent)
 {
-    GtkWidget *root, *sticks, *maprow, *toolbar, *header, *defaults, *padtitle;
+    GtkWidget *root, *maprow, *toolbar, *header, *defaults, *padtitle;
     GtkEventController *keys, *focus;
 
     arc_install_accent_css();
@@ -1114,9 +1269,7 @@ static void build_window(GtkWindow *parent)
     g_signal_connect(g_window, "destroy", G_CALLBACK(on_destroy), NULL);
 
     memset(g_pane, 0, sizeof g_pane);
-    pane_init(&g_pane[PANE_KBD], 0, draw_kbd);
-    pane_init(&g_pane[PANE_STICK0], 0, draw_stick);
-    pane_init(&g_pane[PANE_STICK1], 1, draw_stick);
+    pane_init(&g_pane[PANE_CONSOLE], 0, draw_console);
     pane_init(&g_pane[PANE_STRIP], 0, draw_strip);
 
     root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
@@ -1125,12 +1278,7 @@ static void build_window(GtkWindow *parent)
     gtk_widget_set_margin_start(root, 12);
     gtk_widget_set_margin_end(root, 12);
 
-    gtk_box_append(GTK_BOX(root), g_pane[PANE_KBD].area);
-    sticks = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, STRIP_GAP);
-    gtk_widget_set_halign(sticks, GTK_ALIGN_CENTER);
-    gtk_box_append(GTK_BOX(sticks), g_pane[PANE_STICK0].area);
-    gtk_box_append(GTK_BOX(sticks), g_pane[PANE_STICK1].area);
-    gtk_box_append(GTK_BOX(root), sticks);
+    gtk_box_append(GTK_BOX(root), g_pane[PANE_CONSOLE].area);
     gtk_box_append(GTK_BOX(root), g_pane[PANE_STRIP].area);
 
     padtitle = gtk_label_new("Gamepads");
@@ -1156,7 +1304,7 @@ static void build_window(GtkWindow *parent)
     gtk_widget_add_css_class(g_map_hint, "dim-label");
     gtk_widget_set_hexpand(g_map_hint, TRUE);
     gtk_label_set_xalign(GTK_LABEL(g_map_hint), 0);
-    /* a long hint ("Press a key or a gamepad button for Stick 1: Right")
+    /* a long hint ("Press a key or a gamepad button for Player 1: Right")
      * must not widen the window */
     gtk_label_set_ellipsize(GTK_LABEL(g_map_hint), PANGO_ELLIPSIZE_END);
     gtk_label_set_max_width_chars(GTK_LABEL(g_map_hint), 1);
@@ -1218,3 +1366,4 @@ gboolean arc_controllers_visible(void)
 {
     return g_window && gtk_widget_get_visible(g_window);
 }
+

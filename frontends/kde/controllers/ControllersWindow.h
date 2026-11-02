@@ -1,7 +1,8 @@
 /*
- * The Controllers window (F9): the Arcadia 2001's membrane keyboard drawn as it
- * is on the console, its two joysticks, the gamepads with their assignments,
- * and Map mode for rebinding any key or stick control. Hidden at start; a
+ * The Controllers window (F9): the console drawn like the photo -- two hand
+ * controllers (disc, 12-key keypad, side fire) and the START / OPTION / SELECT
+ * / RESET keys -- the gamepads with their assignments, and Map mode for
+ * rebinding any key, disc direction or fire button. Hidden at start; a
  * fixed-size floating window.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
@@ -16,5 +17,5 @@
 /* Shows the window, or hides it when it is showing. */
 void arcControllersToggle(QWidget *parent, arcsession *session);
 bool arcControllersVisible();
-/* The machine changed (Preferences): rebuild the keyboard for it. */
+/* Preferences closed or the session restarted: redraw. */
 void arcControllersRefresh();

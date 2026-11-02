@@ -92,7 +92,7 @@ NSString *ArcStripControl(const char *s)
     return out;
 }
 
-NSStackView *O2HStack(NSArray<NSView *> *views)
+NSStackView *ArcHStack(NSArray<NSView *> *views)
 {
     NSStackView *s = [NSStackView stackViewWithViews:views];
     s.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -100,7 +100,7 @@ NSStackView *O2HStack(NSArray<NSView *> *views)
     return s;
 }
 
-NSStackView *O2VStack(NSArray<NSView *> *views)
+NSStackView *ArcVStack(NSArray<NSView *> *views)
 {
     NSStackView *s = [NSStackView stackViewWithViews:views];
     s.orientation = NSUserInterfaceLayoutOrientationVertical;

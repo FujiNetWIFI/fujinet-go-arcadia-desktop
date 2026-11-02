@@ -36,7 +36,7 @@ int main(int argc, const char **argv)
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
 
         /* A path on the command line is routed as a dropped file would be:
-         * a cartridge boots, a BIOS is imported, anything else goes to the
+         * a cartridge boots, anything else goes to the
          * SD folder (see -[ArcAppDelegate applicationDidFinishLaunching:]). */
         ArcAppDelegate *delegate = [[ArcAppDelegate alloc]
             initWithSession:session mediaPath:(argc > 1 && argv[1][0] != '-' ? argv[1] : NULL)];

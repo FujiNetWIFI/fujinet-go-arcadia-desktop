@@ -1,27 +1,32 @@
 /*
- * The debugger's Video tab (the 8244/8245) and its EF9340 tab (the Videopac+
- * G7400's text chip).
+ * The debugger's Video tab: the 2637 UVI.
  *
- * The Video tab shows everything the chip knows, from one snapshot
- * (arcdebug_vdc_get) per refresh:
+ * The tab shows everything the chip knows, from one snapshot
+ * (arcdebug_uvi_get) per refresh:
  *
- *   left   the display at 2x, nearest neighbour: the frame the machine
+ *   left   the picture at 2x, nearest neighbour: the frame the machine
  *          finished, the CURRENT registers re-rendered with chosen layers and
- *          overlays, or the frame as far as the beam has got; with the
- *          pointer over it, the object under it (arcdebug_vdc_hit_test),
- *          named and outlined;
- *   right  six sections: Objects (the four sprites, twelve singles and the
- *          four quads of four characters, each with its position, its
- *          registers and its bitmap), Grid (its 9 x 10 lines drawn), Registers
- *          (all 256, decoded, editable), Control/Status ($A0-$A3 decoded),
- *          Sound (the shift register and what it makes) and Sheets (the font,
- *          the sprite shapes, the palette).
+ *          overlays, or the frame as far as the beam has got; the objects
+ *          boxed (by the core) and indexed (here); with the pointer over it,
+ *          what draws there (arcdebug_uvi_hit_test): the object or the
+ *          character cell, named and outlined;
+ *   right  five sections: Objects (the four, each with its position, size,
+ *          colour, UDC, bitmap and what it has hit), Screen (the 16 x 13/26
+ *          character screen with its colour bits and block-graphics cells,
+ *          drawn from the chip's glyph table), Registers (the ones that are
+ *          not plain RAM: $18F0-$18FF, the keypad inputs, $19F8-$19FF,
+ *          decoded and editable), Control (the screen geometry, colours,
+ *          collision flags and the beam) and Sheets (the glyph table with the
+ *          UDCs, the objects' shapes, the palette).
  *
  * Idle cost: the caller refreshes this tab only while it shows, and only the
  * section that shows is redrawn. The picture is rendered by the core into one
  * reused buffer and a GPU texture is built only when its pixels changed (a
  * stopped machine costs nothing, a running one at most ten uploads a
  * second); an object's bitmap is fetched only when its registers changed.
+ *
+ * The picture is shown with SQUARE pixels (192 x 262 at 2x): the debugger
+ * wants every pixel of the frame exactly, not the television's 4:3.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -32,27 +37,33 @@
 #include <math.h>
 #include <string.h>
 
-#define FRAME_W I8244_WIDTH
-#define FRAME_H I8244_HEIGHT
+#define FRAME_W ARCSESSION_FB_WIDTH
+#define FRAME_H ARCSESSION_FB_HEIGHT
 #define SCALE 2                 /* the picture's pixels: nearest, as the core scales */
+#define UVI_XPOS 32             /* the playfield's left edge in the frame */
 
 enum { VIEW_FRAME, VIEW_RENDER, VIEW_PROGRESS };
-enum { SEC_OBJECTS, SEC_GRID, SEC_REGS, SEC_CONTROL, SEC_SOUND, SEC_SHEETS, SEC_COUNT };
+enum { SEC_OBJECTS, SEC_SCREEN, SEC_REGS, SEC_CONTROL, SEC_SHEETS, SEC_COUNT };
 
-#define NLAYERS 7
-#define NFLAGS 6
+#define NLAYERS 2
+#define NFLAGS 4
 /* the checkboxes' order and what each means to the core */
 static const struct { const char *name; unsigned bit; } k_layers[NLAYERS] = {
-    { "Background", I8244_L_BG }, { "Grid", I8244_L_GRID }, { "Vertical grid", I8244_L_VGRID },
-    { "Dots", I8244_L_DOTS }, { "Sprites", I8244_L_SPRITES }, { "Singles", I8244_L_SINGLES },
-    { "Quads", I8244_L_QUADS },
+    { "Characters", ARCDEBUG_UVI_L_CHARS }, { "Objects", ARCDEBUG_UVI_L_OBJECTS },
 };
 static const struct { const char *name; unsigned bit; } k_flags[NFLAGS] = {
-    { "Bounding boxes", I8244_F_BOXES }, { "Collision highlight", I8244_F_COLLISION },
-    { "Overlap highlight", I8244_F_OVERLAP }, { "Show hidden", I8244_F_SHOW_HIDDEN },
-    { "Ignore enables", I8244_F_IGNORE_ENABLE }, { "Beam cross-hair", I8244_F_BEAM },
+    { "Object boxes", ARCDEBUG_UVI_F_BOXES }, { "Character grid", ARCDEBUG_UVI_F_GRID },
+    { "Collision highlight", ARCDEBUG_UVI_F_COLLIDE }, { "Beam cross-hair", ARCDEBUG_UVI_F_BEAM },
 };
-enum { FLAG_BOXES, FLAG_COLLISION, FLAG_OVERLAP, FLAG_HIDDEN, FLAG_IGNORE, FLAG_BEAM };
+/* the boxes' colours (red, green, blue, orange), as the core draws them */
+static const guint32 k_obj_colour[4] = { 0xFF4040, 0x40E040, 0x5080FF, 0xFFA030 };
+
+/* The registers that are not plain RAM, as offsets into the register file
+ * ($1800 + offset): $18F0-$18FF, $1900-$1908, $19F8-$19FF. */
+static const struct { unsigned first, last; } k_reg_ranges[] = {
+    { 0x0F0, 0x0FF }, { 0x100, 0x108 }, { 0x1F8, 0x1FF },
+};
+#define NREGROWS (16 + 9 + 8)
 
 /* An object's row in the tables: its bitmap and its text, and the registers
  * the bitmap was last fetched for. */
@@ -73,7 +84,9 @@ typedef struct {
 struct DbgVideo {
     arcsession *session;
     arcdebug *dbg;
-    i8244_snapshot snap;
+    arcdebug_uvi snap;
+    arcdebug_uvi_cell cells[ARCDEBUG_UVI_COLS * ARCDEBUG_UVI_MAX_ROWS];
+    int nrows;                  /* of the character screen: 13 or 26 */
     int tick;                   /* live refreshes since the sections last redrew */
 
     /* the picture */
@@ -93,29 +106,30 @@ struct DbgVideo {
     GtkNotebook *sections;
 
     /* objects */
-    ObjRow spr[4], single[12], quad[16];
-    GtkLabel *quad_head[4];
+    ObjRow obj[4];
 
-    /* grid */
-    GtkWidget *grid_area;
-    GtkLabel *grid_text;
-    uint32_t palette[16];
+    /* screen */
+    GtkWidget *screen_area;
+    GtkLabel *screen_text;
+    uint32_t palette[8];
     gboolean have_palette;
+    int screen_sel;             /* the cell last clicked / hovered, -1 none */
 
     /* registers */
-    GtkWidget *reg_row[256];
-    GtkLabel *reg_name[256], *reg_text[256];
-    GtkEntry *reg_val[256];
-    uint8_t reg_shown[256];
+    GtkLabel *reg_name[NREGROWS], *reg_text[NREGROWS];
+    GtkEntry *reg_val[NREGROWS];
+    unsigned reg_off[NREGROWS];
+    uint8_t reg_shown[NREGROWS];
     gboolean reg_built;
 
-    /* control/status, sound */
-    GtkLabel *control_text, *sound_text;
-    GtkWidget *shift_area;
+    /* control */
+    GtkLabel *control_text;
 
     /* sheets */
-    ImageArea *sheet_font, *sheet_shapes, *sheet_palette;
+    ImageArea *sheet_font, *sheet_objects, *sheet_palette;
 };
+
+/* ---- images ------------------------------------------------------------------- */
 
 /* ---- images ------------------------------------------------------------------- */
 
@@ -195,7 +209,7 @@ static gboolean show_view(DbgVideo *v, GtkPicture *pic, ImageArea *area, int kin
                           unsigned layers, unsigned flags, int scale, gboolean cache)
 {
     int w = 0, h = 0;
-    if (!arcdebug_vdc_view(v->dbg, kind, layers, flags, scale, v->buf, v->cap, &w, &h) ||
+    if (!arcdebug_uvi_view(v->dbg, kind, layers, flags, scale, v->buf, v->cap, &w, &h) ||
         w <= 0 || h <= 0 || (size_t)w * (size_t)h > v->cap)
         return FALSE;
     if (cache) {
@@ -213,17 +227,17 @@ static gboolean show_view(DbgVideo *v, GtkPicture *pic, ImageArea *area, int kin
     return TRUE;
 }
 
+/* The eight colours, sampled from the palette sheet (one cell each in a row). */
 static void fetch_palette(DbgVideo *v)
 {
     int w = 0, h = 0, cell, k;
     if (v->have_palette) return;
-    if (!arcdebug_vdc_view(v->dbg, ARCDEBUG_VDC_PALETTE, 0, 0, 1, v->buf, v->cap, &w, &h) || w < 128)
+    if (!arcdebug_uvi_view(v->dbg, ARCDEBUG_UVI_PALETTE, 0, 0, 1, v->buf, v->cap, &w, &h) ||
+        w < 8 || h < 1)
         return;
     cell = w / 8;
-    for (k = 0; k < 8; k++) {
-        v->palette[k] = v->buf[(size_t)(cell / 2) * w + k * cell + cell / 2];
-        v->palette[8 + k] = v->buf[(size_t)(cell + cell / 2) * w + k * cell + cell / 2];
-    }
+    for (k = 0; k < 8; k++)
+        v->palette[k] = v->buf[(size_t)(h / 2) * w + k * cell + cell / 2] & 0xFFFFFF;
     v->have_palette = TRUE;
 }
 
@@ -255,172 +269,116 @@ static int view_now(DbgVideo *v)
     return sel == VIEW_RENDER || sel == VIEW_PROGRESS ? (int)sel : VIEW_FRAME;
 }
 
-/* What each view can use: the layers and most overlays belong to the
- * re-render; the frame in progress takes the beam; the boxes are drawn here
- * over the frame and the frame in progress (the core draws them in the
- * re-render). */
+/* Only the re-render takes the layers; the overlays apply to all three. */
 static void sync_sensitivity(DbgVideo *v)
 {
-    const int view = view_now(v);
+    const gboolean render = view_now(v) == VIEW_RENDER;
     int i;
     for (i = 0; i < NLAYERS; i++)
-        gtk_widget_set_sensitive(GTK_WIDGET(v->layer[i]), view == VIEW_RENDER);
-    for (i = 0; i < NFLAGS; i++) {
-        gboolean on = view == VIEW_RENDER ? i != FLAG_BEAM
-                    : view == VIEW_PROGRESS ? (i == FLAG_BOXES || i == FLAG_BEAM)
-                    : i == FLAG_BOXES;
-        gtk_widget_set_sensitive(GTK_WIDGET(v->flag[i]), on);
-    }
+        gtk_widget_set_sensitive(GTK_WIDGET(v->layer[i]), render);
 }
 
 static void picture_update(DbgVideo *v)
 {
     const int view = view_now(v);
-    const unsigned core_kind = view == VIEW_RENDER ? ARCDEBUG_VDC_RENDER
-                             : view == VIEW_PROGRESS ? ARCDEBUG_VDC_PROGRESS : ARCDEBUG_VDC_FRAME;
-    unsigned flags = flag_mask(v);
+    const int core_kind = view == VIEW_RENDER ? ARCDEBUG_UVI_RENDER
+                        : view == VIEW_PROGRESS ? ARCDEBUG_UVI_PROGRESS : ARCDEBUG_UVI_FRAME;
 
-    if (view != VIEW_RENDER)
-        flags &= I8244_F_BEAM;       /* the boxes are drawn over it, below */
-    if (show_view(v, v->pic, NULL, (int)core_kind, layer_mask(v), flags, SCALE, TRUE) ||
-        (flag_mask(v) & I8244_F_BOXES))
+    if (show_view(v, v->pic, NULL, core_kind, layer_mask(v), flag_mask(v), SCALE, TRUE) ||
+        (flag_mask(v) & ARCDEBUG_UVI_F_BOXES))
         gtk_widget_queue_draw(v->overlay_area);
 }
 
-/* The bounding boxes of every object the chip has, in frame pixels. */
-typedef struct { int x, y, w, h; char name[8]; int visible; } Box;
-
-static int object_boxes(const i8244_snapshot *s, Box *out)
+/* The rectangle of a character cell, in frame pixels. */
+static void cell_rect(const DbgVideo *v, int index, int *x, int *y, int *w, int *h)
 {
-    int n = 0, i, q, j;
-    for (i = 0; i < 4; i++) {
-        const i8244_sprite_info *p = &s->sprites[i];
-        Box b = { p->x, p->y, p->width, p->height, "", p->visible };
-        g_snprintf(b.name, sizeof b.name, "S%d", i);
-        out[n++] = b;
-    }
-    for (i = 0; i < 12; i++) {
-        const i8244_char_info *c = &s->singles[i];
-        Box b = { c->x, c->y, c->width, c->height, "", c->visible };
-        g_snprintf(b.name, sizeof b.name, "C%d", i);
-        out[n++] = b;
-    }
-    for (q = 0; q < 4; q++)
-        for (j = 0; j < 4; j++) {
-            const i8244_char_info *c = &s->quads[q].chars[j];
-            Box b = { c->x, c->y, c->width, c->height, "", c->visible };
-            g_snprintf(b.name, sizeof b.name, "Q%d.%d", q, j);
-            out[n++] = b;
-        }
-    return n;
-}
-
-/* The box of what is under the pointer. */
-static gboolean hit_box(const DbgVideo *v, Box *b)
-{
-    const i8244_snapshot *s = &v->snap;
-    int k, i;
-    if (!v->over || v->nhit <= 0) return FALSE;
-    k = v->hit[0].kind;
-    i = v->hit[0].index;
-    if (k == 0 && i >= 0 && i < 4) {
-        b->x = s->sprites[i].x; b->y = s->sprites[i].y;
-        b->w = s->sprites[i].width; b->h = s->sprites[i].height;
-        return TRUE;
-    }
-    if (k == 1 && i >= 0 && i < 12) {
-        b->x = s->singles[i].x; b->y = s->singles[i].y;
-        b->w = s->singles[i].width; b->h = s->singles[i].height;
-        return TRUE;
-    }
-    if (k == 2 && i >= 0 && i < 16) {
-        const i8244_char_info *c = &s->quads[i / 4].chars[i % 4];
-        b->x = c->x; b->y = c->y; b->w = c->width; b->h = c->height;
-        return TRUE;
-    }
-    return FALSE;
+    const int row = index / ARCDEBUG_UVI_COLS, col = index % ARCDEBUG_UVI_COLS;
+    *x = UVI_XPOS + v->snap.shift + col * 8;
+    *y = v->snap.first_line + row * v->snap.cell_height;
+    *w = 8;
+    *h = v->snap.cell_height;
 }
 
 static void draw_overlay(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer ud)
 {
     DbgVideo *v = ud;
     GtkWidget *wg = GTK_WIDGET(area);
-    Box boxes[4 + 12 + 16], hb;
-    int n, i;
+    int i;
     (void)width; (void)height;
 
-    /* the core draws the boxes of the re-render itself */
-    if ((flag_mask(v) & I8244_F_BOXES) && view_now(v) != VIEW_RENDER) {
-        n = object_boxes(&v->snap, boxes);
-        cairo_set_line_width(cr, 1);
-        for (i = 0; i < n; i++) {
-            if (!boxes[i].visible) continue;
-            dbg_set_rgb(cr, 0xFFE040, 0.9);
-            cairo_rectangle(cr, boxes[i].x * SCALE + 0.5, boxes[i].y * SCALE + 0.5,
-                            boxes[i].w * SCALE - 1, boxes[i].h * SCALE - 1);
-            cairo_stroke(cr);
-            dbg_set_rgb(cr, 0xFFE040, 1.0);
-            dbg_draw_centred(cr, wg, boxes[i].name, boxes[i].x * SCALE + 1, boxes[i].y * SCALE + 1,
-                             24, 12, FALSE);
+    /* the core boxes the objects; the index goes on the corner of each box */
+    if (flag_mask(v) & ARCDEBUG_UVI_F_BOXES) {
+        for (i = 0; i < 4; i++) {
+            const arcdebug_uvi_object *o = &v->snap.obj[i];
+            char t[4];
+            if (!o->visible) continue;
+            g_snprintf(t, sizeof t, "%d", i);
+            dbg_set_rgb(cr, 0x000000, 0.65);
+            cairo_rectangle(cr, o->px * SCALE, o->py * SCALE - 13, 12, 12);
+            cairo_fill(cr);
+            dbg_set_rgb(cr, k_obj_colour[i], 1.0);
+            dbg_draw_centred(cr, wg, t, o->px * SCALE, o->py * SCALE - 13, 12, 12, TRUE);
         }
     }
-    if (hit_box(v, &hb)) {
+    if (v->over && v->nhit > 0) {
+        int x = 0, y = 0, w = 0, h = 0;
+        const int k = v->hit[0].kind, idx = v->hit[0].index;
+        if (k == ARCDEBUG_UVI_HIT_OBJECT && idx >= 0 && idx < 4) {
+            x = v->snap.obj[idx].px; y = v->snap.obj[idx].py;
+            w = v->snap.obj[idx].width; h = v->snap.obj[idx].height;
+        } else if (k == ARCDEBUG_UVI_HIT_CELL) {
+            cell_rect(v, idx, &x, &y, &w, &h);
+        } else {
+            return;
+        }
         dbg_set_rgb(cr, ARCSESSION_ACCENT_RGB, 0.25);
-        cairo_rectangle(cr, hb.x * SCALE, hb.y * SCALE, hb.w * SCALE, hb.h * SCALE);
+        cairo_rectangle(cr, x * SCALE, y * SCALE, w * SCALE, h * SCALE);
         cairo_fill_preserve(cr);
-        dbg_set_rgb(cr, 0xFF4A52, 1.0);
+        dbg_set_rgb(cr, dbg_accent_line_rgb(), 1.0);
         cairo_set_line_width(cr, 2);
         cairo_stroke(cr);
     }
 }
 
-/* "Single 3: x=.. y=.. glyph=.. colour=..", for what is under the pointer. */
+/* One cell, described: "Cell 4,7: code $2A glyph $2A fg cyan bg black". */
+static void describe_cell(const DbgVideo *v, int idx, char *dst, int n)
+{
+    const arcdebug_uvi_cell *c = &v->cells[idx];
+    g_snprintf(dst, (gsize)n, "Cell %d,%d: code $%02X glyph $%02X %s  fg %s  bg %s",
+               idx / ARCDEBUG_UVI_COLS, idx % ARCDEBUG_UVI_COLS, c->code, c->glyph,
+               c->graphics ? "(block graphics)" : c->glyph >= 0x38 ? "(UDC)" : "",
+               arcdebug_uvi_colour_name(c->fg), arcdebug_uvi_colour_name(c->bg));
+}
+
+/* "Object 1: x=.. y=..", for what is under the pointer. */
 static void describe_hit(DbgVideo *v, char *dst, int n)
 {
-    const i8244_snapshot *s = &v->snap;
     char more[40] = "";
     if (!v->over) {
-        g_snprintf(dst, n, "Move the pointer over the picture to see what draws there");
+        g_snprintf(dst, (gsize)n, "Move the pointer over the picture to see what draws there");
         return;
     }
     if (v->nhit <= 0) {
-        g_snprintf(dst, n, "Pointer x=%d y=%d: nothing but the background", v->mx, v->my);
+        g_snprintf(dst, (gsize)n, "Pointer x=%d y=%d: nothing but the background", v->mx, v->my);
         return;
     }
     if (v->nhit > 1)
         g_snprintf(more, sizeof more, "   (+%d under it)", v->nhit - 1);
-    switch (v->hit[0].kind) {
-    case 0: {
-        const i8244_sprite_info *p = &s->sprites[v->hit[0].index & 3];
-        g_snprintf(dst, n, "Sprite %d: x=%d y=%d colour=%s zoom=%dx S=%d X9=%d   pointer %d,%d%s",
-                   p->index, p->x, p->y, i8244_colour_name(p->color), p->zoom ? 2 : 1,
-                   p->s, p->x9, v->mx, v->my, more);
-        break;
-    }
-    case 1: {
-        const i8244_char_info *c = &s->singles[v->hit[0].index % 12];
-        g_snprintf(dst, n, "Single %d: x=%d y=%d glyph=%d colour=%s ptr=$%02X   pointer %d,%d%s",
-                   c->index, c->x, c->y, c->glyph, i8244_colour_name(c->color), c->reg_ptr,
-                   v->mx, v->my, more);
-        break;
-    }
-    case 2: {
-        const int i = v->hit[0].index & 15;
-        const i8244_char_info *c = &s->quads[i / 4].chars[i % 4];
-        g_snprintf(dst, n, "Quad %d char %d: x=%d y=%d glyph=%d colour=%s ptr=$%02X   pointer %d,%d%s",
-                   i / 4, i % 4, c->x, c->y, c->glyph, i8244_colour_name(c->color), c->reg_ptr,
-                   v->mx, v->my, more);
-        break;
-    }
-    default:
-        g_snprintf(dst, n, "Pointer x=%d y=%d%s", v->mx, v->my, more);
-        break;
+    if (v->hit[0].kind == ARCDEBUG_UVI_HIT_OBJECT) {
+        const arcdebug_uvi_object *o = &v->snap.obj[v->hit[0].index & 3];
+        g_snprintf(dst, (gsize)n, "Object %d: x=%d y=%d colour=%s %s UDC $%02X   pointer %d,%d%s",
+                   o->index, o->x, o->y, arcdebug_uvi_colour_name(o->colour),
+                   o->double_height ? "8x16" : "8x8", o->udc, v->mx, v->my, more);
+    } else {
+        char cell[160];
+        describe_cell(v, v->hit[0].index, cell, sizeof cell);
+        g_snprintf(dst, (gsize)n, "%s   pointer %d,%d%s", cell, v->mx, v->my, more);
     }
 }
 
 static void hover_update(DbgVideo *v, double x, double y, gboolean over)
 {
-    char text[200];
+    char text[260];
     arcdebug_hit old = v->hit[0];
     const int oldn = v->nhit, oldx = v->mx, oldy = v->my;
     const gboolean was = v->over;
@@ -431,8 +389,9 @@ static void hover_update(DbgVideo *v, double x, double y, gboolean over)
         v->my = CLAMP((int)y / SCALE, 0, FRAME_H - 1);
         if (was && v->mx == oldx && v->my == oldy)
             return;
-        arcdebug_vdc_get(v->dbg, &v->snap);
-        v->nhit = arcdebug_vdc_hit_test(v->dbg, v->mx, v->my, v->hit, 4);
+        arcdebug_uvi_get(v->dbg, &v->snap);
+        v->nrows = arcdebug_uvi_cells(v->dbg, v->cells);
+        v->nhit = arcdebug_uvi_hit_test(v->dbg, v->mx, v->my, v->hit, 4);
         if (v->nhit < 0) v->nhit = 0;
     } else {
         v->nhit = 0;
@@ -473,8 +432,8 @@ static void on_option_toggled(GtkCheckButton *b, gpointer ud)
 
 /* ---- objects ------------------------------------------------------------------------ */
 
-#define OBJ_BOX 40              /* the cell an object's bitmap sits in */
-#define OBJ_SCALE 4             /* one font or shape pixel as 4 x 4 */
+#define OBJ_BOX 72              /* the cell an object's bitmap sits in */
+#define OBJ_SCALE 4             /* one shape pixel as 4 x 4 */
 
 static ObjRow *obj_row_new(GtkWidget *parent, ObjRow *r)
 {
@@ -489,28 +448,27 @@ static ObjRow *obj_row_new(GtkWidget *parent, ObjRow *r)
     gtk_box_append(GTK_BOX(cell), GTK_WIDGET(r->pic));
     r->label = dbg_mono_label();
     gtk_label_set_selectable(GTK_LABEL(r->label), FALSE);
+    gtk_label_set_wrap(GTK_LABEL(r->label), TRUE);
+    gtk_label_set_wrap_mode(GTK_LABEL(r->label), PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_width_chars(GTK_LABEL(r->label), 60);
+    gtk_label_set_max_width_chars(GTK_LABEL(r->label), 70);
     gtk_box_append(GTK_BOX(row), cell);
     gtk_box_append(GTK_BOX(row), r->label);
     gtk_box_append(GTK_BOX(parent), row);
     return r;
 }
 
-static const char *vis_name(int visible, int clipped)
-{
-    return !visible ? "off screen" : clipped ? "clipped" : "visible";
-}
-
 /* One object's bitmap, fetched only when the registers it draws from
  * changed. */
-static void obj_bitmap(DbgVideo *v, ObjRow *r, int kind, int index, const uint8_t *sig, int nsig)
+static void obj_bitmap(DbgVideo *v, ObjRow *r, int index, const uint8_t *sig, int nsig)
 {
     int w = 0, h = 0;
     uint8_t cur[16] = { 0 };
     memcpy(cur, sig, (size_t)nsig);
     if (r->have_sig && memcmp(cur, r->sig, sizeof cur) == 0)
         return;
-    if (!arcdebug_vdc_object(v->dbg, kind, index, OBJ_SCALE, 0x00202020, v->buf, v->cap, &w, &h) ||
-        w <= 0 || h <= 0)
+    if (!arcdebug_uvi_thing(v->dbg, ARCDEBUG_UVI_OBJECT, index, OBJ_SCALE, 0x00202020, v->buf,
+                            v->cap, &w, &h) || w <= 0 || h <= 0)
         return;
     set_picture(r->pic, v->buf, w, h);
     memcpy(r->sig, cur, sizeof cur);
@@ -519,61 +477,36 @@ static void obj_bitmap(DbgVideo *v, ObjRow *r, int kind, int index, const uint8_
 
 static void refresh_objects(DbgVideo *v)
 {
-    const i8244_snapshot *s = &v->snap;
+    const arcdebug_uvi *s = &v->snap;
     char text[400];
-    int i, q, j;
+    int i;
 
     for (i = 0; i < 4; i++) {
-        const i8244_sprite_info *p = &s->sprites[i];
-        g_snprintf(text, sizeof text,
-            "S%d  x=%-3d y=%-3d  %-6s  zoom %dx  %s%s\n"
-            "    S=%d X9=%d  shape %02X %02X %02X %02X %02X %02X %02X %02X",
-            i, p->x, p->y, i8244_colour_name(p->color), p->zoom ? 2 : 1,
-            vis_name(p->visible, p->clipped), s->fg_en ? "" : "  (foreground off)",
-            p->s, p->x9, p->shape[0], p->shape[1], p->shape[2], p->shape[3],
-            p->shape[4], p->shape[5], p->shape[6], p->shape[7]);
-        gtk_label_set_text(GTK_LABEL(v->spr[i].label), text);
-        {
-            uint8_t sig[11];
-            sig[0] = p->reg_y; sig[1] = p->reg_x; sig[2] = p->reg_color;
-            memcpy(sig + 3, p->shape, 8);
-            obj_bitmap(v, &v->spr[i], 0, i, sig, sizeof sig);
-        }
-    }
-    for (i = 0; i < 12; i++) {
-        const i8244_char_info *c = &s->singles[i];
-        g_snprintf(text, sizeof text,
-            "C%-2d x=%-3d y=%-3d  ptr $%02X  glyph %-2d  %-6s  bit8 %d\n"
-            "    first row %d, %d rows  %s%s",
-            i, c->x, c->y, c->reg_ptr, c->glyph, i8244_colour_name(c->color), c->bit8,
-            c->first_row, c->rows,
-            c->ntsc_hidden ? "hidden (NTSC: y < 14)" : vis_name(c->visible, c->clipped),
-            s->fg_en ? "" : "  (foreground off)");
-        gtk_label_set_text(GTK_LABEL(v->single[i].label), text);
-        {
-            uint8_t sig[4] = { c->reg_y, c->reg_x, c->reg_ptr, c->reg_color };
-            obj_bitmap(v, &v->single[i], 1, i, sig, sizeof sig);
-        }
-    }
-    for (q = 0; q < 4; q++) {
-        const i8244_quad_info *qd = &s->quads[q];
-        g_snprintf(text, sizeof text, "Quad %d   shared x=%d y=%d   %d rows (from the 4th "
-                   "character's pointer)   16 px pitch", q, qd->x, qd->y, qd->rows);
-        gtk_label_set_text(v->quad_head[q], text);
-        for (j = 0; j < 4; j++) {
-            const i8244_char_info *c = &qd->chars[j];
-            ObjRow *r = &v->quad[q * 4 + j];
-            g_snprintf(text, sizeof text,
-                "Q%d.%d x=%-3d y=%-3d  ptr $%02X  glyph %-2d  %-6s  bit8 %d  %s",
-                q, j, c->x, c->y, c->reg_ptr, c->glyph, i8244_colour_name(c->color), c->bit8,
-                c->ntsc_hidden ? "hidden (NTSC: y < 14)" : vis_name(c->visible, c->clipped));
-            gtk_label_set_text(GTK_LABEL(r->label), text);
-            {
-                uint8_t sig[16];
-                memcpy(sig, s->regs + 0x40 + q * 16, 16);
-                sig[0] = c->reg_y; sig[1] = c->reg_x;
-                obj_bitmap(v, r, 2, q * 4 + j, sig, sizeof sig);
+        const arcdebug_uvi_object *o = &s->obj[i];
+        char hits[80] = "";
+        int k;
+        if (o->hits_chars)
+            g_strlcat(hits, "  hit characters", sizeof hits);
+        for (k = 0; k < 4; k++)
+            if ((o->hits_objects >> k) & 1) {
+                char b[24];
+                g_snprintf(b, sizeof b, "  hit obj %d", k);
+                g_strlcat(hits, b, sizeof hits);
             }
+        g_snprintf(text, sizeof text,
+            "OBJ%d  x=%-4d y=%-4d  %-7s  %s  UDC $%02X  %s%s\n"
+            "      regs X $%02X Y $%02X   shape %02X %02X %02X %02X %02X %02X %02X %02X",
+            i, o->x, o->y, arcdebug_uvi_colour_name(o->colour),
+            o->double_height ? "8x16" : "8x8 ", o->udc,
+            o->visible ? "visible" : "off screen", hits,
+            o->reg_x, o->reg_y, o->shape[0], o->shape[1], o->shape[2], o->shape[3],
+            o->shape[4], o->shape[5], o->shape[6], o->shape[7]);
+        gtk_label_set_text(GTK_LABEL(v->obj[i].label), text);
+        {
+            uint8_t sig[12] = { o->reg_x, o->reg_y, (uint8_t)o->colour,
+                                (uint8_t)o->double_height };
+            memcpy(sig + 4, o->shape, 8);
+            obj_bitmap(v, &v->obj[i], i, sig, sizeof sig);
         }
     }
 }
@@ -581,24 +514,15 @@ static void refresh_objects(DbgVideo *v)
 static GtkWidget *build_objects(DbgVideo *v)
 {
     GtkWidget *scroll = gtk_scrolled_window_new();
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    int i, q, j;
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    int i;
 
-    gtk_box_append(GTK_BOX(box), dbg_heading("Sprites (4: 8 x 8, 8 shape bytes each)"));
+    gtk_box_append(GTK_BOX(box), dbg_heading("The four objects (8 x 8, or 8 x 16 with the size flag)"));
     for (i = 0; i < 4; i++)
-        obj_row_new(box, &v->spr[i]);
-    gtk_box_append(GTK_BOX(box), dbg_heading("Single characters (12)"));
-    for (i = 0; i < 12; i++)
-        obj_row_new(box, &v->single[i]);
-    gtk_box_append(GTK_BOX(box), dbg_heading("Quads (4 x 4 characters)"));
-    for (q = 0; q < 4; q++) {
-        v->quad_head[q] = GTK_LABEL(gtk_label_new(""));
-        gtk_widget_add_css_class(GTK_WIDGET(v->quad_head[q]), "dim-label");
-        gtk_label_set_xalign(v->quad_head[q], 0);
-        gtk_box_append(GTK_BOX(box), GTK_WIDGET(v->quad_head[q]));
-        for (j = 0; j < 4; j++)
-            obj_row_new(box, &v->quad[q * 4 + j]);
-    }
+        obj_row_new(box, &v->obj[i]);
+    gtk_box_append(GTK_BOX(box), dbg_hint("Each object is drawn from the user-defined character "
+                                          "$38 + its index ($1980-$19BF); the outline colours in "
+                                          "the picture are red, green, blue and orange for 0-3.", 44));
     gtk_widget_set_margin_start(box, 6);
     gtk_widget_set_margin_end(box, 6);
     gtk_widget_set_margin_top(box, 6);
@@ -607,147 +531,167 @@ static GtkWidget *build_objects(DbgVideo *v)
     return scroll;
 }
 
-/* ---- the grid -------------------------------------------------------------------------- */
+/* ---- the character screen ----------------------------------------------------------------- */
 
-#define GRID_CW 28              /* one cell of the diagram */
-#define GRID_CH 20
-#define GRID_PAD 22
+#define SCR_CELL 24             /* one character cell, 3 x the glyph's pixels */
+#define SCR_PAD 22
 
-static void draw_grid(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer ud)
+/* The block-graphics shapes (the chip's "rectangle" table): each of the six
+ * bits lights one 2 x 3 pixel-wide block, bits 0-2 across the top four rows,
+ * bits 3-5 across the bottom four. */
+static void rectangle_shape(unsigned code, uint8_t out[8])
+{
+    uint8_t top = 0, bot = 0;
+    int i;
+    if (code & 1)    top |= 0x03;
+    if (code & 2)    top |= 0x1c;
+    if (code & 4)    top |= 0xe0;
+    if (code & 8)    bot |= 0x03;
+    if (code & 0x10) bot |= 0x1c;
+    if (code & 0x20) bot |= 0xe0;
+    for (i = 0; i < 4; i++) { out[i] = top; out[4 + i] = bot; }
+}
+
+static void draw_screen(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer ud)
 {
     DbgVideo *v = ud;
-    const i8244_snapshot *s = &v->snap;
     GtkWidget *wg = GTK_WIDGET(area);
-    const guint32 on = v->have_palette ? (v->palette[(s->grid_lum ? 8 : 0) + (s->grid_color & 7)] & 0xFFFFFF)
-                                        : 0xFFE040;
-    const double alpha = s->grid_en ? 1.0 : 0.35;
-    int i, y;
+    const int rows = v->nrows > 0 ? v->nrows : 13;
+    int r, c, i;
     (void)width; (void)height;
 
-    cairo_rectangle(cr, 0, 0, GRID_PAD * 2 + 9 * GRID_CW, GRID_PAD * 2 + 8 * GRID_CH);
-    dbg_set_rgb(cr, 0x101010, 1.0);
-    cairo_fill(cr);
+    for (c = 0; c < ARCDEBUG_UVI_COLS; c++) {
+        char t[4];
+        g_snprintf(t, sizeof t, "%X", c);
+        dbg_set_fg(cr, wg, 0.6);
+        dbg_draw_centred(cr, wg, t, SCR_PAD + c * SCR_CELL, 0, SCR_CELL, SCR_PAD - 2, TRUE);
+    }
+    for (r = 0; r < rows; r++) {
+        char t[4];
+        g_snprintf(t, sizeof t, "%d", r);
+        dbg_set_fg(cr, wg, 0.6);
+        dbg_draw_centred(cr, wg, t, 0, SCR_PAD + r * SCR_CELL, SCR_PAD - 2, SCR_CELL, TRUE);
+        for (c = 0; c < ARCDEBUG_UVI_COLS; c++) {
+            const arcdebug_uvi_cell *cell = &v->cells[r * ARCDEBUG_UVI_COLS + c];
+            const double x = SCR_PAD + c * SCR_CELL, y = SCR_PAD + r * SCR_CELL;
+            uint8_t shape[8];
+            int row, bit;
+            const double px = SCR_CELL / 8.0;
 
-    for (i = 0; i < 10; i++) {
-        char t[4];
-        g_snprintf(t, sizeof t, "%d", i);
-        dbg_set_rgb(cr, 0x909090, 1.0);
-        dbg_draw_centred(cr, wg, t, GRID_PAD + i * GRID_CW - 10, 2, 20, GRID_PAD - 4, TRUE);
-    }
-    for (y = 0; y < 9; y++) {
-        char t[4];
-        g_snprintf(t, sizeof t, "%d", y);
-        dbg_set_rgb(cr, 0x909090, 1.0);
-        dbg_draw_centred(cr, wg, t, 0, GRID_PAD + y * GRID_CH - 8, GRID_PAD - 4, 16, TRUE);
-    }
-    /* the 9 horizontal lines of 9 segments, and every point between them */
-    for (y = 0; y < 9; y++)
-        for (i = 0; i < 9; i++) {
-            const gboolean lit = (s->hgrid[i] >> y) & 1;
-            cairo_move_to(cr, GRID_PAD + i * GRID_CW, GRID_PAD + y * GRID_CH);
-            cairo_line_to(cr, GRID_PAD + (i + 1) * GRID_CW, GRID_PAD + y * GRID_CH);
-            if (lit) {
-                dbg_set_rgb(cr, on, alpha);
-                cairo_set_line_width(cr, 4);
-            } else {
-                dbg_set_rgb(cr, 0x606060, 0.35);
-                cairo_set_line_width(cr, 1);
-            }
-            cairo_stroke(cr);
+            if (v->have_palette)
+                dbg_set_rgb(cr, v->palette[cell->bg & 7], 1.0);
+            else
+                dbg_set_rgb(cr, 0x000000, 1.0);
+            cairo_rectangle(cr, x, y, SCR_CELL, SCR_CELL);
+            cairo_fill(cr);
+            if (cell->graphics)
+                rectangle_shape(cell->code & 0x3f, shape);
+            else
+                memcpy(shape, v->snap.chars[cell->glyph & 0x3f], 8);
+            if (v->have_palette)
+                dbg_set_rgb(cr, v->palette[cell->fg & 7], 1.0);
+            else
+                dbg_set_rgb(cr, 0xFFFFFF, 1.0);
+            for (row = 0; row < 8; row++)
+                for (bit = 0; bit < 8; bit++)
+                    if (shape[row] & (0x80 >> bit))
+                        cairo_rectangle(cr, x + bit * px, y + row * px, px, px);
+            cairo_fill(cr);
         }
-    /* the 10 vertical lines of 8 segments; "fill" makes them as wide as a cell */
-    for (i = 0; i < 10; i++)
-        for (y = 0; y < 8; y++) {
-            const gboolean lit = (s->vgrid[i] >> y) & 1;
-            if (lit && s->fill) {
-                dbg_set_rgb(cr, on, 0.55 * alpha);
-                cairo_rectangle(cr, GRID_PAD + i * GRID_CW, GRID_PAD + y * GRID_CH,
-                                GRID_CW, GRID_CH);
-                cairo_fill(cr);
-                continue;
-            }
-            cairo_move_to(cr, GRID_PAD + i * GRID_CW, GRID_PAD + y * GRID_CH);
-            cairo_line_to(cr, GRID_PAD + i * GRID_CW, GRID_PAD + (y + 1) * GRID_CH);
-            if (lit) {
-                dbg_set_rgb(cr, on, alpha);
-                cairo_set_line_width(cr, 3);
-            } else {
-                dbg_set_rgb(cr, 0x606060, 0.35);
-                cairo_set_line_width(cr, 1);
-            }
-            cairo_stroke(cr);
-        }
-    if (s->dots_en) {
-        dbg_set_rgb(cr, on, alpha);
-        for (y = 0; y < 9; y++)
-            for (i = 0; i < 10; i++) {
-                cairo_rectangle(cr, GRID_PAD + i * GRID_CW - 2, GRID_PAD + y * GRID_CH - 2, 5, 5);
-                cairo_fill(cr);
-            }
+    }
+    /* the cell grid, and the selected cell outlined */
+    dbg_set_fg(cr, wg, 0.25);
+    cairo_set_line_width(cr, 1);
+    for (i = 0; i <= ARCDEBUG_UVI_COLS; i++) {
+        cairo_move_to(cr, SCR_PAD + i * SCR_CELL + 0.5, SCR_PAD);
+        cairo_line_to(cr, SCR_PAD + i * SCR_CELL + 0.5, SCR_PAD + rows * SCR_CELL);
+    }
+    for (i = 0; i <= rows; i++) {
+        cairo_move_to(cr, SCR_PAD, SCR_PAD + i * SCR_CELL + 0.5);
+        cairo_line_to(cr, SCR_PAD + ARCDEBUG_UVI_COLS * SCR_CELL, SCR_PAD + i * SCR_CELL + 0.5);
+    }
+    cairo_stroke(cr);
+    if (v->screen_sel >= 0 && v->screen_sel < rows * ARCDEBUG_UVI_COLS) {
+        dbg_set_rgb(cr, dbg_accent_line_rgb(), 1.0);
+        cairo_set_line_width(cr, 2);
+        cairo_rectangle(cr, SCR_PAD + (v->screen_sel % ARCDEBUG_UVI_COLS) * SCR_CELL + 1,
+                        SCR_PAD + (v->screen_sel / ARCDEBUG_UVI_COLS) * SCR_CELL + 1,
+                        SCR_CELL - 2, SCR_CELL - 2);
+        cairo_stroke(cr);
     }
 }
 
-static void refresh_grid(DbgVideo *v)
+static void screen_select(DbgVideo *v, int idx)
 {
-    const i8244_snapshot *s = &v->snap;
-    char text[900];
-    int i, lit_h = 0, lit_v = 0;
-
-    fetch_palette(v);
-    for (i = 0; i < 9; i++)
-        lit_h += __builtin_popcount(s->hgrid[i]);
-    for (i = 0; i < 10; i++)
-        lit_v += __builtin_popcount(s->vgrid[i]);
-    g_snprintf(text, sizeof text,
-        "Grid         %s   (control bit 3)\n"
-        "Dots         %s   (bit 6)\n"
-        "Fill         %s   (bit 7: vertical lines %s)\n"
-        "Colour       %d %s%s   ($A3: bits 0-2, brightness bit 6)\n"
-        "Cells        %d x %d units, from x=%d (x2 px) y=%d\n"
-        "Lines lit    %d of 81 horizontal, %d of 80 vertical\n"
-        "Write lock   $C0-$FF %s while the grid is on",
-        s->grid_en ? "on" : "off", s->dots_en ? "on" : "off", s->fill ? "on" : "off",
-        s->fill ? "16 units wide" : "2 units wide", s->grid_color,
-        i8244_colour_name(s->grid_color), s->grid_lum ? " (bright)" : "",
-        s->cell_w, s->cell_h, s->grid_x0, s->grid_y0, lit_h, lit_v,
-        s->lock_grid ? "ignore writes and read 0" : "are plain RAM");
-    gtk_label_set_text(v->grid_text, text);
-    gtk_widget_queue_draw(v->grid_area);
+    char text[200];
+    v->screen_sel = idx;
+    if (idx >= 0 && idx < v->nrows * ARCDEBUG_UVI_COLS)
+        describe_cell(v, idx, text, sizeof text);
+    else
+        g_snprintf(text, sizeof text, "Click a cell to see its code and colours");
+    gtk_label_set_text(v->screen_text, text);
+    gtk_widget_queue_draw(v->screen_area);
 }
 
-static GtkWidget *build_grid(DbgVideo *v)
+static void on_screen_click(GtkGestureClick *g, int n, double x, double y, gpointer ud)
+{
+    DbgVideo *v = ud;
+    const int c = (int)floor((x - SCR_PAD) / SCR_CELL), r = (int)floor((y - SCR_PAD) / SCR_CELL);
+    (void)g; (void)n;
+    if (c < 0 || c >= ARCDEBUG_UVI_COLS || r < 0 || r >= v->nrows) return;
+    screen_select(v, r * ARCDEBUG_UVI_COLS + c);
+}
+
+static void refresh_screen(DbgVideo *v)
+{
+    char t[200];
+    int h;
+    fetch_palette(v);
+    v->nrows = arcdebug_uvi_cells(v->dbg, v->cells);
+    h = SCR_PAD + (v->nrows > 0 ? v->nrows : 13) * SCR_CELL + 2;
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(v->screen_area), h);
+    if (v->screen_sel >= v->nrows * ARCDEBUG_UVI_COLS)
+        v->screen_sel = -1;
+    if (v->screen_sel >= 0)
+        describe_cell(v, v->screen_sel, t, sizeof t);
+    else
+        g_snprintf(t, sizeof t, "Click a cell to see its code and colours");
+    gtk_label_set_text(v->screen_text, t);
+    gtk_widget_queue_draw(v->screen_area);
+}
+
+static GtkWidget *build_screen(DbgVideo *v)
 {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     GtkWidget *scroll = gtk_scrolled_window_new();
+    GtkGesture *click = gtk_gesture_click_new();
 
-    v->grid_area = gtk_drawing_area_new();
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(v->grid_area), GRID_PAD * 2 + 9 * GRID_CW);
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(v->grid_area), GRID_PAD * 2 + 8 * GRID_CH);
-    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(v->grid_area), draw_grid, v, NULL);
-    gtk_widget_set_halign(v->grid_area, GTK_ALIGN_START);
-    v->grid_text = GTK_LABEL(dbg_mono_label());
-    gtk_box_append(GTK_BOX(box), dbg_heading("The grid: 9 horizontal lines of 9 segments, 10 vertical of 8"));
-    gtk_box_append(GTK_BOX(box), v->grid_area);
-    gtk_box_append(GTK_BOX(box), GTK_WIDGET(v->grid_text));
-    gtk_box_append(GTK_BOX(box), dbg_hint("Lit segments in the grid's colour; the faint ones are "
-                                          "off. Registers $C0-$CF/$D0-$D8 (horizontal) and "
-                                          "$E0-$E9 (vertical) hold the bits.", 40));
+    v->screen_sel = -1;
+    v->screen_area = gtk_drawing_area_new();
+    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(v->screen_area),
+                                       SCR_PAD + ARCDEBUG_UVI_COLS * SCR_CELL + 2);
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(v->screen_area),
+                                        SCR_PAD + 13 * SCR_CELL + 2);
+    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(v->screen_area), draw_screen, v, NULL);
+    gtk_widget_set_halign(v->screen_area, GTK_ALIGN_START);
+    g_signal_connect(click, "pressed", G_CALLBACK(on_screen_click), v);
+    gtk_widget_add_controller(v->screen_area, GTK_EVENT_CONTROLLER(click));
+    v->screen_text = GTK_LABEL(dbg_mono_label());
+    gtk_label_set_selectable(v->screen_text, FALSE);
+    gtk_box_append(GTK_BOX(box), dbg_heading("The character screen: 16 columns x 13 rows (26 with two screens)"));
+    gtk_box_append(GTK_BOX(box), v->screen_area);
+    gtk_box_append(GTK_BOX(box), GTK_WIDGET(v->screen_text));
+    gtk_box_append(GTK_BOX(box), dbg_hint("Each cell in the colours the chip gives it: the "
+                                          "character colour from its own colour bits (multicolor) "
+                                          "or the palette, on the screen colour. Codes $C0/$40 "
+                                          "switch block graphics on and off within a row; "
+                                          "glyphs $38-$3F are the UDCs.", 44));
     dbg_padded(box);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), box);
     return scroll;
 }
 
 /* ---- the registers ------------------------------------------------------------------------ */
-
-/* The register file folds mirrors onto one cell (the quads' shared x and y,
- * and $A0-$AF repeated at $B0-$BF). */
-static unsigned fold_mirrors(unsigned off)
-{
-    off &= 0xFF;
-    if ((off & 0xC2) == 0x40) off &= ~0x0Cu;
-    if ((off & 0xE0) == 0xA0) off &= ~0x10u;
-    return off;
-}
 
 static void on_reg_activate(GtkEntry *entry, gpointer ud)
 {
@@ -756,8 +700,8 @@ static void on_reg_activate(GtkEntry *entry, gpointer ud)
     long val;
     if (dbg_parse_num(gtk_editable_get_text(GTK_EDITABLE(entry)), &val)) {
         gtk_widget_remove_css_class(GTK_WIDGET(entry), "error");
-        arcdebug_vdc_write(v->dbg, off, (uint8_t)val);
-                dbg_video_refresh(v, FALSE);
+        arcdebug_uvi_write(v->dbg, off, (uint8_t)val);
+        dbg_video_refresh(v, FALSE);
     } else {
         gtk_widget_add_css_class(GTK_WIDGET(entry), "error");
     }
@@ -768,21 +712,25 @@ static GtkWidget *build_regs(DbgVideo *v)
     GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     GtkWidget *scroll = gtk_scrolled_window_new();
     GtkWidget *list = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
-    int i;
+    int i, n = 0;
+    unsigned a, g;
 
-    for (i = 0; i < 256; i++) {
+    for (g = 0; g < G_N_ELEMENTS(k_reg_ranges); g++)
+        for (a = k_reg_ranges[g].first; a <= k_reg_ranges[g].last && n < NREGROWS; a++, n++)
+            v->reg_off[n] = a;
+    for (i = 0; i < n; i++) {
         GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         GtkWidget *addr, *name, *val, *text;
-        char a[8];
-        g_snprintf(a, sizeof a, "$%02X", i);
-        addr = gtk_label_new(a);
+        char ab[8];
+        g_snprintf(ab, sizeof ab, "$%04X", 0x1800 + v->reg_off[i]);
+        addr = gtk_label_new(ab);
         gtk_widget_add_css_class(addr, "monospace");
         gtk_widget_add_css_class(addr, "dim-label");
         name = gtk_label_new("");
         gtk_widget_add_css_class(name, "monospace");
         gtk_label_set_xalign(GTK_LABEL(name), 0);
-        gtk_label_set_width_chars(GTK_LABEL(name), 24);
-        gtk_label_set_max_width_chars(GTK_LABEL(name), 24);
+        gtk_label_set_width_chars(GTK_LABEL(name), 12);
+        gtk_label_set_max_width_chars(GTK_LABEL(name), 12);
         gtk_label_set_ellipsize(GTK_LABEL(name), PANGO_ELLIPSIZE_END);
         val = gtk_entry_new();
         gtk_entry_set_max_length(GTK_ENTRY(val), 2);
@@ -790,49 +738,53 @@ static GtkWidget *build_regs(DbgVideo *v)
         gtk_editable_set_max_width_chars(GTK_EDITABLE(val), 2);
         gtk_widget_add_css_class(val, "monospace");
         gtk_widget_add_css_class(val, "arc-hex");
-        g_object_set_data(G_OBJECT(val), "reg", GINT_TO_POINTER(i));
+        g_object_set_data(G_OBJECT(val), "reg", GINT_TO_POINTER((int)v->reg_off[i]));
         g_signal_connect(val, "activate", G_CALLBACK(on_reg_activate), v);
         text = gtk_label_new("");
         gtk_widget_add_css_class(text, "monospace");
         gtk_label_set_xalign(GTK_LABEL(text), 0);
         gtk_widget_set_hexpand(text, TRUE);
-        gtk_label_set_width_chars(GTK_LABEL(text), 20);
-        gtk_label_set_max_width_chars(GTK_LABEL(text), 20);
+        gtk_label_set_width_chars(GTK_LABEL(text), 24);
+        gtk_label_set_max_width_chars(GTK_LABEL(text), 40);
         gtk_label_set_ellipsize(GTK_LABEL(text), PANGO_ELLIPSIZE_END);
         gtk_box_append(GTK_BOX(row), addr);
         gtk_box_append(GTK_BOX(row), name);
         gtk_box_append(GTK_BOX(row), val);
         gtk_box_append(GTK_BOX(row), text);
         gtk_box_append(GTK_BOX(list), row);
-        v->reg_row[i] = row;
         v->reg_name[i] = GTK_LABEL(name);
         v->reg_val[i] = GTK_ENTRY(val);
         v->reg_text[i] = GTK_LABEL(text);
     }
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), list);
     gtk_widget_set_vexpand(scroll, TRUE);
-    gtk_box_append(GTK_BOX(outer), dbg_hint("Every register $00-$FF with its name and what it "
-                                            "means now. Enter in a value writes it, with the chip's "
-                                            "own masks; a running program may write it "
-                                            "again.", 40));
+    gtk_box_append(GTK_BOX(outer), dbg_hint("The UVI's registers: $18F0-$18FF (object positions, "
+                                            "sound, screen geometry), $1900-$1908 (the keypads and "
+                                            "panel, read-only), $19F8-$19FF (colours, collisions, "
+                                            "pots). The screen RAM and the UDCs are in the Screen "
+                                            "and Sheets sections and the CPU tab's memory viewer. "
+                                            "Enter in a value writes it, with the chip's write "
+                                            "effects; a running program may write it again.", 44));
     gtk_box_append(GTK_BOX(outer), scroll);
     return dbg_padded(outer);
 }
 
 /* Values from the snapshot's raw file; a decoded line only for the ones whose
- * value changed (and the three that depend on the beam), because each
- * description is a call into the running machine. */
+ * value changed (and the ones that depend on the beam or the keys), because
+ * each description is a call into the running machine. */
 static void refresh_regs(DbgVideo *v)
 {
     int i;
-    for (i = 0; i < 256; i++) {
-        const uint8_t val = v->snap.regs[fold_mirrors((unsigned)i)];
-        const gboolean live = i == 0xA1 || i == 0xA4 || i == 0xA5 || i == 0xB1 || i == 0xB4 || i == 0xB5;
+    for (i = 0; i < NREGROWS; i++) {
+        const unsigned off = v->reg_off[i];
+        const uint8_t val = v->snap.reg[off];
+        const gboolean live = off == 0x0FF || (off >= 0x100 && off <= 0x108) ||
+                              off == 0x1FC || off == 0x1FD || off == 0x1FE || off == 0x1FF;
         char hex[4];
 
         if (!v->reg_built || v->reg_shown[i] != val || live) {
             char name[64], text[160];
-            arcdebug_vdc_describe(v->dbg, (unsigned)i, name, sizeof name, text, sizeof text);
+            arcdebug_uvi_describe(v->dbg, off, name, sizeof name, text, sizeof text);
             if (!v->reg_built)
                 gtk_label_set_text(v->reg_name[i], name);
             gtk_label_set_text(v->reg_text[i], text);
@@ -845,162 +797,61 @@ static void refresh_regs(DbgVideo *v)
     v->reg_built = TRUE;
 }
 
-/* ---- control and status ---------------------------------------------------------------------- */
+/* ---- control, collisions and the beam --------------------------------------------------------- */
 
 static void refresh_control(DbgVideo *v)
 {
-    static const char *const src[8] = { "sprite 0", "sprite 1", "sprite 2", "sprite 3",
-                                        "vertical grid", "horizontal grid and dots",
-                                        "external (CX)", "characters" };
-    const i8244_snapshot *s = &v->snap;
+    static const char *const pair[6] = { "0-1", "0-2", "0-3", "1-2", "1-3", "2-3" };
+    const arcdebug_uvi *s = &v->snap;
     GString *t = g_string_new(NULL);
     int b;
 
     g_string_append_printf(t,
-        "CONTROL  $A0 = $%02X\n"
-        "  7 fill          %-3s  vertical grid lines 16 units wide, not 2\n"
-        "  6 dots          %-3s\n"
-        "  5 foreground    %-3s  objects drawn; writes to $00-$7F %s\n"
-        "  4 external IRQ  %-3s  an overlap with the external (CX) input interrupts\n"
-        "  3 grid          %-3s  grid drawn; writes to $C0-$FF %s\n"
-        "  2 sound IRQ     %-3s  interrupt when the shift register reloads\n"
-        "  1 strobe        %-3s  $A4/$A5 read %s\n"
-        "  0 (unused)      %d\n\n",
-        s->control, s->fill ? "on" : "off", s->dots_en ? "on" : "off",
-        s->fg_en ? "on" : "off", s->lock_objects ? "ignored" : "accepted",
-        s->ext_irq_en ? "on" : "off", s->grid_en ? "on" : "off",
-        s->lock_grid ? "ignored" : "accepted", s->sound_irq_en ? "on" : "off",
-        s->strobe ? "on" : "off", s->strobe ? "the latched beam position" : "the live beam",
-        s->ctl_bit0);
+        "SCREEN\n"
+        "  rows          %d%s, cells 8 x %d\n"
+        "  first line    %d ($18FC)     fine scroll %d pixels ($18FE bits 5-7)\n"
+        "  multicolor    %s   (colour bits per character, $18FD bit 7)\n"
+        "  block graphics at the top of the screen  %s   ($19F8 bit 7)\n"
+        "  pots read     %s   ($19F9 bit 6)\n\n",
+        s->rows, s->two_screens ? " (two screens)" : "", s->cell_height, s->first_line, s->shift,
+        s->multicolor ? "on" : "off", s->block_graphics ? "on" : "off",
+        s->pot_y ? "the X axes" : "the Y axes (multiplexed)");
     g_string_append_printf(t,
-        "STATUS   $A1 reads $%02X now\n"
-        "  7 characters overlapped each other   %d  (sticky)\n"
-        "  6 external overlap (CX)              %d  (sticky)\n"
-        "  3 vertical blank                     %d  (sticky)\n"
-        "  2 sound shift register reloaded      %d  (sticky)\n"
-        "  1 strobe                             %d\n"
-        "  0 horizontal status                  %d\n"
-        "  _INTR line                           %s\n\n",
-        s->status, s->st_char_overlap, s->st_ext_overlap, s->st_vblank, s->st_sound,
-        s->st_strobe, s->st_hstatus, s->irq ? "asserted" : "-");
+        "COLOURS\n"
+        "  screen        %d %s   character %d %s       ($19F9)\n"
+        "  alternate     screen %d %s   character %d %s       ($19F8)\n\n",
+        s->screen_colour, arcdebug_uvi_colour_name(s->screen_colour),
+        s->char_colour, arcdebug_uvi_colour_name(s->char_colour),
+        s->alt_screen_colour, arcdebug_uvi_colour_name(s->alt_screen_colour),
+        s->alt_char_colour, arcdebug_uvi_colour_name(s->alt_char_colour));
     g_string_append_printf(t,
-        "COLLISION  $A2   mask $%02X   latch $%02X   (a read clears the latch)\n"
-        "  bit  source                      mask  latch\n", s->col_mask, s->col_result);
-    for (b = 0; b < 8; b++)
-        g_string_append_printf(t, "   %d   %-26s   %d     %d\n", b, src[b],
-                               (s->col_mask >> b) & 1, (s->col_result >> b) & 1);
+        "COLLISIONS (a 0 bit is a hit; reading clears them)\n"
+        "  objects x characters  $19FC = $%02X   ", s->coll_chars);
+    for (b = 0; b < 4; b++)
+        g_string_append_printf(t, "obj%d %s  ", b, (s->coll_chars >> b) & 1 ? "-" : "HIT");
+    g_string_append_printf(t, "\n  objects x objects     $19FD = $%02X\n    ", s->coll_objects);
+    for (b = 0; b < 6; b++)
+        g_string_append_printf(t, "%s %s  ", pair[b], (s->coll_objects >> b) & 1 ? "-" : "HIT");
     g_string_append_printf(t,
-        "\nCOLOURS  $A3 = $%02X\n"
-        "  background    %d %s\n"
-        "  grid          %d %s%s\n"
-        "  P17 (LUM)     %s\n\n",
-        s->color_reg, s->bg_color, i8244_colour_name(s->bg_color), s->grid_color,
-        i8244_colour_name(s->grid_color), s->grid_lum ? " (bright)" : "",
-        s->p17_lum ? "low: every pixel brightened" : "high");
+        "\n\nBEAM\n"
+        "  line          %d of %d   character row %d ($18FF)   vblank (SENSE) %s\n\n",
+        s->line, s->lines, s->charline, s->vblank ? "yes" : "no");
     g_string_append_printf(t,
-        "BEAM     now x=%d y=%d   (hpos %d, vpos %d)\n"
-        "         $A5/$A4 latched x=%d y=%d\n"
-        "         lazy renderer at line %d, dot %d   frame %llu\n"
-        "         %s   %.2f Hz frame   %.0f Hz line   pixel clock %.0f Hz\n",
-        s->x_beam, s->y_beam, s->hpos, s->vpos, s->x_beam_latched, s->y_beam_latched,
-        s->last_scan, s->part_hpos, (unsigned long long)s->frames,
-        s->is_pal ? "8245 (PAL)" : "8244 (NTSC)", s->frame_hz, s->line_hz, s->pixel_hz);
+        "SOUND (the beeper; the Sound & I/O tab decodes it live)\n"
+        "  pitch divider %d ($18FD bits 0-6)   volume %d   tone %s   noise %s ($18FE)\n",
+        s->sound_pitch, s->sound_volume, s->sound_tone ? "on" : "off",
+        s->sound_noise ? "on" : "off");
     gtk_label_set_text(v->control_text, t->str);
     g_string_free(t, TRUE);
-}
-
-/* ---- sound ----------------------------------------------------------------------------------------- */
-
-#define SHIFT_CELL 20
-
-static void draw_shift(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer ud)
-{
-    DbgVideo *v = ud;
-    GtkWidget *wg = GTK_WIDGET(area);
-    int i;
-    (void)width; (void)height;
-    /* bit 23 (the first one out) on the left */
-    for (i = 0; i < 24; i++) {
-        const int bit = 23 - i;
-        const gboolean one = (v->snap.shift >> bit) & 1;
-        double x = i * SHIFT_CELL + 0.5 + (i / 8) * 6, y = 14.5;
-        char t[4];
-        cairo_rectangle(cr, x, y, SHIFT_CELL - 2, 24);
-        if (one) {
-            dbg_set_rgb(cr, ARCSESSION_ACCENT_RGB, 1.0);
-            cairo_fill_preserve(cr);
-        }
-        dbg_set_fg(cr, wg, 0.35);
-        cairo_set_line_width(cr, 1);
-        cairo_stroke(cr);
-        g_snprintf(t, sizeof t, "%d", one);
-        if (one) cairo_set_source_rgb(cr, 1, 1, 1);
-        else dbg_set_fg(cr, wg, 0.8);
-        dbg_draw_centred(cr, wg, t, x, y, SHIFT_CELL - 2, 24, TRUE);
-        g_snprintf(t, sizeof t, "%d", bit);
-        dbg_set_fg(cr, wg, 0.5);
-        dbg_draw_centred(cr, wg, t, x - 2, 0, SHIFT_CELL + 2, 14, FALSE);
-    }
-}
-
-static void refresh_sound(DbgVideo *v)
-{
-    const i8244_snapshot *s = &v->snap;
-    char text[1000], tone[96];
-
-    if (s->snd_noise)
-        g_snprintf(tone, sizeof tone, "noise: the shift register is a noise source");
-    else if (s->freq_hz > 0.5)
-        g_snprintf(tone, sizeof tone, "%.1f Hz (the pattern repeats every %d bits)", s->freq_hz,
-                   s->pattern_period);
-    else
-        g_snprintf(tone, sizeof tone, "a steady level (no tone)");
-    g_snprintf(text, sizeof text,
-        "SOUND    $AA = $%02X   shift register $A7-$A9 = $%06X\n"
-        "  7 enable        %s\n"
-        "  5 clock         %s: the register shifts at line rate / %d = %.0f Hz\n"
-        "  4 mode          %s\n"
-        "  3-0 volume      %d of 15\n"
-        "  output now      %d (the bit at the end of the register)\n"
-        "  sound IRQ       %s; reload pending %d\n"
-        "  tone            %s\n",
-        s->snd_reg, s->shift, s->snd_enable ? "on" : "off",
-        s->snd_fast ? "fast" : "slow", s->snd_fast ? 4 : 16, s->shift_clock_hz,
-        s->snd_noise ? "noise" : "loop (the register rotates)", s->snd_volume,
-        s->sh_output, s->sound_irq_en ? "enabled" : "off", s->sh_pending, tone);
-    gtk_label_set_text(v->sound_text, text);
-    gtk_widget_queue_draw(v->shift_area);
-}
-
-static GtkWidget *build_sound(DbgVideo *v)
-{
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    GtkWidget *scroll = gtk_scrolled_window_new();
-
-    v->shift_area = gtk_drawing_area_new();
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(v->shift_area), 24 * SHIFT_CELL + 2 * 6);
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(v->shift_area), 44);
-    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(v->shift_area), draw_shift, v, NULL);
-    gtk_widget_set_halign(v->shift_area, GTK_ALIGN_START);
-    v->sound_text = GTK_LABEL(dbg_mono_label());
-    gtk_box_append(GTK_BOX(box), dbg_heading("The 24-bit shift register"));
-    gtk_box_append(GTK_BOX(box), v->shift_area);
-    gtk_box_append(GTK_BOX(box), GTK_WIDGET(v->sound_text));
-    gtk_box_append(GTK_BOX(box), dbg_hint("The chip's only voice: a 24-bit pattern shifted out "
-                                          "once per clock, at the volume set. A repeating "
-                                          "pattern is a tone.", 40));
-    dbg_padded(box);
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), box);
-    return scroll;
 }
 
 /* ---- sheets --------------------------------------------------------------------------------------------- */
 
 static void refresh_sheets(DbgVideo *v)
 {
-    show_view(v, NULL, v->sheet_font, ARCDEBUG_VDC_FONT, 0, 0, 3, FALSE);
-    show_view(v, NULL, v->sheet_shapes, ARCDEBUG_VDC_SHAPES, 0, 0, 3, FALSE);
-    show_view(v, NULL, v->sheet_palette, ARCDEBUG_VDC_PALETTE, 0, 0, 2, FALSE);
+    show_view(v, NULL, v->sheet_font, ARCDEBUG_UVI_FONT, 0, 0, 3, FALSE);
+    show_view(v, NULL, v->sheet_objects, ARCDEBUG_UVI_OBJECTS, 0, 0, 3, FALSE);
+    show_view(v, NULL, v->sheet_palette, ARCDEBUG_UVI_PALETTE, 0, 0, 2, FALSE);
 }
 
 static GtkWidget *build_sheets(DbgVideo *v)
@@ -1009,14 +860,14 @@ static GtkWidget *build_sheets(DbgVideo *v)
     GtkWidget *scroll = gtk_scrolled_window_new();
 
     v->sheet_font = image_area_new();
-    v->sheet_shapes = image_area_new();
+    v->sheet_objects = image_area_new();
     v->sheet_palette = image_area_new();
-    gtk_box_append(GTK_BOX(box), dbg_heading("Character set: 64 glyphs, the lower 256 bytes "
-                                             "(colour bit 0 = 0) above the upper"));
+    gtk_box_append(GTK_BOX(box), dbg_heading("Glyph table: 64 characters, 16 x 4 ($38-$3F, the last "
+                                             "eight, are the UDCs)"));
     gtk_box_append(GTK_BOX(box), v->sheet_font->widget);
-    gtk_box_append(GTK_BOX(box), dbg_heading("Sprite shape tables ($80-$9F), in their colours"));
-    gtk_box_append(GTK_BOX(box), v->sheet_shapes->widget);
-    gtk_box_append(GTK_BOX(box), dbg_heading("Palette: 8 colours (top), the same bright (below)"));
+    gtk_box_append(GTK_BOX(box), dbg_heading("The four objects' images, in their colours"));
+    gtk_box_append(GTK_BOX(box), v->sheet_objects->widget);
+    gtk_box_append(GTK_BOX(box), dbg_heading("Palette: the UVI's 8 colours"));
     gtk_box_append(GTK_BOX(box), v->sheet_palette->widget);
     dbg_padded(box);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), box);
@@ -1029,10 +880,9 @@ static void refresh_section(DbgVideo *v, int sec)
 {
     switch (sec) {
     case SEC_OBJECTS: refresh_objects(v); break;
-    case SEC_GRID: refresh_grid(v); break;
+    case SEC_SCREEN: refresh_screen(v); break;
     case SEC_REGS: refresh_regs(v); break;
     case SEC_CONTROL: refresh_control(v); break;
-    case SEC_SOUND: refresh_sound(v); break;
     case SEC_SHEETS: refresh_sheets(v); break;
     default: break;
     }
@@ -1042,13 +892,13 @@ static void on_section_switch(GtkNotebook *nb, GtkWidget *page, guint num, gpoin
 {
     DbgVideo *v = ud;
     (void)nb; (void)page;
-    arcdebug_vdc_get(v->dbg, &v->snap);
+    arcdebug_uvi_get(v->dbg, &v->snap);
     refresh_section(v, (int)num);
 }
 
 void dbg_video_refresh(DbgVideo *v, gboolean live)
 {
-    arcdebug_vdc_get(v->dbg, &v->snap);
+    arcdebug_uvi_get(v->dbg, &v->snap);
     picture_update(v);
     /* while the machine runs, the sections look at the registers a few times
      * a second; stopped, every call is a change worth showing */
@@ -1080,7 +930,7 @@ DbgVideo *dbg_video_new(arcsession *session, arcdebug *dbg, GtkWidget **root)
 
     v->session = session;
     v->dbg = dbg;
-    v->cap = (size_t)ARCDEBUG_VDC_VIEW_MAX_PIXELS * SCALE * SCALE;
+    v->cap = (size_t)ARCDEBUG_UVI_VIEW_MAX_PIXELS * SCALE * SCALE;
     v->buf = g_new0(uint32_t, v->cap);
     v->prev = g_new0(uint32_t, v->cap);
 
@@ -1090,20 +940,20 @@ DbgVideo *dbg_video_new(arcsession *session, arcdebug *dbg, GtkWidget **root)
     row = dbg_labeled("View", GTK_WIDGET(v->view));
     layers = gtk_flow_box_new();
     gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(layers), GTK_SELECTION_NONE);
-    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(layers), 7);
+    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(layers), 4);
     for (i = 0; i < NLAYERS; i++) {
         v->layer[i] = GTK_CHECK_BUTTON(check(k_layers[i].name, TRUE, G_CALLBACK(on_option_toggled), v));
         gtk_flow_box_append(GTK_FLOW_BOX(layers), GTK_WIDGET(v->layer[i]));
     }
     flags = gtk_flow_box_new();
     gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(flags), GTK_SELECTION_NONE);
-    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(flags), 6);
+    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(flags), 4);
     for (i = 0; i < NFLAGS; i++) {
-        v->flag[i] = GTK_CHECK_BUTTON(check(k_flags[i].name, FALSE, G_CALLBACK(on_option_toggled), v));
+        v->flag[i] = GTK_CHECK_BUTTON(check(k_flags[i].name, i == 0, G_CALLBACK(on_option_toggled), v));
         gtk_flow_box_append(GTK_FLOW_BOX(flags), GTK_WIDGET(v->flag[i]));
     }
 
-    /* the picture, with the overlay that boxes and outlines over it */
+    /* the picture, with the overlay that indexes and outlines over it */
     v->pic = new_picture();
     gtk_widget_set_size_request(GTK_WIDGET(v->pic), FRAME_W * SCALE, FRAME_H * SCALE);
     v->overlay_area = gtk_drawing_area_new();
@@ -1140,15 +990,14 @@ DbgVideo *dbg_video_new(arcsession *session, arcdebug *dbg, GtkWidget **root)
     gtk_widget_set_hexpand(GTK_WIDGET(v->sections), TRUE);
     gtk_widget_set_vexpand(GTK_WIDGET(v->sections), TRUE);
     gtk_notebook_append_page(v->sections, build_objects(v), gtk_label_new("Objects"));
-    gtk_notebook_append_page(v->sections, build_grid(v), gtk_label_new("Grid"));
+    gtk_notebook_append_page(v->sections, build_screen(v), gtk_label_new("Screen"));
     gtk_notebook_append_page(v->sections, build_regs(v), gtk_label_new("Registers"));
     {
         GtkWidget *scroll = gtk_scrolled_window_new();
         v->control_text = GTK_LABEL(dbg_mono_label());
         gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), dbg_padded(GTK_WIDGET(v->control_text)));
-        gtk_notebook_append_page(v->sections, scroll, gtk_label_new("Control/Status"));
+        gtk_notebook_append_page(v->sections, scroll, gtk_label_new("Control"));
     }
-    gtk_notebook_append_page(v->sections, build_sound(v), gtk_label_new("Sound"));
     gtk_notebook_append_page(v->sections, build_sheets(v), gtk_label_new("Sheets"));
     g_signal_connect(v->sections, "switch-page", G_CALLBACK(on_section_switch), v);
 
@@ -1173,163 +1022,4 @@ void dbg_video_free(DbgVideo *v)
     g_free(v->buf);
     g_free(v->prev);
     g_free(v);
-}
-
-/* ======================================================================== */
-/* the EF9340 tab                                                            */
-/* ======================================================================== */
-
-struct DbgEf {
-    arcsession *session;
-    arcdebug *dbg;
-    GtkWidget *stack;
-    GtkTextView *regs_text, *page_text;
-    ImageArea *image;
-    uint32_t *buf, *prev;
-    gboolean have_prev;
-};
-
-static const char *cell_kind(int k)
-{
-    static const char *const n[4] = { "alphanumeric", "graphic", "delimiter", "illegal" };
-    return k >= 0 && k < 4 ? n[k] : "?";
-}
-
-/* One cell as a character: the alphanumeric ones as themselves, the
- * rest as a mark. */
-static char cell_char(const ef9340_cell_t *c)
-{
-    switch (c->kind) {
-    case EF9340_CELL_ALNUM: {
-        const int code = c->b & 0x7F;
-        return code >= 0x20 && code < 0x7F ? (char)code : '.';
-    }
-    case EF9340_CELL_GRAPHIC: return '#';
-    case EF9340_CELL_DELIMITER: return '|';
-    default: return '?';
-    }
-}
-
-void dbg_ef_refresh(DbgEf *e)
-{
-    ef9340_snapshot_t s;
-    GString *t;
-    int r, c;
-
-    if (!arcdebug_ef_present(e->dbg)) {
-        gtk_stack_set_visible_child_name(GTK_STACK(e->stack), "absent");
-        return;
-    }
-    gtk_stack_set_visible_child_name(GTK_STACK(e->stack), "present");
-    arcdebug_ef_get(e->dbg, &s);
-
-    t = g_string_new(NULL);
-    g_string_append_printf(t,
-        "EF9341 (GEN)   TA $%02X   TB $%02X   %s\n"
-        "EF9340 (VIN)   X %d   Y %d   Y0 $%02X   R $%02X   M $%02X\n\n"
-        "R  $%02X   display   %s\n"
-        "           box mode %s   conceal %s   service row %s\n"
-        "           cursor %s   %s lines   blink %s\n"
-        "Y0 $%02X   first row %d   zoom %s\n"
-        "M  $%02X   mode %s   slice %d\n"
-        "cursor     %s   blink phase %s\n"
-        "font       %s   lines drawn %llu\n",
-        s.ta, s.tb, s.busy ? "busy" : "ready", s.x, s.y, s.y0, s.r, s.m,
-        s.r, s.display_on ? "on" : "off", s.box_mode ? "on" : "off",
-        s.conceal_enabled ? "on" : "off", s.service_row ? "shown" : "hidden",
-        s.cursor_on ? "on" : "off", s.lines625 ? "250 (625-line)" : "210", s.blink_enabled ? "on" : "off",
-        s.y0, s.first_row, s.zoom ? "on (rows below the service row double height)" : "off",
-        s.m, s.mode_name ? s.mode_name : "?", s.slice,
-        s.cursor_visible ? "visible" : "not on a cell", s.blink ? "hidden" : "shown",
-        s.font_present ? "imported" : "NOT imported (text draws blank)",
-        (unsigned long long)s.lines_drawn);
-    dbg_set_text(e->regs_text, t->str);
-    g_string_free(t, TRUE);
-
-    t = g_string_new("      0         1         2         3\n"
-                     "      0123456789012345678901234567890123456789\n");
-    if (s.service_row) {
-        g_string_append(t, "svc   ");
-        for (c = 0; c < EF9340_COLUMNS; c++)
-            g_string_append_c(t, cell_char(&s.service[c]));
-        g_string_append_c(t, '\n');
-    }
-    for (r = 0; r < EF9340_ROWS; r++) {
-        g_string_append_printf(t, "%02d    ", r);
-        for (c = 0; c < EF9340_COLUMNS; c++)
-            g_string_append_c(t, cell_char(&s.page[r][c]));
-        g_string_append_c(t, '\n');
-    }
-    g_string_append_printf(t, "\n# graphic cell   | delimiter   ? illegal   . code with no glyph\n"
-                              "kinds: %s, %s, %s, %s\n",
-                           cell_kind(0), cell_kind(1), cell_kind(2), cell_kind(3));
-    dbg_set_text(e->page_text, t->str);
-    g_string_free(t, TRUE);
-
-    {
-        int w = 0, h = 0;
-        if (arcdebug_ef_view(e->dbg, e->buf, (size_t)EF9340_VIS_W * EF9340_VIS_H, &w, &h) &&
-            w > 0 && h > 0) {
-            const size_t bytes = (size_t)w * h * 4;
-            if (!e->have_prev || memcmp(e->buf, e->prev, bytes) != 0) {
-                memcpy(e->prev, e->buf, bytes);
-                e->have_prev = TRUE;
-                image_area_set(e->image, e->buf, w, h);
-            }
-        }
-    }
-}
-
-DbgEf *dbg_ef_new(arcsession *session, arcdebug *dbg, GtkWidget **root)
-{
-    DbgEf *e = g_new0(DbgEf, 1);
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-    GtkWidget *left = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    GtkWidget *mid = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    GtkWidget *right = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    GtkWidget *pscroll, *absent, *regs, *page;
-
-    e->session = session;
-    e->dbg = dbg;
-    e->buf = g_new0(uint32_t, (size_t)EF9340_VIS_W * EF9340_VIS_H);
-    e->prev = g_new0(uint32_t, (size_t)EF9340_VIS_W * EF9340_VIS_H);
-
-    regs = dbg_mono_view(&e->regs_text, FALSE);
-    gtk_text_view_set_wrap_mode(e->regs_text, GTK_WRAP_WORD_CHAR);
-    gtk_widget_set_size_request(regs, 380, -1);
-    page = dbg_mono_view(&e->page_text, FALSE);
-    gtk_widget_set_size_request(page, 420, -1);
-    e->image = image_area_new();
-    pscroll = gtk_scrolled_window_new();
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(pscroll), e->image->widget);
-    gtk_widget_set_hexpand(pscroll, TRUE);
-    gtk_widget_set_vexpand(pscroll, TRUE);
-
-    gtk_box_append(GTK_BOX(left), dbg_heading("Registers"));
-    gtk_box_append(GTK_BOX(left), regs);
-    gtk_box_append(GTK_BOX(mid), dbg_heading("Text page (40 x 24)"));
-    gtk_box_append(GTK_BOX(mid), page);
-    gtk_box_append(GTK_BOX(right), dbg_heading("The text layer, rendered"));
-    gtk_box_append(GTK_BOX(right), pscroll);
-    gtk_box_append(GTK_BOX(box), left);
-    gtk_box_append(GTK_BOX(box), mid);
-    gtk_box_append(GTK_BOX(box), right);
-
-    absent = gtk_label_new("Videopac+ G7400 only");
-    gtk_widget_add_css_class(absent, "title-2");
-    gtk_widget_add_css_class(absent, "dim-label");
-    e->stack = gtk_stack_new();
-    gtk_stack_add_named(GTK_STACK(e->stack), dbg_padded(box), "present");
-    gtk_stack_add_named(GTK_STACK(e->stack), absent, "absent");
-    gtk_stack_set_visible_child_name(GTK_STACK(e->stack), "absent");
-    *root = e->stack;
-    return e;
-}
-
-void dbg_ef_free(DbgEf *e)
-{
-    if (!e) return;
-    g_free(e->buf);
-    g_free(e->prev);
-    g_free(e);
 }

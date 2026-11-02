@@ -18,32 +18,28 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The views want at most one frame (360 x 243) at 1x, and the sheets up to 4x
- * of their own smaller size: room for four frames covers every one. */
-#define PX_CAP ((size_t)ARCDEBUG_VDC_VIEW_MAX_PIXELS * 4)
-#define OBJ_CAP (128 * 128)
+/* The views want at most one frame (192 x 262) at 1x, and the sheets up to 4x
+ * of their own size: arcdebug.h says to size by MAX_PIXELS * scale * scale. */
+#define PX_CAP ((size_t)ARCDEBUG_UVI_VIEW_MAX_PIXELS * 16)
+#define OBJ_CAP (64 * 64)
 
-#define OBJ_ROW_H     34.0
+#define OBJ_ROW_H     46.0
 #define OBJ_HEAD_H    24.0
-#define OBJ_THUMB     28.0
+#define OBJ_THUMB     40.0
 
 #define SECTION_OBJECTS  0
-#define SECTION_GRID     1
+#define SECTION_SCREEN   1
 #define SECTION_REGS     2
 #define SECTION_CONTROL  3
-#define SECTION_SOUND    4
-#define SECTION_SHEETS   5
+#define SECTION_SHEETS   4
 
 /* The layer and overlay checkboxes, with the bits they set. */
-static const struct { NSString *__unsafe_unretained title; unsigned bit; } kLayers[7] = {
-    { @"Background", I8244_L_BG }, { @"Grid", I8244_L_GRID }, { @"Vertical grid", I8244_L_VGRID },
-    { @"Dots", I8244_L_DOTS }, { @"Sprites", I8244_L_SPRITES }, { @"Singles", I8244_L_SINGLES },
-    { @"Quads", I8244_L_QUADS },
+static const struct { NSString *__unsafe_unretained title; unsigned bit; } kLayers[2] = {
+    { @"Characters", ARCDEBUG_UVI_L_CHARS }, { @"Objects", ARCDEBUG_UVI_L_OBJECTS },
 };
-static const struct { NSString *__unsafe_unretained title; unsigned bit; } kOverlays[6] = {
-    { @"Bounding boxes + indices", I8244_F_BOXES }, { @"Collision highlight", I8244_F_COLLISION },
-    { @"Overlap highlight", I8244_F_OVERLAP }, { @"Show hidden", I8244_F_SHOW_HIDDEN },
-    { @"Ignore enables", I8244_F_IGNORE_ENABLE }, { @"Beam cross-hair", I8244_F_BEAM },
+static const struct { NSString *__unsafe_unretained title; unsigned bit; } kOverlays[4] = {
+    { @"Object boxes + indices", ARCDEBUG_UVI_F_BOXES }, { @"Character grid", ARCDEBUG_UVI_F_GRID },
+    { @"Collisions", ARCDEBUG_UVI_F_COLLIDE }, { @"Beam cross-hair", ARCDEBUG_UVI_F_BEAM },
 };
 
 static NSColor *colorFromXrgb(uint32_t rgb)
@@ -128,131 +124,9 @@ static BOOL parseHex(NSString *text, long *out)
             [r.thumb drawInRect:dst fromRect:NSZeroRect operation:NSCompositingOperationSourceOver
                        fraction:1.0 respectFlipped:YES hints:nil];
         }
-        [r.line1 drawAtPoint:NSMakePoint(42, y + 3) withAttributes:one];
-        [r.line2 drawAtPoint:NSMakePoint(42, y + 18) withAttributes:two];
+        [r.line1 drawAtPoint:NSMakePoint(OBJ_THUMB + 12, y + 6) withAttributes:one];
+        [r.line2 drawAtPoint:NSMakePoint(OBJ_THUMB + 12, y + 24) withAttributes:two];
         y += OBJ_ROW_H;
-    }
-}
-@end
-
-/* ---- the grid diagram ------------------------------------------------------------- */
-
-#define GRID_CW 36.0
-#define GRID_CH 30.0
-#define GRID_PAD 14.0
-
-/* The grid as the chip holds it: 9 columns of 9 horizontal line segments and
- * 10 columns of 8 vertical ones, in the grid's colour. */
-@interface ArcGridView : NSView
-- (void)setSnapshot:(const i8244_snapshot *)s colour:(uint32_t)rgb;
-@end
-
-@implementation ArcGridView {
-    uint16_t _h[9];
-    uint8_t _v[10];
-    int _gridOn, _dotsOn, _fill;
-    uint32_t _rgb;
-}
-- (BOOL)isFlipped { return YES; }
-- (NSSize)intrinsicContentSize { return NSMakeSize(9 * GRID_CW + 2 * GRID_PAD, 8 * GRID_CH + 2 * GRID_PAD); }
-
-- (void)setSnapshot:(const i8244_snapshot *)s colour:(uint32_t)rgb
-{
-    if (!memcmp(_h, s->hgrid, sizeof _h) && !memcmp(_v, s->vgrid, sizeof _v) &&
-        _gridOn == s->grid_en && _dotsOn == s->dots_en && _fill == s->fill && _rgb == rgb)
-        return;
-    memcpy(_h, s->hgrid, sizeof _h);
-    memcpy(_v, s->vgrid, sizeof _v);
-    _gridOn = s->grid_en;
-    _dotsOn = s->dots_en;
-    _fill = s->fill;
-    _rgb = rgb;
-    [self setNeedsDisplay:YES];
-}
-
-- (void)drawRect:(NSRect)dirty
-{
-    (void)dirty;
-    [colorFromXrgb(0x101010) setFill];
-    NSRectFill([self bounds]);
-    NSColor *ink = colorFromXrgb(_rgb);
-    const CGFloat ox = GRID_PAD, oy = GRID_PAD;
-
-    /* the line segments that are set */
-    [ink setFill];
-    for (int c = 0; c < 9; c++)
-        for (int y = 0; y < 9; y++)
-            if ((_h[c] >> y) & 1)
-                NSRectFill(NSMakeRect(ox + c * GRID_CW, oy + y * GRID_CH - 1.5, GRID_CW, 3));
-    const CGFloat vw = _fill ? 6 : 3;
-    for (int i = 0; i < 10; i++)
-        for (int y = 0; y < 8; y++)
-            if ((_v[i] >> y) & 1)
-                NSRectFill(NSMakeRect(ox + i * GRID_CW - vw / 2, oy + y * GRID_CH, vw, GRID_CH));
-
-    /* the intersections: dots when the chip draws them, faint marks otherwise */
-    [(_dotsOn ? ink : colorFromXrgb(0x505050)) setFill];
-    const CGFloat d = _dotsOn ? 5 : 2;
-    for (int i = 0; i < 10; i++)
-        for (int y = 0; y < 9; y++)
-            NSRectFill(NSMakeRect(ox + i * GRID_CW - d / 2, oy + y * GRID_CH - d / 2, d, d));
-
-    if (!_gridOn) {
-        NSDictionary *a = @{ NSFontAttributeName: [NSFont boldSystemFontOfSize:12],
-                             NSForegroundColorAttributeName: colorFromXrgb(0xa0a0a0) };
-        [@"grid off (control bit 3): nothing of this is drawn" drawAtPoint:NSMakePoint(ox + 4, oy + 4)
-                                                             withAttributes:a];
-    }
-}
-@end
-
-/* ---- a register of bits -------------------------------------------------------------- */
-
-#define BIT_W 24.0
-#define BIT_H 28.0
-
-/* The sound shift register: its bits, the most significant at the left. */
-@interface ArcBitsView : NSView
-- (void)setValue:(uint32_t)value bits:(int)bits;
-@end
-
-@implementation ArcBitsView {
-    uint32_t _value;
-    int _bits;
-}
-- (BOOL)isFlipped { return YES; }
-- (NSSize)intrinsicContentSize { return NSMakeSize(24 * BIT_W + 2, BIT_H + 16); }
-
-- (void)setValue:(uint32_t)value bits:(int)bits
-{
-    if (value == _value && bits == _bits) return;
-    _value = value;
-    _bits = bits;
-    [self setNeedsDisplay:YES];
-}
-
-- (void)drawRect:(NSRect)dirty
-{
-    (void)dirty;
-    NSFont *font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
-    for (int i = 0; i < _bits; i++) {
-        const int bit = _bits - 1 - i;
-        const BOOL on = (_value >> bit) & 1u;
-        const NSRect r = NSMakeRect(1 + i * BIT_W, 0, BIT_W - 2, BIT_H);
-        [(on ? ArcAccentColor() : NSColor.controlBackgroundColor) setFill];
-        NSRectFill(r);
-        [NSColor.separatorColor setStroke];
-        [NSBezierPath strokeRect:NSInsetRect(r, 0.5, 0.5)];
-        NSDictionary *a = @{ NSFontAttributeName: font,
-                             NSForegroundColorAttributeName: on ? NSColor.whiteColor : NSColor.labelColor };
-        NSString *digit = on ? @"1" : @"0";
-        const NSSize sz = [digit sizeWithAttributes:a];
-        [digit drawAtPoint:NSMakePoint(NSMidX(r) - sz.width / 2, NSMidY(r) - sz.height / 2) withAttributes:a];
-        NSString *num = [NSString stringWithFormat:@"%d", bit];
-        NSDictionary *n = @{ NSFontAttributeName: [NSFont systemFontOfSize:8],
-                             NSForegroundColorAttributeName: NSColor.secondaryLabelColor };
-        const NSSize ns = [num sizeWithAttributes:n];
-        [num drawAtPoint:NSMakePoint(NSMidX(r) - ns.width / 2, BIT_H + 2) withAttributes:n];
     }
 }
 @end
@@ -261,29 +135,27 @@ static BOOL parseHex(NSString *text, long *out)
 
 @implementation ArcVideoTab {
     arcdebug *_dbg;
-    i8244_snapshot _snap;
+    arcdebug_uvi _uvi;
     uint32_t *_px;                      /* PX_CAP pixels: every view's scratch */
     uint32_t *_objPx;                   /* OBJ_CAP pixels: one object's bitmap */
-    uint32_t _pal[16];                  /* 8 colours dim, then 8 bright */
+    uint32_t _pal[8];                   /* the UVI's 8 colours */
     BOOL _palLoaded;
     CFAbsoluteTime _regsAt;
 
     NSPopUpButton *_viewSel;
-    NSButton *_layer[7];
-    NSButton *_overlay[6];
+    NSButton *_layer[2];
+    NSButton *_overlay[4];
     ArcPictureView *_pic;
     NSTextField *_hover, *_beam;
     NSTabView *_sections;
 
     ArcObjectsView *_objects;
-    ArcGridView *_grid;
-    NSTextField *_gridNote;
+    NSTextView *_screen;
+    NSTextField *_screenNote;
     ArcLineTextView *_regs;
     NSTextField *_regAddr, *_regVal, *_regNote;
     NSTextView *_control;
-    ArcBitsView *_bits;
-    NSTextView *_sound;
-    ArcPictureView *_fontPic, *_shapePic, *_palPic;
+    ArcPictureView *_fontPic, *_objPic, *_palPic;
 }
 
 - (instancetype)initWithDebugger:(arcdebug *)dbg
@@ -313,45 +185,43 @@ static BOOL parseHex(NSString *text, long *out)
                                    @"Frame in progress, to the beam"]];
     _viewSel.target = self;
     _viewSel.action = @selector(viewChanged:);
-    NSStackView *viewRow = O2HStack(@[ArcLabel(@"View"), _viewSel]);
+    NSStackView *viewRow = ArcHStack(@[ArcLabel(@"View"), _viewSel]);
 
     NSMutableArray<NSView *> *layerBoxes = [NSMutableArray array];
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < 2; i++) {
         _layer[i] = [NSButton checkboxWithTitle:kLayers[i].title target:self action:@selector(optionChanged:)];
         _layer[i].state = NSControlStateValueOn;
         _layer[i].controlSize = NSControlSizeSmall;
         [layerBoxes addObject:_layer[i]];
     }
     NSMutableArray<NSView *> *overlayBoxes = [NSMutableArray array];
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 4; i++) {
         _overlay[i] = [NSButton checkboxWithTitle:kOverlays[i].title target:self action:@selector(optionChanged:)];
         _overlay[i].controlSize = NSControlSizeSmall;
         [overlayBoxes addObject:_overlay[i]];
     }
-    NSStackView *layerRow1 = O2HStack([layerBoxes subarrayWithRange:NSMakeRange(0, 4)]);
-    NSStackView *layerRow2 = O2HStack([layerBoxes subarrayWithRange:NSMakeRange(4, 3)]);
-    NSStackView *ovRow1 = O2HStack([overlayBoxes subarrayWithRange:NSMakeRange(0, 3)]);
-    NSStackView *ovRow2 = O2HStack([overlayBoxes subarrayWithRange:NSMakeRange(3, 3)]);
-    layerRow1.spacing = 10;
-    layerRow2.spacing = 10;
+    NSStackView *layerRow = ArcHStack(layerBoxes);
+    NSStackView *ovRow1 = ArcHStack([overlayBoxes subarrayWithRange:NSMakeRange(0, 2)]);
+    NSStackView *ovRow2 = ArcHStack([overlayBoxes subarrayWithRange:NSMakeRange(2, 2)]);
+    layerRow.spacing = 10;
     ovRow1.spacing = 10;
     ovRow2.spacing = 10;
     NSTextField *layersTitle = ArcNote(@"Layers (Rendered view)");
     NSTextField *overlaysTitle = ArcNote(@"Overlays");
 
-    _pic = [[ArcPictureView alloc] initWithFrame:NSMakeRect(0, 0, 720, 486)];
-    [_pic.widthAnchor constraintGreaterThanOrEqualToConstant:360].active = YES;
-    [_pic.heightAnchor constraintGreaterThanOrEqualToConstant:243].active = YES;
+    _pic = [[ArcPictureView alloc] initWithFrame:NSMakeRect(0, 0, 384, 524)];
+    [_pic.widthAnchor constraintGreaterThanOrEqualToConstant:192].active = YES;
+    [_pic.heightAnchor constraintGreaterThanOrEqualToConstant:262].active = YES;
     [_pic setContentHuggingPriority:(NSLayoutPriority)1 forOrientation:NSLayoutConstraintOrientationVertical];
     __weak ArcVideoTab *weakSelf = self;
     _pic.onHover = ^(int x, int y) { [weakSelf hoverX:x y:y]; };
 
-    _hover = ArcNote(@"Point at the picture: the object under the pointer is named here and outlined");
+    _hover = ArcNote(@"Point at the picture: what is drawn under the pointer is named here and outlined");
     _hover.lineBreakMode = NSLineBreakByTruncatingTail;
     _beam = ArcNote(@"");
     _beam.lineBreakMode = NSLineBreakByTruncatingTail;
 
-    NSStackView *left = O2VStack(@[viewRow, layersTitle, layerRow1, layerRow2, overlaysTitle, ovRow1, ovRow2,
+    NSStackView *left = ArcVStack(@[viewRow, layersTitle, layerRow, overlaysTitle, ovRow1, ovRow2,
                                    _pic, _hover, _beam]);
     left.distribution = NSStackViewDistributionFill;
     ArcFill(left, _pic);
@@ -376,13 +246,18 @@ static BOOL parseHex(NSString *text, long *out)
     return [self scrollFor:_objects];
 }
 
-- (NSView *)buildGrid
+/* The 16 x 13 (or 26) character screen: each cell's code, drawn in the
+ * colours the chip draws it in (the character's own colour bits in
+ * multicolor mode). */
+- (NSView *)buildScreen
 {
-    _grid = [[ArcGridView alloc] initWithFrame:NSZeroRect];
-    ArcFixSize(_grid);
-    _gridNote = ArcNote(@"");
-    _gridNote.maximumNumberOfLines = 4;
-    NSStackView *v = O2VStack(@[ArcTitle(@"The grid"), _grid, _gridNote]);
+    NSScrollView *scroll;
+    _screen = ArcMonoView(&scroll, NO);
+    _screenNote = ArcNote(@"");
+    _screenNote.maximumNumberOfLines = 4;
+    NSStackView *v = ArcVStack(@[ArcTitle(@"The character screen ($1800-$18EF, 16 columns)"), _screenNote, scroll]);
+    v.distribution = NSStackViewDistributionFill;
+    ArcFill(v, scroll);
     return v;
 }
 
@@ -404,13 +279,13 @@ static BOOL parseHex(NSString *text, long *out)
     __weak ArcVideoTab *weakSelf = self;
     _regs.onClickLine = ^(int line) { [weakSelf pickRegister:line]; };
 
-    _regAddr = ArcField(@"$A0", 70, self, @selector(writeRegister:));
+    _regAddr = ArcField(@"$18F0", 70, self, @selector(writeRegister:));
     _regVal = ArcField(@"$00", 60, self, @selector(writeRegister:));
     _regNote = ArcNote(@"Click a line, edit the value, Return writes it (stop the machine first: a running program may write it again)");
     _regNote.lineBreakMode = NSLineBreakByTruncatingTail;
-    NSStackView *edit = O2HStack(@[ArcLabel(@"Register"), _regAddr, ArcLabel(@"value"), _regVal,
+    NSStackView *edit = ArcHStack(@[ArcLabel(@"Address"), _regAddr, ArcLabel(@"value"), _regVal,
                                    ArcButton(@"Write", self, @selector(writeRegister:))]);
-    NSStackView *v = O2VStack(@[scroll, edit, _regNote]);
+    NSStackView *v = ArcVStack(@[scroll, edit, _regNote]);
     v.distribution = NSStackViewDistributionFill;
     ArcFill(v, scroll);
     return v;
@@ -423,18 +298,6 @@ static BOOL parseHex(NSString *text, long *out)
     return scroll;
 }
 
-- (NSView *)buildSound
-{
-    NSScrollView *scroll;
-    _sound = ArcMonoView(&scroll, NO);
-    _bits = [[ArcBitsView alloc] initWithFrame:NSZeroRect];
-    ArcFixSize(_bits);
-    NSStackView *v = O2VStack(@[ArcTitle(@"The 24-bit shift register ($A7-$A9)"), _bits, scroll]);
-    v.distribution = NSStackViewDistributionFill;
-    ArcFill(v, scroll);
-    return v;
-}
-
 - (ArcPictureView *)sheetPicture:(CGFloat)height
 {
     ArcPictureView *p = [[ArcPictureView alloc] initWithFrame:NSMakeRect(0, 0, 480, height)];
@@ -444,14 +307,14 @@ static BOOL parseHex(NSString *text, long *out)
 
 - (NSView *)buildSheets
 {
-    _fontPic = [self sheetPicture:150];
-    _shapePic = [self sheetPicture:90];
-    _palPic = [self sheetPicture:80];
-    NSStackView *v = O2VStack(@[ArcTitle(@"Font (64 glyphs: the lower 256 bytes, then the upper)"), _fontPic,
-                                ArcTitle(@"Sprite shape tables"), _shapePic,
-                                ArcTitle(@"Palette (8 colours dim above 8 bright)"), _palPic]);
+    _fontPic = [self sheetPicture:170];
+    _objPic = [self sheetPicture:110];
+    _palPic = [self sheetPicture:60];
+    NSStackView *v = ArcVStack(@[ArcTitle(@"Glyphs (64: $00-$37 built in, $38-$3F the UDCs at $1980-$19BF)"), _fontPic,
+                                ArcTitle(@"The four objects' images"), _objPic,
+                                ArcTitle(@"Palette (white, yellow, cyan, green, magenta, red, blue, black)"), _palPic]);
     ArcFill(v, _fontPic);
-    ArcFill(v, _shapePic);
+    ArcFill(v, _objPic);
     ArcFill(v, _palPic);
     return v;
 }
@@ -461,9 +324,9 @@ static BOOL parseHex(NSString *text, long *out)
     NSView *left = [self buildLeft];
 
     _sections = [[NSTabView alloc] init];
-    NSArray *pages = @[ @[@"Objects", [self buildObjects]], @[@"Grid", [self buildGrid]],
-                        @[@"Registers", [self buildRegisters]], @[@"Control/Status", [self buildControl]],
-                        @[@"Sound", [self buildSound]], @[@"Sheets", [self buildSheets]] ];
+    NSArray *pages = @[ @[@"Objects", [self buildObjects]], @[@"Screen", [self buildScreen]],
+                        @[@"Registers", [self buildRegisters]], @[@"Control/Collisions", [self buildControl]],
+                        @[@"Sheets", [self buildSheets]] ];
     for (NSArray *page in pages) {
         NSTabViewItem *item = [[NSTabViewItem alloc] initWithIdentifier:page[0]];
         item.label = page[0];
@@ -480,11 +343,11 @@ static BOOL parseHex(NSString *text, long *out)
     }
     _sections.delegate = self;
 
-    NSStackView *h = O2HStack(@[left, _sections]);
+    NSStackView *h = ArcHStack(@[left, _sections]);
     h.alignment = NSLayoutAttributeTop;
     h.spacing = 12;
-    [left.widthAnchor constraintGreaterThanOrEqualToConstant:380].active = YES;
-    [_sections.widthAnchor constraintEqualToConstant:520].active = YES;
+    [left.widthAnchor constraintGreaterThanOrEqualToConstant:300].active = YES;
+    [_sections.widthAnchor constraintEqualToConstant:560].active = YES;
     [left.heightAnchor constraintEqualToAnchor:h.heightAnchor].active = YES;
     [_sections.heightAnchor constraintEqualToAnchor:h.heightAnchor].active = YES;
     return h;
@@ -495,7 +358,7 @@ static BOOL parseHex(NSString *text, long *out)
 - (unsigned)layers
 {
     unsigned m = 0;
-    for (int i = 0; i < 7; i++)
+    for (int i = 0; i < 2; i++)
         if (_layer[i].state == NSControlStateValueOn) m |= kLayers[i].bit;
     return m;
 }
@@ -503,7 +366,7 @@ static BOOL parseHex(NSString *text, long *out)
 - (unsigned)overlays
 {
     unsigned m = 0;
-    for (int i = 0; i < 6; i++)
+    for (int i = 0; i < 4; i++)
         if (_overlay[i].state == NSControlStateValueOn) m |= kOverlays[i].bit;
     return m;
 }
@@ -515,11 +378,11 @@ static BOOL parseHex(NSString *text, long *out)
 }
 
 /* A layer or an overlay only means something in a re-render: the real frame
- * has neither, so touching one switches to it. */
+ * has neither, so touching a layer switches to it. */
 - (void)optionChanged:(id)sender
 {
     (void)sender;
-    if (_viewSel.indexOfSelectedItem == ARCDEBUG_VDC_FRAME) [_viewSel selectItemAtIndex:ARCDEBUG_VDC_RENDER];
+    if (_viewSel.indexOfSelectedItem == ARCDEBUG_UVI_FRAME) [_viewSel selectItemAtIndex:ARCDEBUG_UVI_RENDER];
     [self refresh];
 }
 
@@ -533,26 +396,26 @@ static BOOL parseHex(NSString *text, long *out)
 
 /* ---- the pointer ------------------------------------------------------------------------------ */
 
-/* What the chip draws for one hit, and where on the 360 x 243 picture. */
-static NSString *describeHit(const i8244_snapshot *s, int kind, int index, NSRect *box)
+/* What the chip draws for one hit, and its box on the 192 x 262 picture. */
+- (NSString *)describeHit:(arcdebug_hit)hit box:(NSRect *)box
 {
-    if (kind == 0 && index >= 0 && index < 4) {
-        const i8244_sprite_info *p = &s->sprites[index];
-        *box = NSMakeRect(p->x, p->y, p->width, p->height);
-        return [NSString stringWithFormat:@"Sprite %d: x=%d y=%d colour=%d (%s)%s", index, p->x, p->y,
-                p->color, i8244_colour_name(p->color), p->zoom ? " zoomed" : ""];
+    if (hit.kind == ARCDEBUG_UVI_HIT_OBJECT && hit.index >= 0 && hit.index < 4) {
+        const arcdebug_uvi_object *o = &_uvi.obj[hit.index];
+        *box = NSMakeRect(o->px, o->py, o->width, o->height);
+        return [NSString stringWithFormat:@"Object %d: x=%d y=%d colour=%d (%s) UDC $%02X%s", hit.index, o->x, o->y,
+                o->colour, arcdebug_uvi_colour_name(o->colour), o->udc, o->double_height ? " double height" : ""];
     }
-    if (kind == 1 && index >= 0 && index < 12) {
-        const i8244_char_info *p = &s->singles[index];
-        *box = NSMakeRect(p->x, p->y, p->width, p->height);
-        return [NSString stringWithFormat:@"Single %d: x=%d y=%d glyph=%d colour=%d (%s)", index, p->x, p->y,
-                p->glyph, p->color, i8244_colour_name(p->color)];
-    }
-    if (kind == 2 && index >= 0 && index < 16) {
-        const i8244_char_info *p = &s->quads[index / 4].chars[index % 4];
-        *box = NSMakeRect(p->x, p->y, p->width, p->height);
-        return [NSString stringWithFormat:@"Quad %d char %d: x=%d y=%d glyph=%d colour=%d (%s)", index / 4,
-                index % 4, p->x, p->y, p->glyph, p->color, i8244_colour_name(p->color)];
+    if (hit.kind == ARCDEBUG_UVI_HIT_CELL && hit.index >= 0) {
+        const int row = hit.index / ARCDEBUG_UVI_COLS, col = hit.index % ARCDEBUG_UVI_COLS;
+        arcdebug_uvi_cell cells[ARCDEBUG_UVI_COLS * ARCDEBUG_UVI_MAX_ROWS];
+        const int rows = arcdebug_uvi_cells(_dbg, cells);
+        *box = NSMakeRect(32 + col * 8, _uvi.first_line + row * _uvi.cell_height, 8, _uvi.cell_height);
+        if (row < rows) {
+            const arcdebug_uvi_cell *c = &cells[hit.index];
+            return [NSString stringWithFormat:@"Cell row %d col %d: code $%02X glyph $%02X%s fg %s bg %s", row, col,
+                    c->code, c->glyph, c->graphics ? " (block graphics)" : "",
+                    arcdebug_uvi_colour_name(c->fg), arcdebug_uvi_colour_name(c->bg)];
+        }
     }
     return nil;
 }
@@ -560,16 +423,15 @@ static NSString *describeHit(const i8244_snapshot *s, int kind, int index, NSRec
 - (void)hoverX:(int)x y:(int)y
 {
     if (x < 0 || y < 0) {
-        _hover.stringValue = @"Point at the picture: the object under the pointer is named here and outlined";
+        _hover.stringValue = @"Point at the picture: what is drawn under the pointer is named here and outlined";
         _pic.highlight = NSZeroRect;
         return;
     }
-    i8244_snapshot snap;
     arcdebug_hit hits[8];
-    arcdebug_vdc_get(_dbg, &snap);
-    const int n = arcdebug_vdc_hit_test(_dbg, x, y, hits, 8);
+    arcdebug_uvi_get(_dbg, &_uvi);
+    const int n = arcdebug_uvi_hit_test(_dbg, x, y, hits, 8);
     NSRect box = NSZeroRect;
-    NSString *what = n > 0 ? describeHit(&snap, hits[0].kind, hits[0].index, &box) : nil;
+    NSString *what = n > 0 ? [self describeHit:hits[0] box:&box] : nil;
     if (!what) {
         _hover.stringValue = [NSString stringWithFormat:@"(%d, %d): nothing drawn here", x, y];
         _pic.highlight = NSZeroRect;
@@ -590,35 +452,35 @@ static NSString *describeHit(const i8244_snapshot *s, int kind, int index, NSRec
 - (void)refreshPicture
 {
     int w = 0, h = 0;
-    if (arcdebug_vdc_view(_dbg, (int)_viewSel.indexOfSelectedItem, [self layers], [self overlays], 1,
-                         _px, PX_CAP, &w, &h) && w > 0 && h > 0)
+    if (arcdebug_uvi_view(_dbg, (int)_viewSel.indexOfSelectedItem, [self layers], [self overlays], 1,
+                          _px, PX_CAP, &w, &h) && w > 0 && h > 0)
         [_pic setImage:ArcNewImage(_px, w, h)];
 }
 
 - (void)refreshBeam
 {
-    _beam.stringValue = [NSString stringWithFormat:@"%s   beam x %d, y %d (line %d, dot %d)   frame %llu",
-                         _snap.is_pal ? "8245 PAL" : "8244 NTSC", _snap.x_beam, _snap.y_beam,
-                         _snap.vpos, _snap.hpos, (unsigned long long)_snap.frames];
+    _beam.stringValue = [NSString stringWithFormat:@"%s   beam line %d of %d (character row %d)   %s",
+                         _uvi.lines == 312 ? "PAL" : "NTSC", _uvi.line, _uvi.lines, _uvi.charline,
+                         _uvi.vblank ? "vertical blank (SENSE)" : "drawing"];
 }
 
-/* The 16 palette colours, read off the palette strip. */
+/* The 8 UVI colours, read off the palette strip. */
 - (void)loadPalette
 {
     int w = 0, h = 0;
-    if (!arcdebug_vdc_view(_dbg, ARCDEBUG_VDC_PALETTE, 0, 0, 1, _px, PX_CAP, &w, &h) || w < 8 || h < 2) return;
+    if (!arcdebug_uvi_view(_dbg, ARCDEBUG_UVI_PALETTE, 0, 0, 1, _px, PX_CAP, &w, &h) || w < 8 || h < 1) return;
     const int cell = w / 8;
-    for (int r = 0; r < 2; r++)
-        for (int c = 0; c < 8; c++)
-            _pal[r * 8 + c] = _px[(size_t)(r * cell + cell / 2) * (size_t)w + (size_t)(c * cell + cell / 2)];
+    for (int c = 0; c < 8; c++)
+        _pal[c] = _px[(size_t)(h / 2) * (size_t)w + (size_t)(c * cell + cell / 2)];
     _palLoaded = YES;
 }
 
-/* One object's bitmap as an image, or nil. */
-- (NSImage *)thumbFor:(int)kind index:(int)index
+/* One object's image as an NSImage, or nil. */
+- (NSImage *)thumbForObject:(int)index
 {
     int w = 0, h = 0;
-    if (!arcdebug_vdc_object(_dbg, kind, index, 3, 0x00101010u, _objPx, OBJ_CAP, &w, &h) || w <= 0 || h <= 0)
+    if (!arcdebug_uvi_thing(_dbg, ARCDEBUG_UVI_OBJECT, index, 2, 0x00101010u, _objPx, OBJ_CAP, &w, &h) ||
+        w <= 0 || h <= 0)
         return nil;
     CGImageRef img = ArcNewImage(_objPx, w, h);
     if (!img) return nil;
@@ -627,94 +489,75 @@ static NSString *describeHit(const i8244_snapshot *s, int kind, int index, NSRec
     return im;
 }
 
-static ArcObjectRow *headingRow(NSString *text)
-{
-    ArcObjectRow *r = [[ArcObjectRow alloc] init];
-    r.heading = text;
-    return r;
-}
-
-static const char *charState(const i8244_char_info *c)
-{
-    if (c->ntsc_hidden) return "hidden (NTSC, y < 14)";
-    if (!c->visible) return "off screen";
-    return c->clipped ? "clipped" : "visible";
-}
-
 - (void)refreshObjects
 {
     NSMutableArray<ArcObjectRow *> *rows = [NSMutableArray array];
-
-    [rows addObject:headingRow(@"Sprites ($00-$0F: Y, X, colour; shape $10-$1F)")];
+    ArcObjectRow *head = [[ArcObjectRow alloc] init];
+    head.heading = @"Objects (position $18F0-$18F7, colours $19F8-$19F9 and the size flags; image in UDC $38-$3B)";
+    [rows addObject:head];
     for (int i = 0; i < 4; i++) {
-        const i8244_sprite_info *p = &_snap.sprites[i];
+        const arcdebug_uvi_object *o = &_uvi.obj[i];
         ArcObjectRow *r = [[ArcObjectRow alloc] init];
-        r.thumb = [self thumbFor:0 index:i];
-        r.line1 = [NSString stringWithFormat:@"Sprite %d  x %3d  y %3d  colour %d (%s)  zoom %d  %s", i, p->x, p->y,
-                   p->color, i8244_colour_name(p->color), p->zoom,
-                   p->visible ? (p->clipped ? "clipped" : "visible") : "off screen"];
-        r.line2 = [NSString stringWithFormat:@"Y $%02X X $%02X C $%02X  S %d X9 %d  shape %02X %02X %02X %02X %02X %02X %02X %02X",
-                   p->reg_y, p->reg_x, p->reg_color, p->s, p->x9, p->shape[0], p->shape[1], p->shape[2],
-                   p->shape[3], p->shape[4], p->shape[5], p->shape[6], p->shape[7]];
+        r.thumb = [self thumbForObject:i];
+        r.line1 = [NSString stringWithFormat:@"Object %d  x %4d  y %4d  colour %d (%s)  %s  UDC $%02X  %s", i, o->x, o->y,
+                   o->colour, arcdebug_uvi_colour_name(o->colour), o->double_height ? "8x16" : "8x8 ", o->udc,
+                   o->visible ? "visible" : "off screen"];
+        r.line2 = [NSString stringWithFormat:@"X $%02X Y $%02X  image %02X %02X %02X %02X %02X %02X %02X %02X  hits: chars %s objects $%X",
+                   o->reg_x, o->reg_y, o->shape[0], o->shape[1], o->shape[2], o->shape[3], o->shape[4], o->shape[5],
+                   o->shape[6], o->shape[7], o->hits_chars ? "yes" : "no", (unsigned)o->hits_objects];
         [rows addObject:r];
-    }
-
-    [rows addObject:headingRow(@"Single characters (12)")];
-    for (int i = 0; i < 12; i++) {
-        const i8244_char_info *p = &_snap.singles[i];
-        ArcObjectRow *r = [[ArcObjectRow alloc] init];
-        r.thumb = [self thumbFor:1 index:i];
-        r.line1 = [NSString stringWithFormat:@"Single %-2d  x %3d  y %3d  glyph %2d  colour %d (%s)  %s", i, p->x, p->y,
-                   p->glyph, p->color, i8244_colour_name(p->color), charState(p)];
-        r.line2 = [NSString stringWithFormat:@"Y $%02X X $%02X PTR $%02X C $%02X  bit8 %d  first row %d  rows %d",
-                   p->reg_y, p->reg_x, p->reg_ptr, p->reg_color, p->bit8, p->first_row, p->rows];
-        [rows addObject:r];
-    }
-
-    for (int q = 0; q < 4; q++) {
-        const i8244_quad_info *quad = &_snap.quads[q];
-        [rows addObject:headingRow([NSString stringWithFormat:@"Quad %d: x %d, y %d, %d rows (4 characters)",
-                                    q, quad->x, quad->y, quad->rows])];
-        for (int j = 0; j < 4; j++) {
-            const i8244_char_info *p = &quad->chars[j];
-            ArcObjectRow *r = [[ArcObjectRow alloc] init];
-            r.thumb = [self thumbFor:2 index:4 * q + j];
-            r.line1 = [NSString stringWithFormat:@"Quad %d.%d  x %3d  y %3d  glyph %2d  colour %d (%s)  %s", q, j,
-                       p->x, p->y, p->glyph, p->color, i8244_colour_name(p->color), charState(p)];
-            r.line2 = [NSString stringWithFormat:@"Y $%02X X $%02X PTR $%02X C $%02X  bit8 %d",
-                       p->reg_y, p->reg_x, p->reg_ptr, p->reg_color, p->bit8];
-            [rows addObject:r];
-        }
     }
     _objects.rows = rows;
 }
 
-- (void)refreshGrid
+- (void)refreshScreen
 {
     if (!_palLoaded) [self loadPalette];
-    const int idx = (_snap.grid_color & 7) + (_snap.grid_lum ? 8 : 0);
-    [_grid setSnapshot:&_snap colour:_pal[idx]];
-    _gridNote.stringValue = [NSString stringWithFormat:
-        @"Colour %d (%s)%s.  Grid %s, dots %s, vertical lines %s.\n"
-        @"Origin x %d units (%d px), y %d; cells %d x %d px. Horizontal segments H0-H8 per column, vertical V0-V9 per row.",
-        _snap.grid_color, i8244_colour_name(_snap.grid_color), _snap.grid_lum ? " bright" : "",
-        _snap.grid_en ? "on" : "off", _snap.dots_en ? "on" : "off",
-        _snap.fill ? "16 units wide (fill)" : "thin",
-        _snap.grid_x0, _snap.grid_x0 * 2, _snap.grid_y0, _snap.cell_w, _snap.cell_h];
+    arcdebug_uvi_cell cells[ARCDEBUG_UVI_COLS * ARCDEBUG_UVI_MAX_ROWS];
+    const int rows = arcdebug_uvi_cells(_dbg, cells);
+    _screenNote.stringValue = [NSString stringWithFormat:
+        @"%d rows of 16, cells %d lines tall, first line %d, fine scroll %d px. %@%@%@",
+        rows, _uvi.cell_height, _uvi.first_line, _uvi.shift,
+        _uvi.multicolor ? @"Multicolor: each character carries its own colour bits. " : @"One character colour for the screen. ",
+        _uvi.block_graphics ? @"Block graphics from the top. " : @"",
+        _uvi.two_screens ? @"Two screens ($1800 and $1A00)." : @""];
+
+    NSFont *font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+    NSMutableAttributedString *out = [[NSMutableAttributedString alloc] init];
+    NSDictionary *plain = @{ NSFontAttributeName: font, NSForegroundColorAttributeName: NSColor.secondaryLabelColor };
+    for (int row = 0; row < rows; row++) {
+        [out appendAttributedString:[[NSAttributedString alloc]
+            initWithString:[NSString stringWithFormat:@"%2d  ", row] attributes:plain]];
+        for (int col = 0; col < ARCDEBUG_UVI_COLS; col++) {
+            const arcdebug_uvi_cell *c = &cells[row * ARCDEBUG_UVI_COLS + col];
+            NSMutableDictionary *a = [NSMutableDictionary dictionaryWithObjectsAndKeys:font, NSFontAttributeName, nil];
+            a[NSForegroundColorAttributeName] = colorFromXrgb(_pal[c->fg & 7]);
+            a[NSBackgroundColorAttributeName] = colorFromXrgb(_pal[c->bg & 7]);
+            if (c->graphics) a[NSUnderlineStyleAttributeName] = @(NSUnderlineStyleSingle);
+            [out appendAttributedString:[[NSAttributedString alloc]
+                initWithString:[NSString stringWithFormat:@"%02X", c->code] attributes:a]];
+            [out appendAttributedString:[[NSAttributedString alloc] initWithString:@" " attributes:plain]];
+        }
+        [out appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n" attributes:plain]];
+    }
+    if (rows == 0)
+        [out appendAttributedString:[[NSAttributedString alloc]
+            initWithString:@"(the machine is not running)\n" attributes:plain]];
+    [_screen.textStorage setAttributedString:out];
 }
 
 - (void)refreshRegisters
 {
-    /* 256 decoded lines is a lot of locking for a running machine: twice a second there */
+    /* 768 decoded lines is a lot of locking for a running machine: twice a second there */
     const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
     if (!arcdebug_is_stopped(_dbg) && now - _regsAt < 0.5) return;
     _regsAt = now;
-    NSMutableString *s = [NSMutableString stringWithCapacity:256 * 64];
-    for (unsigned off = 0; off < 0x100; off++) {
+    NSMutableString *s = [NSMutableString stringWithCapacity:0x300 * 64];
+    for (unsigned off = 0; off < 0x300; off++) {
         char name[64], text[160];
         name[0] = text[0] = '\0';
-        arcdebug_vdc_describe(_dbg, off, name, sizeof name, text, sizeof text);
-        [s appendFormat:@"$%02X  %02X  %-22s %s\n", off, _snap.regs[off], name, text];
+        arcdebug_uvi_describe(_dbg, off, name, sizeof name, text, sizeof text);
+        [s appendFormat:@"$%04X  %02X  %-14s %s\n", 0x1800 + off, _uvi.reg[off], name, text];
     }
     ArcSetTextKeepingPlace(_regs, s);
 }
@@ -722,116 +565,96 @@ static const char *charState(const i8244_char_info *c)
 /* A click on a register line fills the edit fields from it. */
 - (void)pickRegister:(int)line
 {
-    if (line < 0 || line > 0xff) return;
-    _regAddr.stringValue = [NSString stringWithFormat:@"$%02X", line];
-    _regVal.stringValue = [NSString stringWithFormat:@"$%02X", _snap.regs[line]];
+    if (line < 0 || line >= 0x300) return;
+    _regAddr.stringValue = [NSString stringWithFormat:@"$%04X", 0x1800 + line];
+    _regVal.stringValue = [NSString stringWithFormat:@"$%02X", _uvi.reg[line]];
 }
 
 /* The engine takes the write running or stopped; a running program may
- * simply write the register again, so the hint says to stop first. */
+ * simply write the register again, so the hint says to stop first. The
+ * address is the CPU's ($1800-$1AFF) or the register file's ($000-$2FF). */
 - (void)writeRegister:(id)sender
 {
     (void)sender;
     long off = 0, val = 0;
-    if (!parseHex(_regAddr.stringValue, &off) || off < 0 || off > 0xff || !parseHex(_regVal.stringValue, &val)) {
-        _regNote.stringValue = @"Needs a register $00-$FF and a value (hex)";
+    if (!parseHex(_regAddr.stringValue, &off) || !parseHex(_regVal.stringValue, &val)) {
+        _regNote.stringValue = @"Needs a register ($1800-$1AFF, or $000-$2FF) and a value (hex)";
         return;
     }
-    arcdebug_vdc_write(_dbg, (unsigned)off, (uint8_t)val);
-    _regNote.stringValue = [NSString stringWithFormat:@"$%02lX = $%02lX", off, val & 0xff];
+    if (off >= 0x1800) off -= 0x1800;
+    if (off < 0 || off >= 0x300) {
+        _regNote.stringValue = @"Needs a register ($1800-$1AFF, or $000-$2FF) and a value (hex)";
+        return;
+    }
+    arcdebug_uvi_write(_dbg, (unsigned)off, (uint8_t)val);
+    _regNote.stringValue = [NSString stringWithFormat:@"$%04lX = $%02lX", 0x1800 + off, val & 0xff];
     _regsAt = 0;
     [self refresh];
 }
 
 - (void)refreshControl
 {
-    char name[64], text[200];
     NSMutableString *s = [NSMutableString string];
-    const i8244_snapshot *c = &_snap;
-    [s appendFormat:@"CONTROL $A0 = $%02X\n", c->control];
-    [s appendFormat:@"  bit 0  undocumented          %d\n", c->ctl_bit0];
-    [s appendFormat:@"  bit 1  beam position strobe  %s\n", c->strobe ? "latched on the strobe" : "live"];
-    [s appendFormat:@"  bit 2  sound interrupt       %s\n", c->sound_irq_en ? "enabled" : "off"];
-    [s appendFormat:@"  bit 3  grid                  %s\n", c->grid_en ? "on" : "off"];
-    [s appendFormat:@"  bit 4  external (CX) overlap %s\n", c->ext_irq_en ? "interrupt enabled" : "off"];
-    [s appendFormat:@"  bit 5  foreground (objects)  %s\n", c->fg_en ? "on" : "off"];
-    [s appendFormat:@"  bit 6  dots                  %s\n", c->dots_en ? "on" : "off"];
-    [s appendFormat:@"  bit 7  vertical grid lines   %s\n", c->fill ? "16 units wide (fill)" : "thin"];
-    [s appendFormat:@"  write lockouts: $00-$7F (objects) %s, $C0-$FF (grid) %s\n\n",
-        c->lock_objects ? "ignored while the foreground is on" : "writable",
-        c->lock_grid ? "ignored while the grid is on" : "writable"];
+    const arcdebug_uvi *c = &_uvi;
+    [s appendFormat:@"BEAM          line %d of %d, character row %d, %s\n", c->line, c->lines, c->charline,
+        c->vblank ? "vertical blank" : "drawing"];
+    [s appendFormat:@"SCREEN        first line %d ($18FC), fine scroll %d ($18FE bits 5-7), %d rows of %d lines\n",
+        c->first_line, c->shift, c->rows, c->cell_height];
+    [s appendFormat:@"  multicolor %s ($18FD bit 7)   two screens %s ($19F8 bit 6)   block graphics %s ($19F8 bit 7)\n",
+        c->multicolor ? "on" : "off", c->two_screens ? "on" : "off", c->block_graphics ? "on" : "off"];
+    [s appendFormat:@"  pots %s ($19F9 bit 6 %s)\n\n", c->pot_y ? "read the other axis (mux)" : "read the first axis",
+        c->pot_y ? "clear" : "set"];
 
-    [s appendFormat:@"STATUS $A1 = $%02X (as a read would give it now)\n", c->status];
-    [s appendFormat:@"  horizontal status %d   strobe %d   sound %d\n", c->st_hstatus, c->st_strobe, c->st_sound];
-    [s appendFormat:@"  vertical blank %d   external overlap %d   character overlap %d\n",
-        c->st_vblank, c->st_ext_overlap, c->st_char_overlap];
-    [s appendFormat:@"  _INTR line %s\n\n", c->irq ? "asserted" : "released"];
+    [s appendFormat:@"COLOURS       screen %d (%s)  character %d (%s)  ($19F9)\n", c->screen_colour,
+        arcdebug_uvi_colour_name(c->screen_colour), c->char_colour, arcdebug_uvi_colour_name(c->char_colour)];
+    [s appendFormat:@"              alternate screen %d (%s)  character %d (%s)  ($19F8)\n\n", c->alt_screen_colour,
+        arcdebug_uvi_colour_name(c->alt_screen_colour), c->alt_char_colour,
+        arcdebug_uvi_colour_name(c->alt_char_colour)];
 
-    [s appendFormat:@"COLLISION $A2: mask $%02X (written), result $%02X (latched)\n", c->col_mask, c->col_result];
-    arcdebug_vdc_describe(_dbg, 0xa2, name, sizeof name, text, sizeof text);
-    [s appendFormat:@"  %s\n\n", text];
+    [s appendFormat:@"COLLISIONS    $19FC objects x characters = $%02X, a 0 bit is a hit\n", c->coll_chars];
+    for (int i = 0; i < 4; i++)
+        if (!((c->coll_chars >> i) & 1u)) [s appendFormat:@"  object %d hit the character screen\n", i];
+    [s appendFormat:@"              $19FD object pairs = $%02X, a 0 bit is a hit\n", c->coll_objects];
+    static const char *const pairs[6] = { "0-1", "0-2", "0-3", "1-2", "1-3", "2-3" };
+    for (int i = 0; i < 6; i++)
+        if (!((c->coll_objects >> i) & 1u)) [s appendFormat:@"  objects %s overlap\n", pairs[i]];
+    [s appendString:@"\n"];
 
-    [s appendFormat:@"COLOURS $A3 = $%02X\n", c->color_reg];
-    [s appendFormat:@"  background %d (%s)   grid %d (%s)%s   P17 LUM %s\n\n",
-        c->bg_color, i8244_colour_name(c->bg_color), c->grid_color, i8244_colour_name(c->grid_color),
-        c->grid_lum ? " bright" : "", c->p17_lum ? "low: every pixel brightened" : "high"];
+    [s appendFormat:@"SOUND         pitch divider %d ($18FD bits 0-6)   volume %d/7 ($18FE bits 0-2)\n",
+        c->sound_pitch, c->sound_volume];
+    [s appendFormat:@"              tone %s ($18FE bit 3)   noise %s ($18FE bit 4)\n\n",
+        c->sound_tone ? "on" : "off", c->sound_noise ? "on" : "off"];
 
-    [s appendFormat:@"BEAM  $A4 y = %d, $A5 x = %d   latched y %d, x %d\n", c->y_beam, c->x_beam,
-        c->y_beam_latched, c->x_beam_latched];
-    [s appendFormat:@"      at line %d, dot %d; the lazy renderer is at line %d, dot %d\n",
-        c->vpos, c->hpos, c->last_scan, c->part_hpos];
-    [s appendFormat:@"      %.2f Hz frames, %.1f Hz lines, pixel clock %.0f Hz\n",
-        c->frame_hz, c->line_hz, c->pixel_hz];
+    [s appendFormat:@"POTS          $19FF (disc 1) = $%02X   $19FE (disc 2) = $%02X\n", c->pot[0], c->pot[1]];
+    [s appendString:@"KEYPADS       $1900-$1907:"];
+    for (int i = 0; i < 8; i++) [s appendFormat:@" %02X", c->pad[i]];
+    [s appendFormat:@"\nPANEL         $1908 = $%02X  START %d  OPTION %d  SELECT %d\n", c->panel, c->panel & 1,
+        (c->panel >> 1) & 1, (c->panel >> 2) & 1];
     ArcSetTextKeepingPlace(_control, s);
-}
-
-- (void)refreshSound
-{
-    const i8244_snapshot *c = &_snap;
-    [_bits setValue:c->shift bits:24];
-    NSMutableString *s = [NSMutableString string];
-    [s appendFormat:@"Shift register  $%06X  (bits $A7 low, $A8, $A9 high)\n", c->shift & 0xffffff];
-    [s appendFormat:@"Sound control   $AA = $%02X\n", c->snd_reg];
-    [s appendFormat:@"  enable  %s\n", c->snd_enable ? "on" : "off"];
-    [s appendFormat:@"  clock   %s (shift rate %.1f Hz)\n", c->snd_fast ? "fast" : "slow", c->shift_clock_hz];
-    [s appendFormat:@"  noise   %s\n", c->snd_noise ? "on (the register is fed from a noise source)" : "off"];
-    [s appendFormat:@"  volume  %d / 15\n", c->snd_volume];
-    [s appendFormat:@"Output now  %d   shifter: count %d, prescaler %d%s\n", c->sh_output, c->sh_count,
-        c->sh_prescaler, c->sh_pending ? ", a shift pending" : ""];
-    if (c->snd_noise)
-        [s appendString:@"Tone          noise: no pitch\n"];
-    else if (c->freq_hz > 0)
-        [s appendFormat:@"Tone          %.1f Hz (the pattern repeats every %d bit%s)\n", c->freq_hz,
-            c->pattern_period, c->pattern_period == 1 ? "" : "s"];
-    else
-        [s appendString:@"Tone          none: a steady level\n"];
-    [s appendFormat:@"Sound IRQ     %s\n", c->sound_irq_en ? "enabled" : "off"];
-    ArcSetTextKeepingPlace(_sound, s);
 }
 
 - (void)refreshSheets
 {
     int w = 0, h = 0;
-    if (arcdebug_vdc_view(_dbg, ARCDEBUG_VDC_FONT, 0, 0, 4, _px, PX_CAP, &w, &h) && w > 0 && h > 0)
+    if (arcdebug_uvi_view(_dbg, ARCDEBUG_UVI_FONT, 0, 0, 3, _px, PX_CAP, &w, &h) && w > 0 && h > 0)
         [_fontPic setImage:ArcNewImage(_px, w, h)];
-    if (arcdebug_vdc_view(_dbg, ARCDEBUG_VDC_SHAPES, 0, 0, 4, _px, PX_CAP, &w, &h) && w > 0 && h > 0)
-        [_shapePic setImage:ArcNewImage(_px, w, h)];
-    if (arcdebug_vdc_view(_dbg, ARCDEBUG_VDC_PALETTE, 0, 0, 2, _px, PX_CAP, &w, &h) && w > 0 && h > 0)
+    if (arcdebug_uvi_view(_dbg, ARCDEBUG_UVI_OBJECTS, 0, 0, 3, _px, PX_CAP, &w, &h) && w > 0 && h > 0)
+        [_objPic setImage:ArcNewImage(_px, w, h)];
+    if (arcdebug_uvi_view(_dbg, ARCDEBUG_UVI_PALETTE, 0, 0, 2, _px, PX_CAP, &w, &h) && w > 0 && h > 0)
         [_palPic setImage:ArcNewImage(_px, w, h)];
     [self loadPalette];
 }
 
 - (void)refresh
 {
-    arcdebug_vdc_get(_dbg, &_snap);
+    arcdebug_uvi_get(_dbg, &_uvi);
     [self refreshPicture];
     [self refreshBeam];
     switch ([self section]) {
     case SECTION_OBJECTS: [self refreshObjects]; break;
-    case SECTION_GRID:    [self refreshGrid]; break;
+    case SECTION_SCREEN:  [self refreshScreen]; break;
     case SECTION_REGS:    [self refreshRegisters]; break;
     case SECTION_CONTROL: [self refreshControl]; break;
-    case SECTION_SOUND:   [self refreshSound]; break;
     case SECTION_SHEETS:  [self refreshSheets]; break;
     default: break;
     }

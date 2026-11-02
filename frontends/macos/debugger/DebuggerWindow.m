@@ -1,7 +1,7 @@
 /*
- * Debugger window (AppKit) over this app's Intel 8048 / 8244 debugger engine,
- * via core/include/arcdebug.h. Mirrors the GTK, Qt and Win32 debuggers tab for
- * tab: Prompt, CPU & RAM, Disassembly, Video (the 8244: VideoTab.m), EF9340,
+ * Debugger window (AppKit) over this app's Signetics 2650 / 2637 UVI debugger
+ * engine, via core/include/arcdebug.h. Mirrors the GTK, Qt and Win32 debuggers
+ * tab for tab: Prompt, CPU & RAM, Disassembly, Video (the UVI: VideoTab.m),
  * Sound & I/O, Breakpoints, Cart, FujiNet.
  *
  * Opening the window attaches the engine, which stops the machine; closing
@@ -31,11 +31,14 @@
 #include <strings.h>
 
 #include "arcdebug.h"
-#include "carts.h"
+
+/* arcdebug_cart.type of the FujiNet cartridge (1 standard, 2 Golf, 3 FujiNet) */
+#define CART_TYPE_FUJINET 3
 
 #define DISASM_WINDOW 48
 #define MAX_BPS 64
-#define NUM_SCALARS 10       /* A PC PSW SP MB T CNT P1 P2 BUS */
+#define NUM_SCALARS 12       /* R0 R1-R3 R1'-R3' PC IAR PSU PSL SP */
+#define MEM_BYTES 256        /* the memory view */
 #define TRACE_MAX 512        /* FujiNet packets shown */
 
 /* The tabs, in order. */
@@ -43,12 +46,11 @@
 #define TAB_CPU         1
 #define TAB_DISASM      2
 #define TAB_VIDEO       3
-#define TAB_EF          4
-#define TAB_IO          5
-#define TAB_BREAKPOINTS 6
-#define TAB_CART        7
-#define TAB_FUJINET     8
-#define NUM_TABS        9
+#define TAB_IO          4
+#define TAB_BREAKPOINTS 5
+#define TAB_CART        6
+#define TAB_FUJINET     7
+#define NUM_TABS        8
 
 static ArcDebuggerWindow *g_debugger;
 
@@ -98,16 +100,16 @@ static BOOL isF12(NSEvent *event)
 }
 @end
 
-/* ---- the keyboard matrix and the sticks, as the console sees them ---------------- */
+/* ---- the keypads, the discs and the panel, as the console sees them ---------------- */
 
-#define IO_CELL_W 40.0
-#define IO_CELL_H 22.0
-#define IO_LEFT   22.0
-#define IO_TOP    16.0
-#define IO_STICK_W 30.0
+#define IO_KEY_W  34.0
+#define IO_KEY_H  22.0
+#define IO_PAD_GAP 18.0
+#define IO_DISC_R 34.0
 
-/* The 8 x 8 keyboard matrix (a cell per key, filled while held), the two
- * sticks' switches and the RESET key. */
+/* Both 12-key keypads (a cell per key, filled while held), the panel's three
+ * buttons and RESET, and each hand controller's disc (a dot where it is, the
+ * analog deflection when there is one) with its fire button. */
 @interface ArcIoDiagramView : NSView
 - (void)setIo:(const arcdebug_io *)io;
 @end
@@ -115,24 +117,24 @@ static BOOL isF12(NSEvent *event)
 @implementation ArcIoDiagramView {
     uint64_t _keys;
     uint8_t _sticks[2];
+    int8_t _disc[2][2];
     int _reset;
-    int _machine;
 }
 - (BOOL)isFlipped { return YES; }
 - (NSSize)intrinsicContentSize
 {
-    return NSMakeSize(IO_LEFT + 8 * IO_CELL_W + 24 + 2 * (3 * IO_STICK_W + 14), IO_TOP + 8 * IO_CELL_H + 2);
+    return NSMakeSize(560, 122);
 }
 
 - (void)setIo:(const arcdebug_io *)io
 {
     if (io->keys == _keys && !memcmp(io->sticks, _sticks, sizeof _sticks) &&
-        io->reset_held == _reset && io->machine == _machine)
+        !memcmp(io->disc, _disc, sizeof _disc) && io->reset_held == _reset)
         return;
     _keys = io->keys;
     memcpy(_sticks, io->sticks, sizeof _sticks);
+    memcpy(_disc, io->disc, sizeof _disc);
     _reset = io->reset_held;
-    _machine = io->machine;
     [self setNeedsDisplay:YES];
 }
 
@@ -146,12 +148,12 @@ static BOOL isF12(NSEvent *event)
     if (!text.length) return;
     NSMutableParagraphStyle *para = [[NSMutableParagraphStyle alloc] init];
     para.alignment = NSTextAlignmentCenter;
-    para.lineBreakMode = NSLineBreakByTruncatingTail;
-    NSDictionary *a = @{ NSFontAttributeName: [NSFont systemFontOfSize:9],
+    para.lineBreakMode = NSLineBreakByClipping;
+    NSDictionary *a = @{ NSFontAttributeName: [NSFont systemFontOfSize:8],
                          NSParagraphStyleAttributeName: para,
-                         NSForegroundColorAttributeName: lit ? NSColor.whiteColor : NSColor.labelColor };
+                         NSForegroundColorAttributeName: lit ? NSColor.blackColor : NSColor.labelColor };
     const NSSize sz = [text sizeWithAttributes:a];
-    [text drawInRect:NSMakeRect(r.origin.x + 2, NSMidY(r) - sz.height / 2, r.size.width - 4, sz.height)
+    [text drawInRect:NSMakeRect(r.origin.x + 1, NSMidY(r) - sz.height / 2, r.size.width - 2, sz.height)
       withAttributes:a];
 }
 
@@ -160,37 +162,47 @@ static BOOL isF12(NSEvent *event)
     (void)dirty;
     NSDictionary *head = @{ NSFontAttributeName: [NSFont systemFontOfSize:9],
                             NSForegroundColorAttributeName: NSColor.secondaryLabelColor };
-    for (int c = 0; c < 8; c++)
-        [[NSString stringWithFormat:@"%d", c] drawAtPoint:NSMakePoint(IO_LEFT + c * IO_CELL_W + IO_CELL_W / 2 - 3, 2)
-                                           withAttributes:head];
-    for (int row = 0; row < 8; row++) {
-        [[NSString stringWithFormat:@"%d", row] drawAtPoint:NSMakePoint(8, IO_TOP + row * IO_CELL_H + 5)
-                                             withAttributes:head];
-        for (int c = 0; c < 8; c++) {
-            const int key = row * 8 + c;
-            const char *label = arcsession_key_label(_machine, key);
-            [self cell:NSMakeRect(IO_LEFT + c * IO_CELL_W, IO_TOP + row * IO_CELL_H, IO_CELL_W, IO_CELL_H)
+    const CGFloat top = 16;
+    CGFloat x = 4;
+    for (int p = 0; p < 2; p++) {
+        [[NSString stringWithFormat:@"Player %d", p + 1] drawAtPoint:NSMakePoint(x, 2) withAttributes:head];
+        for (int k = 0; k < 12; k++) {
+            const int key = ARC_KEY_PAD_BASE(p) + k;
+            const char *label = arcsession_key_label(0, key);
+            [self cell:NSMakeRect(x + (k % 3) * IO_KEY_W, top + (k / 3) * IO_KEY_H, IO_KEY_W, IO_KEY_H)
                   text:(label ? [NSString stringWithUTF8String:label] : @"")
                    lit:((_keys >> key) & 1u) != 0];
         }
-    }
-
-    /* the sticks: up, left, button, right, down as a cross */
-    const CGFloat x0 = IO_LEFT + 8 * IO_CELL_W + 24;
-    for (int p = 0; p < 2; p++) {
-        const CGFloat x = x0 + p * (3 * IO_STICK_W + 14);
+        /* the disc: a ring with a dot at the pot position */
+        const CGFloat dx = x + 3 * IO_KEY_W + IO_PAD_GAP + IO_DISC_R, dy = top + IO_DISC_R + 4;
+        NSBezierPath *ring = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(dx - IO_DISC_R, dy - IO_DISC_R,
+                                                                             2 * IO_DISC_R, 2 * IO_DISC_R)];
+        [NSColor.separatorColor setStroke];
+        [ring stroke];
         const unsigned s = _sticks[p];
-        [[NSString stringWithFormat:@"Stick %d", p + 1] drawAtPoint:NSMakePoint(x + IO_STICK_W, 2) withAttributes:head];
-        [self cell:NSMakeRect(x + IO_STICK_W, IO_TOP, IO_STICK_W, IO_CELL_H) text:@"▲" lit:(s & 1u) != 0];
-        [self cell:NSMakeRect(x, IO_TOP + IO_CELL_H, IO_STICK_W, IO_CELL_H) text:@"◀" lit:(s & 8u) != 0];
-        [self cell:NSMakeRect(x + IO_STICK_W, IO_TOP + IO_CELL_H, IO_STICK_W, IO_CELL_H) text:@"FIRE"
+        double kx = _disc[p][0] / 127.0, ky = _disc[p][1] / 127.0;
+        if (_disc[p][0] == 0 && _disc[p][1] == 0) {
+            kx = ((s >> 1) & 1u) - ((s >> 3) & 1u);
+            ky = ((s >> 2) & 1u) - (s & 1u);
+            if (kx != 0 && ky != 0) { kx *= 0.7071; ky *= 0.7071; }
+        }
+        const NSRect dot = NSMakeRect(dx + kx * (IO_DISC_R - 7) - 6, dy + ky * (IO_DISC_R - 7) - 6, 12, 12);
+        NSBezierPath *d = [NSBezierPath bezierPathWithOvalInRect:dot];
+        [((kx != 0 || ky != 0) ? ArcAccentColor() : NSColor.tertiaryLabelColor) setFill];
+        [d fill];
+        [self cell:NSMakeRect(dx - IO_DISC_R, dy + IO_DISC_R + 4, 2 * IO_DISC_R, IO_KEY_H - 4) text:@"FIRE"
                lit:(s & 16u) != 0];
-        [self cell:NSMakeRect(x + 2 * IO_STICK_W, IO_TOP + IO_CELL_H, IO_STICK_W, IO_CELL_H) text:@"▶"
-               lit:(s & 2u) != 0];
-        [self cell:NSMakeRect(x + IO_STICK_W, IO_TOP + 2 * IO_CELL_H, IO_STICK_W, IO_CELL_H) text:@"▼"
-               lit:(s & 4u) != 0];
+        x += 3 * IO_KEY_W + IO_PAD_GAP + 2 * IO_DISC_R + 40;
+        if (p == 0) {
+            /* the panel between the two controllers */
+            static const char *const names[3] = { "START", "OPTION", "SELECT" };
+            for (int b = 0; b < 3; b++)
+                [self cell:NSMakeRect(x, top + b * IO_KEY_H, 56, IO_KEY_H)
+                      text:[NSString stringWithUTF8String:names[b]] lit:((_keys >> (ARC_KEY_START + b)) & 1u) != 0];
+            [self cell:NSMakeRect(x, top + 3 * IO_KEY_H, 56, IO_KEY_H) text:@"RESET" lit:_reset != 0];
+            x += 56 + 30;
+        }
     }
-    [self cell:NSMakeRect(x0, IO_TOP + 4 * IO_CELL_H, 2 * IO_STICK_W, IO_CELL_H) text:@"RESET" lit:_reset != 0];
 }
 @end
 
@@ -220,13 +232,12 @@ static BOOL isF12(NSEvent *event)
     NSInteger _historyPos;
 
     NSTextField *_reg[NUM_SCALARS];
-    NSTextField *_bank0[8], *_bank1[8];
-    NSButton *_flag[5];
-    NSButton *_stat[7];
+    NSButton *_flag[8];
+    NSButton *_stat[3];
     NSTextField *_cpuState, *_beam;
-    NSTextView *_iram, *_xram;
-    NSPopUpButton *_ramSpace;
-    NSTextField *_ramAddr, *_ramVal;
+    NSTextView *_stack, *_mem;
+    NSPopUpButton *_memSpace, *_ramSpace;
+    NSTextField *_memAddr, *_ramAddr, *_ramVal;
 
     NSButton *_followPc;
     NSTextField *_jump;
@@ -237,15 +248,10 @@ static BOOL isF12(NSEvent *event)
 
     ArcVideoTab *_video;
 
-    NSTextField *_efNote;
-    NSTextView *_efRegs, *_efPage;
-    ArcPictureView *_efPic;
-    uint32_t *_px;
-
     NSTextView *_sound;
     ArcIoDiagramView *_ioDiag;
 
-    NSPopUpButton *_bpType, *_bpSpace;
+    NSPopUpButton *_bpType;
     NSTextField *_bpRange, *_bpCond;
     NSStackView *_bpList;
 
@@ -257,34 +263,38 @@ static BOOL isF12(NSEvent *event)
     int _fujiCount;
 }
 
-/* The scalar registers, in the order the CPU tab lays them out: each with
- * its arcdebug_reg and the hex digits it shows (1, 2 or 3). */
+/* The scalar registers, in the order the CPU tab indexes them: each with its
+ * arcdebug_reg and the hex digits it shows. */
 static const struct { NSString *__unsafe_unretained name; int reg; int digits; } kRegs[NUM_SCALARS] = {
-    { @"A", ARC_REG_A, 2 },     { @"PC", ARC_REG_PC, 3 },   { @"PSW", ARC_REG_PSW, 2 },
-    { @"SP", ARC_REG_SP, 1 },   { @"MB", ARC_REG_MB, 1 },   { @"T", ARC_REG_T, 2 },
-    { @"CNT", ARC_REG_CNT, 2 }, { @"P1", ARC_REG_P1, 2 },   { @"P2", ARC_REG_P2, 2 },
-    { @"BUS", ARC_REG_BUS, 2 },
+    { @"R0", ARC_REG_R0, 2 },   { @"R1", ARC_REG_R1, 2 },   { @"R2", ARC_REG_R2, 2 },
+    { @"R3", ARC_REG_R3, 2 },   { @"R1'", ARC_REG_R1B, 2 }, { @"R2'", ARC_REG_R2B, 2 },
+    { @"R3'", ARC_REG_R3B, 2 }, { @"PC", ARC_REG_PC, 4 },   { @"IAR", ARC_REG_IAR, 4 },
+    { @"PSU", ARC_REG_PSU, 2 }, { @"PSL", ARC_REG_PSL, 2 }, { @"SP", ARC_REG_SP, 1 },
+};
+/* Where each of the three register columns puts the scalars above (-1: blank). */
+static const int kRegColumns[3][5] = {
+    { 0, 1, 2, 3, -1 }, { -1, 4, 5, 6, -1 }, { 7, 8, 9, 10, 11 },
 };
 
-/* The PSW's flags as checkboxes, and the register each sets. */
-static const struct { NSString *__unsafe_unretained name; int reg; } kFlags[5] = {
-    { @"C", ARC_REG_C }, { @"AC", ARC_REG_AC }, { @"F0", ARC_REG_F0 }, { @"F1", ARC_REG_F1 },
-    { @"BS (bank 1)", ARC_REG_BS },
+/* The status bits as checkboxes, and the register each sets. */
+static const struct { NSString *__unsafe_unretained name; int reg; } kFlags[8] = {
+    { @"F", ARC_REG_F }, { @"II", ARC_REG_II }, { @"IDC", ARC_REG_IDC }, { @"RS (bank 1)", ARC_REG_RS },
+    { @"WC", ARC_REG_WC }, { @"OVF", ARC_REG_OVF }, { @"COM", ARC_REG_COM }, { @"C", ARC_REG_C },
 };
 
 #define NUM_FILE_KINDS 7
-static const char *const kFileKinds[NUM_FILE_KINDS] = { "dis", "ram", "mailbox", "vdc", "font", "screen", "regs" };
+static const char *const kFileKinds[NUM_FILE_KINDS] = { "dis", "mailbox", "uvi", "font", "cart", "screen", "regs" };
 static NSString *const kFileTitles[NUM_FILE_KINDS] = {
-    @"Disassembly…", @"RAM (internal and external)…", @"Mailbox page…", @"8244 registers…",
-    @"Character generator…", @"Screen (PPM)…", @"Registers…"
+    @"Disassembly…", @"Mailbox page…", @"UVI registers…", @"Glyph table…",
+    @"Cartridge image…", @"Screen (PPM)…", @"Registers…"
 };
 static NSString *const kFileNames[NUM_FILE_KINDS] = {
-    @"disassembly.asm", @"ram.bin", @"mailbox.bin", @"vdc.bin", @"font.bin", @"screen.ppm", @"registers.txt"
+    @"disassembly.asm", @"mailbox.bin", @"uvi.bin", @"font.bin", @"cart.bin", @"screen.ppm", @"registers.txt"
 };
 
 /* ARC_DEBUGGER_TAB takes an index or one of these. */
 static const char *const kTabNames[NUM_TABS] = {
-    "prompt", "cpu", "disassembly", "video", "ef9340", "io", "breakpoints", "cart", "fujinet"
+    "prompt", "cpu", "disassembly", "video", "io", "breakpoints", "cart", "fujinet"
 };
 
 /* ---- helpers ------------------------------------------------------------------------- */
@@ -313,7 +323,7 @@ static BOOL parseNum(NSString *text, long *out)
     NSString *t = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     if (t.length == 0) return -1;
     int addr = arcdebug_label_address(_dbg, t.UTF8String);
-    if (addr < 0 && parseNum(t, &v) && v >= 0 && v <= 0xffff) addr = (int)v;
+    if (addr < 0 && parseNum(t, &v) && v >= 0 && v <= 0x7fff) addr = (int)v;
     return addr;
 }
 
@@ -333,13 +343,13 @@ static NSString *hexDump(const uint8_t *data, int n, int base, NSString *lineFor
     return s;
 }
 
-/* A button lit in the accent, its title white on the red; or plain. */
+/* A button lit in the accent, its title dark on the gold; or plain. */
 static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
 {
     b.bezelColor = lit ? ArcAccentColor() : nil;
     b.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:@{
         NSFontAttributeName: [NSFont systemFontOfSize:NSFont.systemFontSize],
-        NSForegroundColorAttributeName: lit ? NSColor.whiteColor : NSColor.controlTextColor }];
+        NSForegroundColorAttributeName: lit ? NSColor.blackColor : NSColor.controlTextColor }];
 }
 
 /* A pull-down button: `title` on its face, `items` underneath (each one's
@@ -387,7 +397,6 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
     _session = session;
     _dbg = arcsession_debugger(session);
     _fujiCount = -1;
-    _px = calloc((size_t)ARCDEBUG_VDC_VIEW_MAX_PIXELS * 4, sizeof *_px);
     _history = [NSMutableArray array];
     [self buildWindow];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(occlusionChanged:)
@@ -400,7 +409,6 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
 {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [_tick invalidate];
-    free(_px);
 }
 
 - (void)windowWillClose:(NSNotification *)note
@@ -455,7 +463,7 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
         _wasStopped = stopped;
         [self refreshAll];
     } else if (tab == TAB_VIDEO && !stopped) {
-        /* running: the 8244 live, ten times a second */
+        /* running: the UVI live, ten times a second */
         [_video refresh];
     } else if (slow && (!stopped || tab == TAB_FUJINET)) {
         if (!stopped) [self refreshStatus];
@@ -477,42 +485,35 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
     NSScrollView *outScroll;
     _promptOut = ArcMonoView(&outScroll, YES);
     _promptOut.string = @"Debugger prompt. Type 'help' for every command.\n";
-    _promptIn = ArcField(@"command (help, step, break $0412, bpxw $E3, print a, mem prog $400 32, vdc, ...) — Tab completes, ↑↓ history",
+    _promptIn = ArcField(@"command (help, step, break $0412, bpw $18F0, print r0, mem prog $400 32, uvi, ...) — Tab completes, ↑↓ history",
                         0, self, @selector(runPrompt:));
     _promptIn.delegate = self;
 
-    NSStackView *v = O2VStack(@[outScroll, _promptIn]);
+    NSStackView *v = ArcVStack(@[outScroll, _promptIn]);
     ArcFill(v, outScroll);
     ArcFill(v, _promptIn);
     return v;
 }
 
-/* A, PC, PSW and the rest as fields, R0-R7 of both register banks beside
- * them, the PSW's flags as boxes (editable while stopped) and the timer's and
- * lines' state (read-only); then the 8048's two RAMs. */
+/* R0-R3 (the bank in use), R1'-R3' (bank 1), PC, IAR, PSU, PSL and SP as
+ * fields, the status bits as boxes (editable while stopped), the return
+ * address stack, and a memory view with a write box. */
 - (NSView *)buildCpu
 {
     for (int i = 0; i < NUM_SCALARS; i++) {
         const int digits = kRegs[i].digits;
-        _reg[i] = ArcField(@"", digits == 3 ? 44 : (digits == 2 ? 36 : 28), self, @selector(applyRegister:));
+        _reg[i] = ArcField(@"", digits == 4 ? 44 : (digits == 2 ? 36 : 28), self, @selector(applyRegister:));
         _reg[i].tag = i;
     }
-    for (int i = 0; i < 8; i++) {
-        _bank0[i] = ArcField(@"", 36, self, @selector(applyRegister:));
-        _bank0[i].tag = 100 + i;
-        _bank1[i] = ArcField(@"", 36, self, @selector(applyRegister:));
-        _bank1[i].tag = 200 + i;
-    }
     NSMutableArray<NSArray<NSView *> *> *rows = [NSMutableArray array];
-    for (int row = 0; row < NUM_SCALARS; row++) {
-        NSView *l1 = ArcLabel(@""), *f1 = ArcLabel(@""), *l2 = ArcLabel(@""), *f2 = ArcLabel(@"");
-        if (row < 8) {
-            l1 = ArcLabel([NSString stringWithFormat:@"R%d", row]);
-            f1 = _bank0[row];
-            l2 = ArcLabel([NSString stringWithFormat:@"R%d'", row]);
-            f2 = _bank1[row];
+    for (int row = 0; row < 5; row++) {
+        NSMutableArray<NSView *> *cells = [NSMutableArray array];
+        for (int col = 0; col < 3; col++) {
+            const int idx = kRegColumns[col][row];
+            [cells addObject:idx < 0 ? ArcLabel(@"") : ArcLabel(kRegs[idx].name)];
+            [cells addObject:idx < 0 ? ArcLabel(@"") : _reg[idx]];
         }
-        [rows addObject:@[ ArcLabel(kRegs[row].name), _reg[row], l1, f1, l2, f2 ]];
+        [rows addObject:cells];
     }
     NSGridView *regs = [NSGridView gridViewWithViews:rows];
     regs.rowSpacing = 4;
@@ -521,44 +522,52 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
     [regs columnAtIndex:2].leadingPadding = 16;
     [regs columnAtIndex:4].leadingPadding = 16;
 
-    NSMutableArray<NSView *> *flags = [NSMutableArray arrayWithObject:ArcLabel(@"PSW")];
-    for (int i = 0; i < 5; i++) {
+    NSMutableArray<NSView *> *flags = [NSMutableArray arrayWithObject:ArcLabel(@"PSU / PSL")];
+    for (int i = 0; i < 8; i++) {
         _flag[i] = [NSButton checkboxWithTitle:kFlags[i].name target:self action:@selector(flagClicked:)];
         _flag[i].tag = i;
         [flags addObject:_flag[i]];
     }
-    static NSString *const statTitles[7] = { @"TF", @"EN TCNTI", @"EN I", @"in interrupt", @"T0", @"T1", @"INT" };
-    NSMutableArray<NSView *> *stats = [NSMutableArray arrayWithObject:ArcLabel(@"Timer and lines")];
-    for (int i = 0; i < 7; i++) {
+    static NSString *const statTitles[3] = { @"S (SENSE: vblank)", @"halted", @"IRQ line" };
+    NSMutableArray<NSView *> *stats = [NSMutableArray arrayWithObject:ArcLabel(@"Inputs")];
+    for (int i = 0; i < 3; i++) {
         _stat[i] = [NSButton checkboxWithTitle:statTitles[i] target:nil action:NULL];
         _stat[i].enabled = NO;   /* the machine's own state: shown, not set here */
         [stats addObject:_stat[i]];
     }
     _cpuState = ArcLabel(@"");
+    _cpuState.maximumNumberOfLines = 3;
     _beam = ArcNote(@"");
-    NSTextField *hint = ArcNote(@"Enter applies an edit while the machine is stopped. R0'-R7' are register bank 1; the PSW boxes set its bits");
+    _beam.maximumNumberOfLines = 3;
+    NSTextField *hint = ArcNote(@"Enter applies an edit while the machine is stopped. R1'-R3' are register bank 1 (RS); R0 is the same in both banks");
 
-    /* the two RAMs: 64 bytes inside, 128 outside ($00-$7F) */
-    NSScrollView *iramScroll, *xramScroll;
-    _iram = ArcMonoView(&iramScroll, NO);
-    _xram = ArcMonoView(&xramScroll, NO);
-    [iramScroll.heightAnchor constraintEqualToConstant:92].active = YES;
-    [xramScroll.heightAnchor constraintEqualToConstant:156].active = YES;
+    NSScrollView *stackScroll, *memScroll;
+    _stack = ArcMonoView(&stackScroll, NO);
+    [stackScroll.heightAnchor constraintEqualToConstant:130].active = YES;
+
+    _mem = ArcMonoView(&memScroll, NO);
+    _memSpace = [[NSPopUpButton alloc] init];
+    [_memSpace addItemsWithTitles:@[@"Program (CPU view)", @"UVI registers", @"Cartridge image"]];
+    _memSpace.target = self;
+    _memSpace.action = @selector(memViewChanged:);
+    _memAddr = ArcField(@"$0000", 70, self, @selector(memViewChanged:));
+    _memAddr.stringValue = @"$0000";
+    NSStackView *memRow = ArcHStack(@[ArcLabel(@"Show"), _memSpace, ArcLabel(@"from"), _memAddr,
+                                      ArcButton(@"Go", self, @selector(memViewChanged:))]);
+
     _ramSpace = [[NSPopUpButton alloc] init];
-    [_ramSpace addItemsWithTitles:@[@"Internal RAM", @"External RAM"]];
-    _ramAddr = ArcField(@"$20", 70, self, @selector(writeRam:));
+    [_ramSpace addItemsWithTitles:@[@"Program (cartridge buffer / UVI)", @"UVI registers", @"Cartridge image"]];
+    _ramAddr = ArcField(@"$1800", 70, self, @selector(writeRam:));
     _ramVal = ArcField(@"$00", 60, self, @selector(writeRam:));
-    NSStackView *edit = O2HStack(@[ArcLabel(@"Write"), _ramSpace, _ramAddr, ArcLabel(@"="), _ramVal,
-                                   ArcButton(@"Write", self, @selector(writeRam:))]);
-    NSTextField *ramHint = ArcNote(@"A page the cartridge serves takes an external write in the cartridge's own buffer");
+    NSStackView *edit = ArcHStack(@[ArcLabel(@"Write"), _ramSpace, _ramAddr, ArcLabel(@"="), _ramVal,
+                                    ArcButton(@"Write", self, @selector(writeRam:))]);
+    NSTextField *ramHint = ArcNote(@"The console has no RAM of its own: a program address in the UVI window goes to the chip, one the cartridge serves into its own buffer; the rest is ROM");
 
-    NSStackView *left = O2VStack(@[regs, O2HStack(flags), O2HStack(stats), hint, _cpuState, _beam]);
-    NSStackView *right = O2VStack(@[ArcTitle(@"Internal RAM ($00-$3F; the register banks are $00-$07 and $18-$1F)"),
-                                    iramScroll,
-                                    ArcTitle(@"External RAM ($00-$7F)"), xramScroll, edit, ramHint]);
-    ArcFill(right, iramScroll);
-    ArcFill(right, xramScroll);
-    NSStackView *h = O2HStack(@[left, right]);
+    NSStackView *left = ArcVStack(@[regs, ArcHStack(flags), ArcHStack(stats), hint, _cpuState, _beam,
+                                    ArcTitle(@"Return address stack (8 deep; the top is at SP)"), stackScroll]);
+    NSStackView *right = ArcVStack(@[ArcTitle(@"Memory"), memRow, memScroll, edit, ramHint]);
+    ArcFill(right, memScroll);
+    NSStackView *h = ArcHStack(@[left, right]);
     h.alignment = NSLayoutAttributeTop;
     h.spacing = 16;
     [right.widthAnchor constraintGreaterThanOrEqualToConstant:420].active = YES;
@@ -571,7 +580,7 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
     _followPc.state = NSControlStateValueOn;
     _jump = ArcField(@"address or label", 150, self, @selector(jumpTo:));
     NSTextField *hint = ArcNote(@"Click a line to toggle its breakpoint (*); scroll to browse");
-    NSStackView *row = O2HStack(@[_followPc, ArcLabel(@"Jump to"), _jump, hint]);
+    NSStackView *row = ArcHStack(@[_followPc, ArcLabel(@"Jump to"), _jump, hint]);
 
     NSScrollView *scroll = [[NSScrollView alloc] init];
     scroll.hasVerticalScroller = NO;
@@ -602,94 +611,39 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
     };
     scroll.documentView = _disasm;
 
-    NSStackView *v = O2VStack(@[row, scroll]);
+    NSStackView *v = ArcVStack(@[row, scroll]);
     ArcFill(v, scroll);
     return v;
 }
 
-/* The G7400's EF9340/41 text chip: its registers and the 40 x 24 page as
- * text on the left, the text layer as it renders on the right. On the other
- * machines it says so. */
-- (NSView *)buildEf
-{
-    _efNote = ArcNote(@"");
-    NSScrollView *regsScroll, *pageScroll;
-    _efRegs = ArcMonoView(&regsScroll, NO);
-    _efPage = ArcMonoView(&pageScroll, NO);
-    [regsScroll.heightAnchor constraintEqualToConstant:190].active = YES;
-    NSStackView *left = O2VStack(@[_efNote, ArcTitle(@"Registers"), regsScroll,
-                                   ArcTitle(@"The text page (40 x 24)"), pageScroll]);
-    left.distribution = NSStackViewDistributionFill;
-    ArcFill(left, regsScroll);
-    ArcFill(left, pageScroll);
-
-    _efPic = [[ArcPictureView alloc] initWithFrame:NSMakeRect(0, 0, 480, 360)];
-    [_efPic.widthAnchor constraintGreaterThanOrEqualToConstant:320].active = YES;
-    [_efPic.heightAnchor constraintGreaterThanOrEqualToConstant:240].active = YES;
-    NSStackView *right = O2VStack(@[ArcTitle(@"The text layer, rendered"), _efPic]);
-    ArcFill(right, _efPic);
-
-    NSStackView *h = O2HStack(@[left, right]);
-    h.alignment = NSLayoutAttributeTop;
-    h.spacing = 12;
-    [left.widthAnchor constraintGreaterThanOrEqualToConstant:380].active = YES;
-    [left.heightAnchor constraintEqualToAnchor:h.heightAnchor].active = YES;
-    [right.heightAnchor constraintEqualToAnchor:h.heightAnchor].active = YES;
-    return h;
-}
-
-/* The keyboard matrix and the sticks live over the ports' decoded text. */
+/* The keypads, discs and panel live over the ports' decoded text. */
 - (NSView *)buildIo
 {
     NSScrollView *scroll;
     _sound = ArcMonoView(&scroll, NO);
     _ioDiag = [[ArcIoDiagramView alloc] initWithFrame:NSZeroRect];
     ArcFixSize(_ioDiag);
-    NSTextField *hint = ArcNote(@"Filled: held, as the console sees it (the matrix is read a row at a time by P20-P22).");
-    NSStackView *v = O2VStack(@[ArcTitle(@"Keyboard matrix, sticks and RESET"), _ioDiag, hint, scroll]);
+    NSTextField *hint = ArcNote(@"Filled: held, as the console sees it (the discs show the pot position; FIRE is the keypad 2 wire).");
+    NSStackView *v = ArcVStack(@[ArcTitle(@"Keypads, discs, panel and RESET"), _ioDiag, hint, scroll]);
     v.distribution = NSStackViewDistributionFill;   /* the text takes the rest of the height */
     ArcFill(v, scroll);
     return v;
 }
 
-- (void)bpTypeChanged:(id)sender
-{
-    (void)sender;
-    [self rebuildBpSpace];
-}
-
-/* The types: Execute, Read, Write, Read/Write, Port In, Port Out, Port In/Out. */
-- (void)rebuildBpSpace
-{
-    const NSInteger type = _bpType.indexOfSelectedItem;
-    const BOOL port = type >= 4;
-    const BOOL exec = type == 0;
-    [_bpSpace removeAllItems];
-    [_bpSpace addItemsWithTitles:port ? @[@"BUS", @"P1", @"P2"]
-                                      : @[@"Program", @"External data", @"Internal RAM", @"8244 registers"]];
-    _bpSpace.enabled = !exec;
-    _bpRange.enabled = !port;
-    _bpRange.placeholderString = port ? @"(a port has no address)"
-                                      : @"$0412, $0400-$04FF, or a label";
-}
-
 - (NSView *)buildBreaks
 {
     _bpType = [[NSPopUpButton alloc] init];
-    [_bpType addItemsWithTitles:@[@"Execute", @"Read", @"Write", @"Read/Write", @"Port In", @"Port Out", @"Port In/Out"]];
-    _bpType.target = self;
-    _bpType.action = @selector(bpTypeChanged:);
-    _bpSpace = [[NSPopUpButton alloc] init];
-    _bpRange = ArcField(@"", 230, self, @selector(addBreakpoint:));
-    _bpCond = ArcField(@"condition (optional): a == $10 && vpos > 100", 0, self, @selector(addBreakpoint:));
-    [self rebuildBpSpace];
-    NSStackView *row = O2HStack(@[_bpType, _bpSpace, _bpRange, _bpCond, ArcButton(@"Add", self, @selector(addBreakpoint:)),
+    [_bpType addItemsWithTitles:@[@"Execute", @"Read", @"Write", @"Read/Write"]];
+    _bpRange = ArcField(@"$0412, $0400-$04FF, $18F0 (the UVI is at $1800-$1AFF), or a label", 330,
+                        self, @selector(addBreakpoint:));
+    _bpCond = ArcField(@"condition (optional): r0 == $10 && vpos > 100", 0, self, @selector(addBreakpoint:));
+    NSStackView *row = ArcHStack(@[_bpType, _bpRange, _bpCond, ArcButton(@"Add", self, @selector(addBreakpoint:)),
                                   ArcButton(@"Clear all", self, @selector(clearBreaks:))]);
 
     /* The rows scroll: a session can collect more breakpoints than the tab
      * is tall. The stack is the scroll view's document, pinned to the top
      * and to the clip view's width so rows keep the tab's width. */
-    _bpList = O2VStack(@[]);
+    _bpList = ArcVStack(@[]);
     _bpList.translatesAutoresizingMaskIntoConstraints = NO;
     NSScrollView *bpScroll = [[NSScrollView alloc] init];
     bpScroll.hasVerticalScroller = YES;
@@ -699,8 +653,8 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
     [_bpList.topAnchor constraintEqualToAnchor:clip.topAnchor].active = YES;
     [_bpList.leadingAnchor constraintEqualToAnchor:clip.leadingAnchor].active = YES;
     [_bpList.widthAnchor constraintEqualToAnchor:clip.widthAnchor].active = YES;
-    NSTextField *hint = ArcNote(@"Untick to disable; conditions are C expressions over registers, flags, [addr], value, addr, vpos, hpos");
-    NSStackView *v = O2VStack(@[row, hint, bpScroll]);
+    NSTextField *hint = ArcNote(@"Untick to disable; conditions are C expressions over registers, flags, [addr], value, addr, vpos, hpos; a write breakpoint only has the UVI to watch");
+    NSStackView *v = ArcVStack(@[row, hint, bpScroll]);
     ArcFill(v, row);
     ArcFill(v, bpScroll);
     [bpScroll setContentHuggingPriority:NSLayoutPriorityDefaultLow
@@ -708,17 +662,17 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
     return v;
 }
 
-/* The cartridge's state as text left; the mailbox page ($F20-$FFF) as the
+/* The cartridge's state as text left; the mailbox page ($2B00-$2FFF) as the
  * console reads it, right. */
 - (NSView *)buildCart
 {
     NSScrollView *scroll, *mailScroll;
     _cart = ArcMonoView(&scroll, NO);
     _mailbox = ArcMonoView(&mailScroll, NO);
-    NSStackView *right = O2VStack(@[ArcTitle(@"The mailbox page ($F20-$FFF)"), mailScroll]);
+    NSStackView *right = ArcVStack(@[ArcTitle(@"The mailbox page ($2B00-$2FFF)"), mailScroll]);
     right.distribution = NSStackViewDistributionFill;
     ArcFill(right, mailScroll);
-    NSStackView *h = O2HStack(@[scroll, right]);
+    NSStackView *h = ArcHStack(@[scroll, right]);
     h.alignment = NSLayoutAttributeTop;
     h.spacing = 12;
     [scroll.widthAnchor constraintGreaterThanOrEqualToConstant:420].active = YES;
@@ -738,20 +692,20 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
                           forOrientation:NSLayoutConstraintOrientationHorizontal];
     [_fujiNote setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                         forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSStackView *row = O2HStack(@[_fujiNote, ArcButton(@"Clear", self, @selector(fujiClear:))]);
+    NSStackView *row = ArcHStack(@[_fujiNote, ArcButton(@"Clear", self, @selector(fujiClear:))]);
 
     NSScrollView *fujiScroll, *stateScroll;
     _fujiText = ArcMonoView(&fujiScroll, NO);
     _fujiState = ArcMonoView(&stateScroll, NO);
-    NSStackView *left = O2VStack(@[ArcTitle(@"FujiBus packets (SLIP-decoded)"), row, fujiScroll]);
+    NSStackView *left = ArcVStack(@[ArcTitle(@"FujiBus packets (SLIP-decoded)"), row, fujiScroll]);
     left.distribution = NSStackViewDistributionFill;   /* the log takes the column's height */
     ArcFill(left, row);
     ArcFill(left, fujiScroll);
-    NSStackView *right = O2VStack(@[ArcTitle(@"The cartridge's mailbox"), stateScroll]);
+    NSStackView *right = ArcVStack(@[ArcTitle(@"The cartridge's mailbox"), stateScroll]);
     right.distribution = NSStackViewDistributionFill;
     ArcFill(right, stateScroll);
 
-    NSStackView *h = O2HStack(@[left, right]);
+    NSStackView *h = ArcHStack(@[left, right]);
     h.alignment = NSLayoutAttributeTop;
     h.spacing = 12;
     [left.widthAnchor constraintGreaterThanOrEqualToConstant:520].active = YES;
@@ -798,7 +752,7 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
     _status = ArcNote(@"Running");
     _status.alignment = NSTextAlignmentRight;
     _status.lineBreakMode = NSLineBreakByTruncatingTail;
-    NSStackView *toolbar = O2HStack(@[_runBtn, step, over, outBtn, scan, frame, symbols, save, _status]);
+    NSStackView *toolbar = ArcHStack(@[_runBtn, step, over, outBtn, scan, frame, symbols, save, _status]);
     [_status setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     [_status setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                       forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -807,7 +761,7 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
     _tabs = [[NSTabView alloc] init];
     NSArray *pages = @[ @[@"Prompt", [self buildPrompt]], @[@"CPU & RAM", [self buildCpu]],
                         @[@"Disassembly", [self buildDisasm]], @[@"Video", _video.view],
-                        @[@"EF9340", [self buildEf]], @[@"Sound & I/O", [self buildIo]],
+                        @[@"Sound & I/O", [self buildIo]],
                         @[@"Breakpoints", [self buildBreaks]], @[@"Cart", [self buildCart]],
                         @[@"FujiNet", [self buildFujinet]] ];
     for (NSArray *page in pages) {
@@ -829,15 +783,14 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
         int t = -1;
         for (int i = 0; i < NUM_TABS; i++)
             if (!strcasecmp(tab, kTabNames[i])) t = i;
-        if (t < 0 && !strcasecmp(tab, "8244")) t = TAB_VIDEO;
+        if (t < 0 && !strcasecmp(tab, "uvi")) t = TAB_VIDEO;
         if (t < 0 && !strcasecmp(tab, "sound")) t = TAB_IO;
-        if (t < 0 && !strcasecmp(tab, "ef")) t = TAB_EF;
         if (t < 0 && tab[0] >= '0' && tab[0] <= '9') t = atoi(tab);
         if (t >= 0 && t < (int)_tabs.numberOfTabViewItems) [_tabs selectTabViewItemAtIndex:t];
     }
     _tabs.delegate = self;
 
-    NSStackView *root = O2VStack(@[toolbar, _tabs]);
+    NSStackView *root = ArcVStack(@[toolbar, _tabs]);
     root.edgeInsets = NSEdgeInsetsMake(8, 8, 8, 8);
     [toolbar.widthAnchor constraintEqualToAnchor:root.widthAnchor constant:-16].active = YES;
     [_tabs.widthAnchor constraintEqualToAnchor:root.widthAnchor constant:-16].active = YES;
@@ -963,8 +916,7 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
 }
 
 /* A register changes only while the machine is stopped: running, the next
- * instruction would overwrite it before anyone saw the edit land. The bank
- * registers are bytes of the internal RAM ($00-$07 and $18-$1F). */
+ * instruction would overwrite it before anyone saw the edit land. */
 - (void)applyRegister:(NSTextField *)sender
 {
     long v;
@@ -974,14 +926,8 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
         return;
     }
     const NSInteger tag = sender.tag;
-    if (parseNum(sender.stringValue, &v)) {
-        if (tag >= 200)
-            arcdebug_write(_dbg, ARC_SPACE_IRAM, (uint16_t)(24 + (tag - 200)), (uint8_t)v);
-        else if (tag >= 100)
-            arcdebug_write(_dbg, ARC_SPACE_IRAM, (uint16_t)(tag - 100), (uint8_t)v);
-        else if (tag >= 0 && tag < NUM_SCALARS)
-            arcdebug_cpu_set(_dbg, kRegs[tag].reg, (int)v);
-    }
+    if (parseNum(sender.stringValue, &v) && tag >= 0 && tag < NUM_SCALARS)
+        arcdebug_cpu_set(_dbg, kRegs[tag].reg, (int)v);
     [self refreshAll];
 }
 
@@ -992,23 +938,28 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
         _status.stringValue = @"Stop the machine (F5) to change a flag";
         return;
     }
-    if (sender.tag >= 0 && sender.tag < 5)
+    if (sender.tag >= 0 && sender.tag < 8)
         arcdebug_cpu_set(_dbg, kFlags[sender.tag].reg, sender.state == NSControlStateValueOn ? 1 : 0);
     [self refreshAll];
+}
+
+- (void)memViewChanged:(id)sender
+{
+    (void)sender;
+    [self refreshMem];
 }
 
 - (void)writeRam:(id)sender
 {
     (void)sender;
     long a = 0, v = 0;
-    const BOOL internal = _ramSpace.indexOfSelectedItem == 0;
-    if (!parseNum(_ramAddr.stringValue, &a) || !parseNum(_ramVal.stringValue, &v) || a < 0 ||
-        a > (internal ? 0x3f : 0x7f)) {
-        _status.stringValue = internal ? @"Internal RAM: an address $00-$3F and a value"
-                                       : @"External RAM: an address $00-$7F and a value";
+    const int space = (int)_ramSpace.indexOfSelectedItem;     /* ARC_SPACE_PROG, _UVI, _CART in order */
+    const int size = arcdebug_space_size(_dbg, space);
+    if (!parseNum(_ramAddr.stringValue, &a) || !parseNum(_ramVal.stringValue, &v) || a < 0 || a >= size) {
+        _status.stringValue = [NSString stringWithFormat:@"Needs an address below $%X and a value", size];
         return;
     }
-    arcdebug_write(_dbg, internal ? ARC_SPACE_IRAM : ARC_SPACE_XDATA, (uint16_t)a, (uint8_t)v);
+    arcdebug_write(_dbg, space, (uint32_t)a, (uint8_t)v);
     [self refreshAll];
 }
 
@@ -1018,46 +969,33 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
     const int addr = [self resolveAddr:_jump.stringValue];
     if (addr < 0) return;
     _followPc.state = NSControlStateValueOff;
-    _disasmAddr = (uint16_t)(addr & 0xfff);
+    _disasmAddr = (uint16_t)(addr & 0x7fff);
     [self refreshDisasm];
 }
 
 - (void)addBreakpoint:(id)sender
 {
     (void)sender;
-    static const int types[7] = {
-        ARCDEBUG_BP_EXEC, ARCDEBUG_BP_READ, ARCDEBUG_BP_WRITE,
-        ARCDEBUG_BP_READ | ARCDEBUG_BP_WRITE,
-        ARCDEBUG_BP_IN, ARCDEBUG_BP_OUT, ARCDEBUG_BP_IN | ARCDEBUG_BP_OUT
+    static const int types[4] = {
+        ARCDEBUG_BP_EXEC, ARCDEBUG_BP_READ, ARCDEBUG_BP_WRITE, ARCDEBUG_BP_READ | ARCDEBUG_BP_WRITE
     };
     const NSInteger sel = _bpType.indexOfSelectedItem;
-    const int type = types[sel >= 0 && sel < 7 ? sel : 0];
-    const BOOL port = (type & (ARCDEBUG_BP_IN | ARCDEBUG_BP_OUT)) != 0;
-    const BOOL exec = type == ARCDEBUG_BP_EXEC;
-    int space = (int)_bpSpace.indexOfSelectedItem;
-    if (space < 0) space = 0;
-    int start = 0, end = 0;
-    if (!port) {
-        NSString *range = [_bpRange.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-        if (range.length == 0) return;
-        NSArray<NSString *> *ends = [range componentsSeparatedByString:@"-"];
-        start = [self resolveAddr:ends[0]];
-        end = ends.count > 1 ? [self resolveAddr:ends[1]] : start;
-        if (exec) space = ARC_SPACE_PROG;
-        /* program space is 12 bits, external data and the 8244's registers 8,
-         * internal RAM 6 */
-        const int limit = space == ARC_SPACE_IRAM ? 0x3f
-                        : (space == ARC_SPACE_XDATA || space == ARC_SPACE_VDC ? 0xff : 0xfff);
-        if (start < 0 || end < 0 || end < start || end > limit) {
-            [self appendPrompt:[NSString stringWithFormat:@"breakpoint: bad address %@ (up to $%X here)\n", range, limit]];
-            _status.stringValue = [NSString stringWithFormat:@"Bad address: %@", range];
-            return;
-        }
+    const int type = types[sel >= 0 && sel < 4 ? sel : 0];
+    NSString *range = [_bpRange.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (range.length == 0) return;
+    NSArray<NSString *> *ends = [range componentsSeparatedByString:@"-"];
+    const int start = [self resolveAddr:ends[0]];
+    const int end = ends.count > 1 ? [self resolveAddr:ends[1]] : start;
+    /* program space is 15 bits */
+    if (start < 0 || end < 0 || end < start || end > 0x7fff) {
+        [self appendPrompt:[NSString stringWithFormat:@"breakpoint: bad address %@ (up to $7FFF)\n", range]];
+        _status.stringValue = [NSString stringWithFormat:@"Bad address: %@", range];
+        return;
     }
-    const int bpId = arcdebug_breakpoint_add(_dbg, type, space, (uint16_t)start, (uint16_t)end,
+    const int bpId = arcdebug_breakpoint_add(_dbg, type, ARC_SPACE_PROG, (uint16_t)start, (uint16_t)end,
                                             _bpCond.stringValue.UTF8String);
     if (bpId < 0) {
-        _status.stringValue = @"The condition does not parse";
+        _status.stringValue = @"The condition does not parse, or the range is not breakable";
         [self appendPrompt:[NSString stringWithFormat:@"breakpoint: the condition does not parse: %@\n",
                             _bpCond.stringValue]];
         return;
@@ -1109,40 +1047,50 @@ static void setField(NSTextField *f, NSString *text)
 {
     arcdebug_cpu c;
     arcdebug_cpu_get(_dbg, &c);
-    const int vals[NUM_SCALARS] = { c.a, c.pc, c.psw, c.sp, c.mb ? 1 : 0, c.timer, c.prescaler, c.p1, c.p2, c.bus };
+    const int bank = c.rs ? 1 : 0;      /* R1-R3 are the bank the instructions name */
+    const int vals[NUM_SCALARS] = { c.r0, c.r[bank][1], c.r[bank][2], c.r[bank][3], c.r[1][1], c.r[1][2], c.r[1][3],
+                                    c.pc, c.iar, c.psu, c.psl, c.sp };
     for (int i = 0; i < NUM_SCALARS; i++) {
         switch (kRegs[i].digits) {
-        case 3:  setField(_reg[i], [NSString stringWithFormat:@"%03X", vals[i] & 0xfff]); break;
+        case 4:  setField(_reg[i], [NSString stringWithFormat:@"%04X", vals[i] & 0x7fff]); break;
         case 2:  setField(_reg[i], [NSString stringWithFormat:@"%02X", vals[i] & 0xff]); break;
         default: setField(_reg[i], [NSString stringWithFormat:@"%X", vals[i] & 0xf]); break;
         }
     }
-    for (int i = 0; i < 8; i++) {
-        setField(_bank0[i], [NSString stringWithFormat:@"%02X", c.r[0][i]]);
-        setField(_bank1[i], [NSString stringWithFormat:@"%02X", c.r[1][i]]);
-    }
-    const int flags[5] = { c.cy, c.ac, c.f0, c.f1, c.bs };
-    for (int i = 0; i < 5; i++) _flag[i].state = flags[i] ? NSControlStateValueOn : NSControlStateValueOff;
-    const int stats[7] = { c.tf, c.tcnti_en, c.ext_int_en, c.in_interrupt, c.t0, c.t1, c.int_line };
-    for (int i = 0; i < 7; i++) _stat[i].state = stats[i] ? NSControlStateValueOn : NSControlStateValueOff;
+    const int flags[8] = { c.flag, c.ii, c.idc, c.rs, c.wc, c.ovf, c.com, c.c };
+    for (int i = 0; i < 8; i++) _flag[i].state = flags[i] ? NSControlStateValueOn : NSControlStateValueOff;
+    const int stats[3] = { c.sense, c.halted, c.irq_line };
+    for (int i = 0; i < 3; i++) _stat[i].state = stats[i] ? NSControlStateValueOn : NSControlStateValueOff;
 
-    static const char *const modes[3] = { "stopped", "timer", "event counter (T1)" };
+    static const char *const ccs[4] = { "zero", "positive", "negative", "?" };
     _cpuState.stringValue = [NSString stringWithFormat:
-        @"PC $%03X (MB%d)   PSW $%02X: C %d AC %d F0 %d F1 %d bank %d, SP %d   timer %s   interrupts: %s%s",
-        c.pc & 0xfff, c.mb ? 1 : 0, c.psw & 0xff, c.cy, c.ac, c.f0, c.f1, c.bs, c.sp,
-        modes[c.timer_mode >= 0 && c.timer_mode < 3 ? c.timer_mode : 0],
-        c.irq_pending ? "external pending " : "none pending", c.timer_irq_pending ? ", timer pending" : ""];
+        @"PC $%04X (page $%04X, IAR $%04X)   PSU $%02X: S %d F %d II %d SP %d   PSL $%02X: CC %s IDC %d RS %d WC %d OVF %d COM %d C %d%@",
+        c.pc & 0x7fff, c.page, c.iar, c.psu & 0xff, c.sense, c.flag, c.ii, c.sp, c.psl & 0xff,
+        ccs[c.cc >= 0 && c.cc < 3 ? c.cc : 3], c.idc, c.rs, c.wc, c.ovf, c.com, c.c,
+        c.halted ? @"   HALTED" : @""];
     _beam.stringValue = [NSString stringWithFormat:
-        @"beam line %d   dot %d   frame %u   cycles %llu   instructions %llu",
-        c.vpos, c.hpos, c.frame, (unsigned long long)c.cycles, (unsigned long long)c.instructions];
+        @"beam line %d   pixel %d   frame %u   cycles %llu   instructions %llu   illegal opcodes %u%@",
+        c.vpos, c.hpos, c.frame, (unsigned long long)c.cycles, (unsigned long long)c.instructions,
+        c.illegal_count, c.illegal_pc >= 0 ? [NSString stringWithFormat:@" (last at $%04X)", c.illegal_pc] : @""];
 
-    uint8_t iram[64], xram[128];
-    memset(iram, 0, sizeof iram);
-    memset(xram, 0, sizeof xram);
-    arcdebug_read(_dbg, ARC_SPACE_IRAM, 0, iram, (int)sizeof iram);
-    arcdebug_read(_dbg, ARC_SPACE_XDATA, 0, xram, (int)sizeof xram);
-    ArcSetTextKeepingPlace(_iram, hexDump(iram, (int)sizeof iram, 0, @"$%02X: "));
-    ArcSetTextKeepingPlace(_xram, hexDump(xram, (int)sizeof xram, 0, @"$%02X: "));
+    NSMutableString *st = [NSMutableString string];
+    for (int i = 7; i >= 0; i--)
+        [st appendFormat:@"%s [%d] $%04X\n", i == c.sp ? ">" : " ", i, c.ras[i] & 0x7fff];
+    ArcSetTextKeepingPlace(_stack, st);
+    [self refreshMem];
+}
+
+/* The memory view: MEM_BYTES from the address in the field, in the space chosen. */
+- (void)refreshMem
+{
+    long a = 0;
+    const int space = (int)_memSpace.indexOfSelectedItem;
+    if (!parseNum(_memAddr.stringValue, &a) || a < 0) a = 0;
+    uint8_t data[MEM_BYTES];
+    memset(data, 0, sizeof data);
+    const int n = arcdebug_read(_dbg, space, (uint32_t)a, data, MEM_BYTES);
+    ArcSetTextKeepingPlace(_mem, n > 0 ? hexDump(data, n, (int)a, space == ARC_SPACE_CART ? @"$%05X: " : @"$%04X: ")
+                                       : @"(the machine is not running)\n");
 }
 
 - (void)refreshDisasm
@@ -1153,7 +1101,7 @@ static void setField(NSTextField *f, NSString *text)
         arcdebug_cpu c;
         arcdebug_cpu_get(_dbg, &c);
         /* the PC a third of the way down */
-        _disasmAddr = (uint16_t)(arcdebug_row_address(_dbg, (uint16_t)c.pc, -(DISASM_WINDOW / 3)) & 0xfff);
+        _disasmAddr = (uint16_t)(arcdebug_row_address(_dbg, (uint16_t)c.pc, -(DISASM_WINDOW / 3)) & 0x7fff);
     }
     const int n = arcdebug_disassemble(_dbg, _disasmAddr, lines, DISASM_WINDOW, &pcLine);
     _lineCount = n;
@@ -1162,7 +1110,7 @@ static void setField(NSTextField *f, NSString *text)
     BOOL havePc = NO;
     for (int i = 0; i < n; i++) {
         _lineAddr[i] = lines[i].address;
-        NSString *line = [NSString stringWithFormat:@"%c%c %03X  %-8s  %-14s %-22s%s%s\n",
+        NSString *line = [NSString stringWithFormat:@"%c%c %04X  %-8s  %-14s %-22s%s%s\n",
                           lines[i].has_breakpoint ? '*' : ' ', lines[i].is_pc ? '>' : ' ',
                           lines[i].address, lines[i].bytes, lines[i].label, lines[i].disasm,
                           lines[i].comment[0] ? " ; " : "", lines[i].comment];
@@ -1172,66 +1120,11 @@ static void setField(NSTextField *f, NSString *text)
     if (n == 0) [text appendString:@"(no disassembly: the debugger is not attached)\n"];
     _disasm.string = text;
     if (havePc) {
-        /* the current line in the accent, its text white on the red */
+        /* the current line in the accent, its text dark on the gold */
         [_disasm.textStorage addAttributes:@{ NSBackgroundColorAttributeName: ArcAccentColor(),
-                                              NSForegroundColorAttributeName: NSColor.whiteColor }
+                                              NSForegroundColorAttributeName: NSColor.blackColor }
                                      range:NSMakeRange(pcStart, pcLen)];
     }
-}
-
-- (void)refreshEf
-{
-    if (!arcdebug_ef_present(_dbg)) {
-        _efNote.stringValue = @"Videopac+ G7400 only: the EF9340/41 text chip is not in this machine.";
-        ArcSetTextKeepingPlace(_efRegs, @"");
-        ArcSetTextKeepingPlace(_efPage, @"");
-        [_efPic setImage:NULL];
-        return;
-    }
-    static ef9340_snapshot_t e;
-    arcdebug_ef_get(_dbg, &e);
-    _efNote.stringValue = [NSString stringWithFormat:@"EF9340/41 present. Font %s, %llu text lines drawn.",
-                           e.font_present ? "imported" : "NOT imported (text is blank)",
-                           (unsigned long long)e.lines_drawn];
-
-    NSMutableString *r = [NSMutableString string];
-    [r appendFormat:@"EF9341  TA $%02X  TB $%02X  %s\n", e.ta, e.tb, e.busy ? "busy" : "ready"];
-    [r appendFormat:@"EF9340  X %d  Y %d  Y0 $%02X  R $%02X  M $%02X\n", e.x, e.y, e.y0, e.r, e.m];
-    [r appendFormat:@"R   display %s   box mode %s   conceal %s   service row %s\n",
-        e.display_on ? "on" : "off", e.box_mode ? "on" : "off", e.conceal_enabled ? "on" : "off",
-        e.service_row ? "shown" : "hidden"];
-    [r appendFormat:@"    cursor %s%s   %s   blink %s (prescaler %d, %s)\n",
-        e.cursor_on ? "on" : "off", e.cursor_visible ? " (visible)" : "",
-        e.lines625 ? "250 lines, 24-frame blink" : "210 lines, 32-frame blink",
-        e.blink_enabled ? "enabled" : "off", e.blink_prescaler, e.blink ? "hidden now" : "shown now"];
-    [r appendFormat:@"Y0  first row %d   zoom %s\n", e.first_row, e.zoom ? "on (double-height rows)" : "off"];
-    [r appendFormat:@"M   mode $%02X %s   slice %d\n", e.mode, e.mode_name ? e.mode_name : "?", e.slice];
-    ArcSetTextKeepingPlace(_efRegs, r);
-
-    NSMutableString *pg = [NSMutableString string];
-    for (int row = 0; row < EF9340_ROWS; row++) {
-        char line[EF9340_COLUMNS + 1];
-        for (int col = 0; col < EF9340_COLUMNS; col++) {
-            const ef9340_cell_t *cell = &e.page[row][col];
-            char ch = ' ';
-            switch (cell->kind) {
-            case EF9340_CELL_ALNUM:
-                ch = (cell->b & 0x7f) >= 0x20 && (cell->b & 0x7f) < 0x7f ? (char)(cell->b & 0x7f) : '.';
-                break;
-            case EF9340_CELL_GRAPHIC: ch = '#'; break;
-            case EF9340_CELL_DELIMITER: ch = ' '; break;
-            default: ch = '@'; break;
-            }
-            line[col] = ch;
-        }
-        line[EF9340_COLUMNS] = '\0';
-        [pg appendFormat:@"%2d  %s\n", row, line];
-    }
-    ArcSetTextKeepingPlace(_efPage, pg);
-
-    int w = 0, h = 0;
-    if (arcdebug_ef_view(_dbg, _px, (size_t)ARCDEBUG_VDC_VIEW_MAX_PIXELS * 4, &w, &h) && w > 0 && h > 0)
-        [_efPic setImage:ArcNewImage(_px, w, h)];
 }
 
 - (void)refreshIo
@@ -1239,53 +1132,27 @@ static void setField(NSTextField *f, NSString *text)
     arcdebug_io io;
     arcdebug_io_get(_dbg, &io);
     [_ioDiag setIo:&io];
+    arcdebug_uvi uvi;
+    arcdebug_uvi_get(_dbg, &uvi);
 
     NSMutableString *s = [NSMutableString string];
-    [s appendFormat:@"%s\n", arc_machine_name(io.machine)];
-    [s appendFormat:@"BIOS        %s\n", io.stub_running
-        ? (io.missing & ARC_MISSING_BIOS ? "the stand-in, parked: a game needs the BIOS"
-                                        : "the stand-in (runs CONFIG and FujiNet apps)")
-        : "imported"];
-    [s appendFormat:@"Characters  %s\n\n", io.have_font ? "imported" : "NOT imported: text is blank"];
+    [s appendFormat:@"%s%s\n\n", arc_machine_name(io.machine), io.is_pal ? " (PAL clone, not verified against MAME)" : ""];
+    [s appendFormat:@"Cartridge   type %d   SENSE %d   FLAG %d   RESET %s\n", io.cart_type, io.sense, io.flag,
+        io.reset_held ? "held" : "up"];
+    [s appendFormat:@"Discs       1: $%02X  2: $%02X (bit 0 up, 1 right, 2 down, 3 left, 4 fire)\n",
+        io.sticks[0], io.sticks[1]];
+    [s appendFormat:@"            analog 1: x %d y %d   analog 2: x %d y %d (0 = digital)\n",
+        io.disc[0][0], io.disc[0][1], io.disc[1][0], io.disc[1][1]];
+    [s appendFormat:@"Pots        disc 1 x $%02X y $%02X   disc 2 x $%02X y $%02X\n",
+        io.pot[0][0], io.pot[0][1], io.pot[1][0], io.pot[1][1]];
+    [s appendString:@"Keypads     $1900-$1907:"];
+    for (int i = 0; i < 8; i++) [s appendFormat:@" %02X", io.pad[i]];
+    [s appendFormat:@"\nPanel       $1908 = $%02X (START %d, OPTION %d, SELECT %d)\n\n", io.panel, io.panel & 1,
+        (io.panel >> 1) & 1, (io.panel >> 2) & 1];
 
-    [s appendFormat:@"P1 = $%02X   bank P10/P11 = %d   keyboard %s (P12)   VDC %s (P13)   RAM/cart %s (P14)\n",
-        io.p1, io.cart_bank, io.kbd_enable ? "on" : "off", io.vdc_select ? "selected" : "off",
-        io.ram_select ? "selected" : "off"];
-    [s appendFormat:@"             EF9341 %s (P15)   copy mode %s (P16)   LUM %s (P17)\n",
-        io.ef_select ? "selected" : "off", io.copy_mode ? "on: external writes and VDC reads gated off" : "off",
-        io.lum ? "on: every pixel brightened" : "off"];
-    [s appendFormat:@"P2 = $%02X   keyboard row P20-P22 = %d   T0 = %d\n", io.p2, io.kbd_row, io.t0];
-    [s appendFormat:@"Sticks      1: $%02X  2: $%02X (bit 0 up, 1 right, 2 down, 3 left, 4 button)   RESET %s\n\n",
-        io.sticks[0], io.sticks[1], io.reset_held ? "held" : "up"];
-
-    i8244_snapshot v;
-    arcdebug_vdc_get(_dbg, &v);
-    [s appendFormat:@"8244 sound   %s   %s clock   noise %s   volume %d/15   %s\n",
-        v.snd_enable ? "on" : "off", v.snd_fast ? "fast" : "slow", v.snd_noise ? "on" : "off", v.snd_volume,
-        v.snd_noise ? "no pitch" : (v.freq_hz > 0 ? [[NSString stringWithFormat:@"%.1f Hz", v.freq_hz] UTF8String]
-                                                  : "steady level")];
-    [s appendFormat:@"Audio        %llu samples made\n\n", (unsigned long long)io.audio_samples];
-
-    if (io.voice_present) {
-        const sp0256_debug_t *p = &io.voice;
-        [s appendString:@"The Voice (SP0256)\n"];
-        [s appendFormat:@"  %s   LRQ %d   SBY %d   %s\n", p->halted ? "halted" : "running", p->lrq, p->sby,
-            p->silent ? "silent" : (p->noise ? "noise source" : "voiced")];
-        [s appendFormat:@"  allophone %d (pending %d, last %d)   FIFO %u decles%s\n", p->allophone, p->pending,
-            p->last_allophone, p->fifo_count, p->fifo_sel ? "   fetching from the FIFO" : ""];
-        [s appendFormat:@"  ROM $%05X bit %u   mode %u page $%05X stack $%05X\n", p->rom_addr, p->rom_bit,
-            p->mode, p->page, p->stack];
-        [s appendFormat:@"  repeat %d  count %d  period %u  amplitude %d  interpolation %d\n", p->rpt, p->cnt,
-            p->period, p->amp, p->interp];
-        [s appendFormat:@"  %llu samples at %u Hz (clock %u Hz), %llu allophones dropped, last sample %d\n",
-            (unsigned long long)p->samples_made, p->rate_hz, p->clock_hz, (unsigned long long)p->alds_dropped,
-            p->last_sample];
-        [s appendString:@"  registers"];
-        for (int i = 0; i < 16; i++) [s appendFormat:@" %02X", p->r[i]];
-        [s appendString:@"\n"];
-    } else {
-        [s appendString:@"The Voice   not in front of the cartridge\n"];
-    }
+    [s appendFormat:@"UVI sound   pitch divider %d   volume %d/7   tone %s   noise %s\n", uvi.sound_pitch,
+        uvi.sound_volume, uvi.sound_tone ? "on" : "off", uvi.sound_noise ? "on" : "off"];
+    [s appendFormat:@"Audio       %llu samples made\n", (unsigned long long)io.audio_samples];
     ArcSetTextKeepingPlace(_sound, s);
 }
 
@@ -1296,32 +1163,21 @@ static void setField(NSTextField *f, NSString *text)
     for (NSView *v in [_bpList.arrangedSubviews copy]) [_bpList removeView:v];
     if (n == 0) [_bpList addArrangedSubview:ArcLabel(@"No breakpoints")];
     for (int i = 0; i < n; i++) {
-        static const struct { int bit; const char *name; } kinds[5] = {
+        static const struct { int bit; const char *name; } kinds[3] = {
             { ARCDEBUG_BP_EXEC, "exec" }, { ARCDEBUG_BP_READ, "read" }, { ARCDEBUG_BP_WRITE, "write" },
-            { ARCDEBUG_BP_IN, "in" }, { ARCDEBUG_BP_OUT, "out" },
         };
-        static const char *const spaces[4] = { "program", "xdata", "iram", "vdc" };
-        static const char *const ports[3] = { "BUS", "P1", "P2" };
         NSMutableString *what = [NSMutableString stringWithFormat:@"#%-3d ", bps[i].id];
         BOOL first = YES;
-        for (int k = 0; k < 5; k++)
+        for (int k = 0; k < 3; k++)
             if (bps[i].type & kinds[k].bit) {
                 [what appendFormat:@"%s%s", first ? "" : "/", kinds[k].name];
                 first = NO;
             }
-        const BOOL port = (bps[i].type & (ARCDEBUG_BP_IN | ARCDEBUG_BP_OUT)) != 0;
-        const BOOL exec = (bps[i].type & ARCDEBUG_BP_EXEC) != 0;
-        const int sp = bps[i].space >= 0 && bps[i].space < 4 ? bps[i].space : 0;
-        if (port) {
-            [what appendFormat:@"  port %s", ports[sp < 3 ? sp : 0]];
-        } else {
-            [what appendFormat:@"  %s $%03X", exec ? "program" : spaces[sp], bps[i].start];
-            if (bps[i].end != bps[i].start) [what appendFormat:@"-$%03X", bps[i].end];
-            char label[64];
-            if ((exec || sp == ARC_SPACE_PROG) &&
-                arcdebug_address_label(_dbg, bps[i].start, label, sizeof label) > 0)
-                [what appendFormat:@"  %s", label];
-        }
+        [what appendFormat:@"  $%04X", bps[i].start];
+        if (bps[i].end != bps[i].start) [what appendFormat:@"-$%04X", bps[i].end];
+        char label[64];
+        if (arcdebug_address_label(_dbg, bps[i].start, label, sizeof label) > 0)
+            [what appendFormat:@"  %s", label];
         if (bps[i].condition[0]) [what appendFormat:@"  if %s", bps[i].condition];
         [what appendFormat:@"   hits %u", bps[i].hits];
         NSButton *box = [NSButton checkboxWithTitle:what target:self action:@selector(bpEnabled:)];
@@ -1330,7 +1186,7 @@ static void setField(NSTextField *f, NSString *text)
         box.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
         NSButton *remove = ArcButton(@"Remove", self, @selector(bpRemove:));
         remove.tag = bps[i].id;
-        [_bpList addArrangedSubview:O2HStack(@[box, remove])];
+        [_bpList addArrangedSubview:ArcHStack(@[box, remove])];
     }
 }
 
@@ -1349,9 +1205,8 @@ static void setField(NSTextField *f, NSString *text)
         ArcSetTextKeepingPlace(_mailbox, @"");
         return;
     }
-    [s appendFormat:@"Type        %s%s\n", c.type_name ? c.type_name : "?",
-        c.voice_in_front ? "   with The Voice in front" : ""];
-    if (c.type == ARC_CART_FUJINET) {
+    [s appendFormat:@"Type        %s\n", c.type_name ? c.type_name : "?"];
+    if (c.type == CART_TYPE_FUJINET) {
         [s appendFormat:@"Link        %s%s\n", c.link_up ? "up" : "down", c.link_off ? " (switched off)" : ""];
         [s appendFormat:@"Mailbox     %s   %s%s\n", c.mailbox ? "open (the app claims it)" : "closed",
             c.app_live ? "an app is live" : "CONFIG is live", c.booted_game ? "   a game has booted" : ""];
@@ -1370,10 +1225,9 @@ static void setField(NSTextField *f, NSString *text)
         [s appendFormat:@"Queue       %u events waiting\n", c.queue_depth];
     } else {
         [s appendFormat:@"Image       %u bytes\n", c.rom_size];
-        [s appendFormat:@"Bank        %d   control $%02X\n", c.bank, c.control];
     }
     ArcSetTextKeepingPlace(_cart, s);
-    ArcSetTextKeepingPlace(_mailbox, hexDump(c.mailbox_page, (int)sizeof c.mailbox_page, 0xF20, @"$%03X: "));
+    ArcSetTextKeepingPlace(_mailbox, hexDump(c.mailbox_page, (int)sizeof c.mailbox_page, 0x2B00, @"$%04X: "));
 }
 
 /* The packet log is rebuilt only when it changed: a new packet, or a
@@ -1426,7 +1280,6 @@ static void setField(NSTextField *f, NSString *text)
     case TAB_CPU:         [self refreshCpu]; break;
     case TAB_DISASM:      [self refreshDisasm]; break;
     case TAB_VIDEO:       [_video refresh]; break;
-    case TAB_EF:          [self refreshEf]; break;
     case TAB_IO:          [self refreshIo]; break;
     case TAB_BREAKPOINTS: [self refreshBps]; break;
     case TAB_CART:        [self refreshCart]; break;

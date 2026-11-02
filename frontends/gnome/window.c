@@ -1,8 +1,7 @@
 /*
  * window.c -- the main window: the display, a header-bar menu, keyboard
- * capture, the console's RESET key, Import BIOS and the alerts and banners
- * that say what the running configuration is missing, gamepad hot-plug
- * toasts and the FujiNet status.
+ * capture, the console's RESET key, cartridge opening and drops, gamepad
+ * hot-plug toasts and the FujiNet status.
  *
  * Keyboard events are translated by hardware keycode (evdev, via the
  * session's HID table) rather than by GDK keyval, so a binding names the
@@ -37,14 +36,11 @@ struct _ArcWindow {
     GtkWidget *toast_overlay;
     GtkWidget *status;          /* the FujiNet link indicator */
     GtkWidget *status_dot;
-    AdwBanner *banner_font;     /* "Character set not imported" */
-    AdwBanner *banner_voice;    /* "The Voice's speech ROMs are not imported" */
     GMenu *console_menu;        /* the Console section, relabelled live */
     char console_labels[256];   /* what it last showed */
     guint status_id;
     guint sysact_id;
     gboolean sysact_down[ARC_SYSACT_COUNT];
-    gboolean needs_bios_shown;  /* the alert is up for this stand-in park */
     unsigned pad_generation;
     gboolean fullscreen;
 };
@@ -62,7 +58,7 @@ void arc_window_toast(ArcWindow *self, const char *text)
 static GtkCssProvider *s_accent_css;
 
 /* The accent moved toward white by t, for text on a dark theme: the
- * Arcadia's red is too dark to read as a thin line there. */
+ * keypad gold is too dark to read as a thin line there. */
 static guint32 tint(guint32 rgb, double t)
 {
     guint32 out = 0;
@@ -77,11 +73,11 @@ static guint32 tint(guint32 rgb, double t)
 static void load_accent_css(gboolean dark)
 {
     char buf[1024];
-    /* White text sits on the red everywhere; as a text colour the red is
-     * only readable lightened on a dark theme, and the console's darker
-     * reset-key red stands in on a light one. */
+    /* Dark text sits on the gold everywhere; as a text colour the gold is
+     * only readable lightened on a dark theme, and the darker bronze
+     * stands in on a light one. */
     g_snprintf(buf, sizeof buf,
-        ".arc-accent { background: #%06x; color: #ffffff; }\n"
+        ".arc-accent { background: #%06x; color: #1e1e1e; }\n"
         ".arc-accent:hover { background: shade(#%06x, 1.12); }\n"
         ".arc-accent-text { color: #%06x; font-weight: bold; }\n"
         ".arc-pill { padding: 1px 8px; border-radius: 9px; font-weight: bold; }\n"
@@ -319,223 +315,11 @@ static GtkFileDialog *file_dialog(const char *title, const char *filter_name,
     return dlg;
 }
 
-static const char *const k_cart_exts[] = { "bin", "rom", "arc", NULL };
-static const char *const k_bios_exts[] = { "bin", "rom", "zip", NULL };
-
-static int machine_now(ArcWindow *self)
-{
-    int m = arcsession_get_int(self->session, "machine", ARC_MACHINE_ARCADIA);
-    return m >= 0 && m < ARC_MACHINE_COUNT ? m : ARC_MACHINE_ARCADIA;
-}
-
-/* ---- Import BIOS ------------------------------------------------------------------- */
-
-/* Whether the import supplied something the running configuration was
- * missing (the mask arcsession_missing named before it). */
-static gboolean import_fixed_something(ArcWindow *self, unsigned missing)
-{
-    const int m = machine_now(self);
-    if ((missing & ARC_MISSING_BIOS) && arcsession_have_bios(self->session, m) &&
-        arcsession_get_int(self->session, "use_bios", 1))
-        return TRUE;
-    if ((missing & ARC_MISSING_FONT) && arcsession_have_font(self->session, m))
-        return TRUE;
-    if ((missing & ARC_MISSING_VOICE) && arcsession_have_voice(self->session))
-        return TRUE;
-    return FALSE;
-}
-
-/* Imports every path in turn and says what happened, always: that it takes
- * effect at the next power cycle, that a ROM's CRC is not one MAME knows, that
- * nothing here was recognised. Returns the items taken. */
-static int import_paths(ArcWindow *self, GtkWidget *over, char *const *paths, int n,
-                        gboolean apply, const char *retry)
-{
-    GString *log = g_string_new(NULL);
-    const unsigned missing = arcsession_missing(self->session);
-    gboolean failed = FALSE;
-    int total = 0, i;
-
-    for (i = 0; i < n; i++) {
-        char msg[2048];
-        int rc = arcsession_rom_import(self->session, paths[i], msg, sizeof msg);
-        if (rc > 0)
-            total += rc;
-        else if (rc < 0)
-            failed = TRUE;
-        if (msg[0])
-            g_string_append_printf(log, "%s%s", log->len ? "\n" : "", msg);
-        else if (rc < 0)
-            g_string_append_printf(log, "%s%s", log->len ? "\n" : "",
-                                   arcsession_last_error(self->session));
-    }
-    if (total > 0 && apply && import_fixed_something(self, missing)) {
-        if (retry && *retry) {
-            open_cart_path(self, retry);
-            g_string_append(log, "\n\nThe cartridge was opened again with it.");
-        } else if (arcsession_restart(self->session) == 0) {
-            g_string_append(log, "\n\nThe console was power-cycled so it takes effect now.");
-        }
-    }
-    show_message(over ? over : GTK_WIDGET(self),
-                 total > 0 ? "BIOS Imported" : failed ? "Cannot Import BIOS" : "Nothing Imported",
-                 log->len ? log->str : "Nothing was recognised.");
-    g_string_free(log, TRUE);
-    return total;
-}
-
-typedef struct {
-    ArcWindow *self;
-    GtkWidget *over;            /* weak: the dialog may be gone by now */
-    gboolean folder, apply;
-    char *retry;
-    void (*done)(int, gpointer);
-    gpointer user_data;
-} ImportCtx;
-
-static void import_ctx_free(ImportCtx *c)
-{
-    if (c->over)
-        g_object_remove_weak_pointer(G_OBJECT(c->over), (gpointer *)&c->over);
-    g_free(c->retry);
-    g_free(c);
-}
-
-static void on_bios_chosen(GObject *src, GAsyncResult *res, gpointer user_data)
-{
-    ImportCtx *c = user_data;
-    GPtrArray *paths = g_ptr_array_new_with_free_func(g_free);
-    int imported = -1;
-
-    if (c->folder) {
-        g_autoptr(GFile) dir = gtk_file_dialog_select_folder_finish(GTK_FILE_DIALOG(src), res, NULL);
-        char *path = dir ? g_file_get_path(dir) : NULL;
-        if (path)
-            g_ptr_array_add(paths, path);
-    } else {
-        g_autoptr(GListModel) files = gtk_file_dialog_open_multiple_finish(GTK_FILE_DIALOG(src), res, NULL);
-        guint i;
-        for (i = 0; files && i < g_list_model_get_n_items(files); i++) {
-            g_autoptr(GFile) f = g_list_model_get_item(files, i);
-            char *path = g_file_get_path(f);
-            if (path)
-                g_ptr_array_add(paths, path);
-        }
-    }
-    if (paths->len > 0)
-        imported = import_paths(c->self, c->over, (char *const *)paths->pdata,
-                                (int)paths->len, c->apply, c->retry);
-    if (c->done)
-        c->done(imported, c->user_data);
-    g_ptr_array_free(paths, TRUE);
-    import_ctx_free(c);
-}
-
-void arc_window_import_bios(ArcWindow *self, GtkWidget *over, gboolean folder,
-                           gboolean apply, const char *retry,
-                           void (*done)(int imported, gpointer user_data),
-                           gpointer user_data)
-{
-    ImportCtx *c = g_new0(ImportCtx, 1);
-    GtkFileDialog *dlg = file_dialog(folder ? "Import BIOS from a Folder" : "Import BIOS",
-        "BIOS, character-set and speech ROMs, or zips of them (*.bin, *.rom, *.zip)",
-        k_bios_exts, NULL);
-
-    c->self = self;
-    c->over = over;
-    if (over)
-        g_object_add_weak_pointer(G_OBJECT(over), (gpointer *)&c->over);
-    c->folder = folder;
-    c->apply = apply;
-    c->retry = g_strdup(retry);
-    c->done = done;
-    c->user_data = user_data;
-    if (folder)
-        gtk_file_dialog_select_folder(dlg, GTK_WINDOW(self), NULL, on_bios_chosen, c);
-    else
-        gtk_file_dialog_open_multiple(dlg, GTK_WINDOW(self), NULL, on_bios_chosen, c);
-    g_object_unref(dlg);
-}
-
-static void action_import_bios(GSimpleAction *a, GVariant *p, gpointer user_data)
-{
-    (void)a; (void)p;
-    arc_window_import_bios(user_data, GTK_WIDGET(user_data), FALSE, TRUE, NULL, NULL, NULL);
-}
-
-static void action_import_bios_folder(GSimpleAction *a, GVariant *p, gpointer user_data)
-{
-    (void)a; (void)p;
-    arc_window_import_bios(user_data, GTK_WIDGET(user_data), TRUE, TRUE, NULL, NULL, NULL);
-}
-
-/* ---- what the running configuration is missing ------------------------------------- */
-
-/* Import BIOS out of the "needs the BIOS" alert: once the console's BIOS is
- * there, carry straight on -- open the refused cartridge again, or (a game
- * CONFIG booted from the network) power-cycle back to CONFIG on the real
- * BIOS, so booting the game again just works. Anything short of that (a
- * folder without it, a bad file) is said in a dialog instead. */
-static void on_bios_needed_response(AdwAlertDialog *dlg, const char *response,
-                                    gpointer user_data)
-{
-    ArcWindow *self = user_data;
-    if (strcmp(response, "import") != 0)
-        return;
-    arc_window_import_bios(self, GTK_WIDGET(self), FALSE, TRUE,
-                          g_object_get_data(G_OBJECT(dlg), "retry"), NULL, NULL);
-}
-
-/* "This cartridge needs the Arcadia 2001 BIOS": commercial games call the
- * BIOS's routines, and only the real BIOS runs them -- the app's stand-in
- * runs CONFIG and FujiNet apps only. `retry` is a cartridge Open refused
- * (opened again after the import), or NULL for a game CONFIG booted from the
- * network. */
-static void show_bios_needed(ArcWindow *self, const char *retry)
-{
-    AdwDialog *dlg;
-
-    if (arcsession_have_bios(self->session, machine_now(self))) {
-        /* imported, but switched off: importing again would not help */
-        show_message(GTK_WIDGET(self), "This cartridge needs the Arcadia 2001 BIOS",
-            "A BIOS is imported, but Preferences has \xe2\x80\x9cUse the imported "
-            "BIOS\xe2\x80\x9d switched off, so the app's stand-in is running. It runs "
-            "CONFIG and FujiNet apps, not games.");
-        return;
-    }
-    dlg = adw_alert_dialog_new("This cartridge needs the Arcadia 2001 BIOS",
-        "Arcadia 2001 games call the console's BIOS, so only the real one runs them; "
-        "CONFIG and FujiNet apps run without it. Machine \xe2\x96\xb8 Import BIOS\xe2\x80\xa6 "
-        "adds your own copy: the arcbios.rom dump, or MAME's videopac.zip and "
-        "i8244.zip (the Videopac+ G7400 needs its own, g7400.bin).");
-    adw_alert_dialog_add_responses(ADW_ALERT_DIALOG(dlg),
-                                   "later", "_Not Now",
-                                   "import", "_Import BIOS\xe2\x80\xa6", NULL);
-    adw_alert_dialog_set_response_appearance(ADW_ALERT_DIALOG(dlg), "import",
-                                             ADW_RESPONSE_SUGGESTED);
-    adw_alert_dialog_set_default_response(ADW_ALERT_DIALOG(dlg), "import");
-    adw_alert_dialog_set_close_response(ADW_ALERT_DIALOG(dlg), "later");
-    g_object_set_data_full(G_OBJECT(dlg), "retry", g_strdup(retry), g_free);
-    g_signal_connect(dlg, "response", G_CALLBACK(on_bios_needed_response), self);
-    adw_dialog_present(dlg, GTK_WIDGET(self));
-}
-
-/* The banners under the header bar for what is missing but does not stop the
- * machine: the 8244's character set (text shows blank) and The Voice's
- * speech ROMs. Both clear at the power cycle the import brings. */
-static void sync_banners(ArcWindow *self)
-{
-    const unsigned missing = arcsession_missing(self->session);
-    adw_banner_set_revealed(self->banner_font, (missing & ARC_MISSING_FONT) != 0);
-    adw_banner_set_revealed(self->banner_voice, (missing & ARC_MISSING_VOICE) != 0);
-}
+static const char *const k_cart_exts[] = { "bin", "rom", "arc", "zip", NULL };
 
 /* The gamepad thread cannot call into GTK; it posts system actions and this
  * timer takes them. It also watches for gamepads coming and going, and says
- * so: a pad that drops off Bluetooth mid-game should not be a mystery. And
- * it watches for the stand-in meeting a game it cannot run (CONFIG booted
- * one from the network with no BIOS imported): one alert per time that
- * happens. */
+ * so: a pad that drops off Bluetooth mid-game should not be a mystery. */
 static gboolean sysact_drain_tick(gpointer user_data)
 {
     ArcWindow *self = user_data;
@@ -554,15 +338,6 @@ static gboolean sysact_drain_tick(gpointer user_data)
             arc_window_toast(self, text);
     }
 
-    if (arcsession_needs_bios(self->session)) {
-        if (!self->needs_bios_shown) {
-            self->needs_bios_shown = TRUE;
-            show_bios_needed(self, NULL);
-        }
-    } else {
-        self->needs_bios_shown = FALSE;
-    }
-    sync_banners(self);
     sync_console_menu(self);
     /* the session pauses too (the debugger's Run/Stop is separate): the menu's
      * check follows it */
@@ -620,22 +395,11 @@ static const char *base_name(const char *p)
     return s ? s + 1 : p;
 }
 
-/* A cartridge the FujiNet cartridge cannot plan says why in a dialog. A
- * game refused for want of the BIOS gets the alert that offers to import
- * one instead. */
+/* A cartridge the console cannot map says why in a dialog. */
 static void open_cart_path(ArcWindow *self, const char *path)
 {
-    char msg[1200], why[256];
+    char msg[1200];
     if (arcsession_load_cart(self->session, path) != 0) {
-        /* refused by the BIOS rule: a plannable game, and no BIOS to run */
-        if (arcsession_is_running(self->session) &&
-            arcsession_check_cart(path, why, sizeof why) &&
-            !arcsession_cart_is_app(path) &&
-            !(arcsession_get_int(self->session, "use_bios", 1) &&
-              arcsession_have_bios(self->session, machine_now(self)))) {
-            show_bios_needed(self, path);
-            return;
-        }
         show_message(GTK_WIDGET(self), "Cannot Open Cartridge",
                      arcsession_last_error(self->session));
         return;
@@ -644,18 +408,12 @@ static void open_cart_path(ArcWindow *self, const char *path)
     arc_window_toast(self, msg);
 }
 
-/* A dropped file: a BIOS or ROM set is imported, a cartridge runs, anything
- * else goes where it belongs. The ROM test comes first: ROM dumps are .bin
- * and .rom too, and they are recognised by size and CRC, not by name. */
+/* A dropped file: a cartridge runs, anything else goes to FujiNet's SD
+ * folder. */
 void arc_window_load_media(ArcWindow *self, const char *path)
 {
     char dest[1024];
 
-    if (arcsession_media_is_rom(path)) {
-        char *paths[1] = { (char *)path };
-        import_paths(self, GTK_WIDGET(self), paths, 1, TRUE, NULL);
-        return;
-    }
     if (arcsession_media_is_cartridge(path)) {
         open_cart_path(self, path);
         return;
@@ -673,7 +431,7 @@ static GtkFileDialog *cart_dialog(ArcWindow *self, const char *title)
     const char *cart = arcsession_cart_path(self->session);
     g_autofree char *dir = cart && *cart ? g_path_get_dirname(cart) : NULL;
     /* where the last cartridge came from: the next one is usually beside it */
-    return file_dialog(title, "Arcadia 2001 cartridges (*.bin, *.rom, *.arc)", k_cart_exts, dir);
+    return file_dialog(title, "Arcadia 2001 cartridges (*.bin, *.rom, *.arc, *.zip)", k_cart_exts, dir);
 }
 
 static void on_cart_chosen(GObject *src, GAsyncResult *res, gpointer user_data)
@@ -758,7 +516,7 @@ static void action_pause(GSimpleAction *a, GVariant *p, gpointer user_data)
 
 /* The console's RESET key from the menu: the session holds it for a few
  * frames, long enough for the console to see it (it samples the keys once a
- * frame). It resets the 8048 only: a FujiNet app restarts from the
+ * frame). It resets the 2650 only: a FujiNet app restarts from the
  * cartridge's current image. */
 static void action_reset(GSimpleAction *a, GVariant *p, gpointer user_data)
 {
@@ -863,11 +621,11 @@ static void action_about(GSimpleAction *a, GVariant *p, gpointer user_data)
         "https://github.com/FujiNetWIFI/fujinet-go-arcadia-desktop/issues");
     adw_about_dialog_set_license_type(ADW_ABOUT_DIALOG(about), GTK_LICENSE_GPL_3_0);
     adw_about_dialog_set_comments(ADW_ABOUT_DIALOG(about),
-        "Magnavox Arcadia 2001 and Philips Videopac with built-in FujiNet. The emulator is "
-        "MAME's Arcadia 2001 / Videopac (Intel 8048, the 8244/8245 video chip, the "
-        "EF9340/41 and The Voice's SP0256; BSD-3-Clause) transposed to C; the FujiNet "
-        "firmware and the cartridge are by Thomas Cherryhomes and the FujiNet "
-        "contributors (GPL-3.0-or-later).");
+        "Emerson Arcadia 2001 (and its clones) with a built-in FujiNet cartridge. The "
+        "emulator is MAME's Arcadia 2001 (Signetics 2650 and 2637 UVI; BSD-3-Clause "
+        "and GPL-2.0-or-later) transposed to C; the FujiNet firmware and the "
+        "cartridge are by Thomas Cherryhomes and the FujiNet contributors "
+        "(GPL-3.0-or-later).");
     adw_dialog_present(about, GTK_WIDGET(self));
 }
 
@@ -914,8 +672,6 @@ static const GActionEntry win_actions[] = {
     { "open", action_open, NULL, NULL, NULL, { 0 } },
     { "eject", action_eject, NULL, NULL, NULL, { 0 } },
     { "import-sd", action_import_sd, NULL, NULL, NULL, { 0 } },
-    { "import-bios", action_import_bios, NULL, NULL, NULL, { 0 } },
-    { "import-bios-folder", action_import_bios_folder, NULL, NULL, NULL, { 0 } },
     { "pause", action_pause, NULL, "false", NULL, { 0 } },
     { "reset", action_reset, NULL, NULL, NULL, { 0 } },
     { "reset-config", action_reset_config, NULL, NULL, NULL, { 0 } },
@@ -944,8 +700,6 @@ static GMenu *build_menu(ArcWindow *self)
     g_menu_append(cart, "_Open Cartridge\xe2\x80\xa6", "win.open");
     g_menu_append(cart, "E_ject Cartridge", "win.eject");
     g_menu_append(cart, "Import Cartridge to _SD\xe2\x80\xa6", "win.import-sd");
-    g_menu_append(cart, "Import _BIOS\xe2\x80\xa6", "win.import-bios");
-    g_menu_append(cart, "Import BIOS from a _Folder\xe2\x80\xa6", "win.import-bios-folder");
     g_menu_append_section(menu, NULL, G_MENU_MODEL(cart));
 
     /* filled (and kept current) by sync_console_menu */
@@ -1000,14 +754,6 @@ static void arc_window_init(ArcWindow *self)
     (void)self;
 }
 
-static AdwBanner *banner_new(const char *title)
-{
-    AdwBanner *b = ADW_BANNER(adw_banner_new(title));
-    adw_banner_set_button_label(b, "Import BIOS\xe2\x80\xa6");
-    gtk_actionable_set_action_name(GTK_ACTIONABLE(b), "win.import-bios");
-    return b;
-}
-
 GtkWidget *arc_window_new(AdwApplication *app, arcsession *session)
 {
     ArcWindow *self = g_object_new(ARC_TYPE_WINDOW, "application", app, NULL);
@@ -1020,9 +766,9 @@ GtkWidget *arc_window_new(AdwApplication *app, arcsession *session)
 
     gtk_window_set_title(GTK_WINDOW(self), "FujiNet Go Arcadia 2001");
     gtk_window_set_icon_name(GTK_WINDOW(self), arc_icon_name());
-    /* The picture at the television's 4:3, 243 lines three times over:
-     * 972 x 729 under the header bar. */
-    gtk_window_set_default_size(GTK_WINDOW(self), 972, 729 + 46);
+    /* The picture at the television's 4:3, 3x the 262-line frame's height
+     * (786) wide at 4:3 = 1048 x 786 under the header bar. */
+    gtk_window_set_default_size(GTK_WINDOW(self), 1048, 786 + 46);
 
     g_action_map_add_action_entries(G_ACTION_MAP(self), win_actions,
                                     G_N_ELEMENTS(win_actions), self);
@@ -1081,14 +827,8 @@ GtkWidget *arc_window_new(AdwApplication *app, arcsession *session)
     self->toast_overlay = adw_toast_overlay_new();
     adw_toast_overlay_set_child(ADW_TOAST_OVERLAY(self->toast_overlay), self->display);
 
-    self->banner_font = banner_new("Character set not imported \xe2\x80\x94 text will be "
-                                   "blank. Import BIOS\xe2\x80\xa6 to add it.");
-    self->banner_voice = banner_new("The Voice's speech ROMs are not imported \xe2\x80\x94 "
-                                    "it will be silent. Import BIOS\xe2\x80\xa6 to add them.");
     toolbar = adw_toolbar_view_new();
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), header);
-    adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), GTK_WIDGET(self->banner_font));
-    adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), GTK_WIDGET(self->banner_voice));
     adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), self->toast_overlay);
     adw_application_window_set_content(ADW_APPLICATION_WINDOW(self), toolbar);
 

@@ -40,7 +40,7 @@ QColor arcAccentTextColor(const QWidget *w)
 
 QString arcAccentFill()
 {
-    return QStringLiteral("background: %1; color: white;").arg(arcAccentColor().name());
+    return QStringLiteral("background: %1; color: #1b1b1b;").arg(arcAccentColor().name());
 }
 
 void fujinet_log_show(QWidget *parent, arcsession *session)

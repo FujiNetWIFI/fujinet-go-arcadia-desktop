@@ -4,48 +4,48 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <name>FujiNet Go Arcadia 2001 (GNOME)</name>
-  <summary>Arcadia 2001 and Videopac with FujiNet</summary>
+  <summary>Emerson Arcadia 2001 with a built-in FujiNet cartridge</summary>
   <description>
     <p>
-      A self-contained Magnavox Arcadia 2001 and Philips Videopac, the 1978
-      Intel 8048 consoles, with a FujiNet built in: browse a network host from
-      the console, boot games and programs over the network, and let a FujiNet
-      program keep talking to the network, all in one application.
+      A self-contained Emerson Arcadia 2001, the 1982 Signetics 2650 console
+      with the 2637 UVI video chip, with a FujiNet built in: browse a network
+      host from the console, boot games and programs over the network, and let
+      a FujiNet program keep talking to the network, all in one application.
     </p>
     <p>
       FujiNet's CONFIG program is built in and starts at power-on, exactly as
-      on the FujiNet Arcadia 2001 cartridge. Local cartridge images can be opened
-      in its place, or imported to FujiNet's SD folder with Import Cartridge to
-      SD and booted from CONFIG. The console's RESET key restarts whatever the
-      cartridge is serving, and Reset to CONFIG ejects the cartridge and brings
-      CONFIG back. The Arcadia 2001 (NTSC), the Videopac G7000 (PAL) and the
-      Videopac+ G7400 (with its text chip) are all here, with The Voice in
-      front of the cartridge if you like.
+      on the FujiNet Arcadia 2001 cartridge. Local cartridge images (.bin,
+      .rom, .arc, or a zip holding one) can be opened in its place, or
+      imported to FujiNet's SD folder with Import Cartridge to SD and booted
+      from CONFIG. The console's RESET key restarts whatever the cartridge is
+      serving, and Reset to CONFIG ejects the cartridge and brings CONFIG back.
+      The NTSC console is the one checked against MAME; a PAL clone is also
+      offered (50 Hz), not verified against MAME. The 16-key Palladium is not
+      supported yet.
     </p>
     <p>
-      The emulator is MAME's Arcadia 2001 and Videopac, with the 8048, the 8244
-      and 8245 video chips, the G7400's EF9340 and The Voice's speech chip,
+      The emulator is MAME's Arcadia 2001, the Signetics 2650 and the 2637 UVI,
       transposed to C, with the FujiNet cartridge running the real cartridge
       firmware's own protocol and page-mapping sources, so it behaves as the
       hardware does.
     </p>
     <p>
-      The Controllers window draws the console's membrane keyboard and both
-      joysticks; click and hold to press, and Map rebinds any key or stick
-      control to a key or a gamepad button. Gamepads are picked up as they are
-      plugged in and out. A native debugger has a command prompt, the 8048's
-      registers and RAM, disassembly with breakpoints, a Video tab that shows
-      everything the 8244 knows (the rendered display with its layers, every
-      sprite and character with its position and bitmap, the grid, all 256
-      registers, collisions and sound), the EF9340, the I/O ports and keyboard
-      matrix, and the FujiNet cartridge with every FujiBus packet on its link.
+      The Controllers window draws the console with both hand controllers, each
+      with its 12-key keypad, its disc and its side fire button, and the
+      START, OPTION, SELECT and RESET buttons; click and hold to press, drag
+      the disc, and Map rebinds any key, direction or button to a key or a
+      gamepad button. Gamepads are picked up as they are plugged in and out,
+      with an analog disc from the left stick. A native debugger has a command
+      prompt, the 2650's registers and return stack with a memory viewer,
+      disassembly with breakpoints, a Video tab that shows everything the UVI
+      knows (the rendered display with its layers, the four objects with their
+      positions and bitmaps, the character screen with its colour bits, the
+      registers, collisions and the glyph table), the inputs and the beeper,
+      and the FujiNet cartridge with every FujiBus packet on its link.
     </p>
     <p>
-      Nothing copyrighted is included. CONFIG and FujiNet programs run on the
-      application's own stand-in for the BIOS; Arcadia 2001 games call the real
-      BIOS, and every machine needs the video chip's character set to show
-      text, so you add your own copies with Import BIOS, from files, a zip or a
-      folder.
+      Nothing copyrighted is included, and the console needs no BIOS: it has
+      none. Game cartridge images are your own to open.
     </p>
   </description>
   <launchable type="desktop-id">online.fujinet.go.arcadia.gnome.desktop</launchable>
@@ -69,11 +69,11 @@
       <image>https://raw.githubusercontent.com/FujiNetWIFI/fujinet-go-arcadia-desktop/v0.1.0/data/screenshots/1_running_config.png</image>
     </screenshot>
     <screenshot>
-      <caption>The built-in debugger's Video tab, showing the 8244's objects</caption>
+      <caption>The built-in debugger's Video tab, showing the UVI's objects</caption>
       <image>https://raw.githubusercontent.com/FujiNetWIFI/fujinet-go-arcadia-desktop/v0.1.0/data/screenshots/2_debugger.png</image>
     </screenshot>
     <screenshot>
-      <caption>The Controllers window: the membrane keyboard and both joysticks</caption>
+      <caption>The Controllers window: both hand controllers and the console's buttons</caption>
       <image>https://raw.githubusercontent.com/FujiNetWIFI/fujinet-go-arcadia-desktop/v0.1.0/data/screenshots/3_controllers.png</image>
     </screenshot>
   </screenshots>
@@ -84,20 +84,12 @@
     <release version="@PROJECT_VERSION@" date="2026-11-02">
       <description>
         <p>
-          The CONFIG client's start-up splash now shows the FujiNet logo.
-          0.1.0 embedded an earlier CONFIG whose logo was wrong.
-        </p>
-      </description>
-    </release>
-    <release version="0.1.0" date="2026-11-02">
-      <description>
-        <p>
-          First release: the Magnavox Arcadia 2001, the Philips Videopac G7000
-          and the Videopac+ G7400 transposed from MAME, with the FujiNet
-          Arcadia 2001 cartridge and an in-process FujiNet; a Controllers window
-          with the console's keyboard and both joysticks, hotplugged gamepads,
-          Import BIOS from files, a zip or a folder, and a native debugger with
-          a full 8244 video tab and a FujiNet tab showing every FujiBus packet.
+          First release: the Emerson Arcadia 2001 transposed from MAME, with
+          the FujiNet Arcadia 2001 cartridge and an in-process FujiNet; a
+          Controllers window with both hand controllers and the console's
+          buttons, hotplugged gamepads with an analog disc, and a native
+          debugger with a full 2637 video tab and a FujiNet tab showing every
+          FujiBus packet.
         </p>
       </description>
     </release>

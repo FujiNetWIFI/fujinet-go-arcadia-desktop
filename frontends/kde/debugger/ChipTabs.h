@@ -1,7 +1,6 @@
 /*
- * The debugger's chip tabs: EF9340 (the Videopac+ G7400's text chip), Sound &
- * I/O (the ports decoded by function, the keyboard matrix and sticks live,
- * the 8244's sound, The Voice) and Cart (the cartridge's mapper or the
+ * The debugger's chip tabs: Sound & I/O (the UVI's beeper, the keypads, panel,
+ * discs and pots live) and Cart (the cartridge's mapper or the
  * FujiNet cartridge's state and mailbox page).
  *
  * Each is refreshed by the debugger window while it shows.
@@ -12,31 +11,13 @@
 #pragma once
 
 #include <QWidget>
-#include <memory>
 
 #include "arcdebug.h"
 
-class EfPageWidget;
 class KeyMatrixWidget;
 class QLabel;
 class QPlainTextEdit;
-class QStackedWidget;
 class StickDiagram;
-
-class EfTab : public QWidget {
-public:
-    explicit EfTab(arcdebug *debugger, QWidget *parent = nullptr);
-    void refresh();
-
-private:
-    arcdebug *m_dbg;
-    std::unique_ptr<ef9340_snapshot_t> m_snap;
-    QStackedWidget *m_stack = nullptr;
-    QPlainTextEdit *m_text = nullptr;
-    EfPageWidget *m_page = nullptr;
-    QLabel *m_layer = nullptr;
-    QLabel *m_note = nullptr;
-};
 
 class IoTab : public QWidget {
 public:

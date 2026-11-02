@@ -19,10 +19,10 @@ uint32_t ArcKeysymFromEvent(NSEvent *event);
 /* The keysym for a modifier flag change (flagsChanged), or 0. Sets *down. */
 uint32_t ArcKeysymFromFlagsChange(NSEvent *event, int *down);
 
-/* This app's accent colour (ARCSESSION_ACCENT_RGB): the Arcadia 2001's power-button
- * red. For fills and highlights with white text on them. */
+/* This app's accent colour (ARCSESSION_ACCENT_RGB): the console keypad's gold
+ * (#AA916C). For fills and highlights; dark text sits on it. */
 NSColor *ArcAccentColor(void);
 
-/* The accent for TEXT and thin strokes: on a light appearance the red is
- * ARCSESSION_ACCENT_DARK_RGB (the console's reset key) instead. */
+/* The accent for TEXT and thin strokes: on a light appearance the gold is
+ * ARCSESSION_ACCENT_DARK_RGB (#7A6340) instead. */
 NSColor *ArcAccentTextColor(void);

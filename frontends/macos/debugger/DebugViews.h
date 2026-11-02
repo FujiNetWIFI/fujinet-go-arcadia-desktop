@@ -30,8 +30,8 @@ void ArcSetLogText(NSTextView *view, NSString *text, BOOL follow);
 /* C text without its control characters (but for newline and tab). */
 NSString *ArcStripControl(const char *s);
 
-NSStackView *O2HStack(NSArray<NSView *> *views);
-NSStackView *O2VStack(NSArray<NSView *> *views);
+NSStackView *ArcHStack(NSArray<NSView *> *views);
+NSStackView *ArcVStack(NSArray<NSView *> *views);
 /* The view as wide as the stack. */
 void ArcFill(NSStackView *stack, NSView *view);
 /* A drawn view at its own intrinsic size. */

@@ -15,7 +15,7 @@ G_BEGIN_DECLS
 typedef struct _ArcWindow ArcWindow;
 
 /* Shows the preferences dialog. The analog switch, the volume and the aspect
- * apply live; the BIOS switch and the host options (FujiNet, audio,
+ * apply live; the machine and the host options (FujiNet, audio,
  * gamepads) are read when the machine powers up, so the dialog power-cycles
  * the session on close if one of those changed. */
 void arc_prefs_show(ArcWindow *parent, arcsession *session,

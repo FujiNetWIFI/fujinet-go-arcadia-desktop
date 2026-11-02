@@ -26,8 +26,8 @@ DisplayWidget::DisplayWidget(arcsession *session, QWidget *parent)
       m_scratch(ARCSESSION_FB_WIDTH, ARCSESSION_FB_HEIGHT, QImage::Format_RGB32)
 {
     m_scratch.fill(0);
-    /* the 243 lines once, at the TV's 4:3 */
-    setMinimumSize(324, 243);
+    /* a quarter of the default 4:3 picture */
+    setMinimumSize(320, 240);
     setFocusPolicy(Qt::StrongFocus);
     connect(m_feed, &FrameFeed::frameReady, this, &DisplayWidget::onFrame);
 }

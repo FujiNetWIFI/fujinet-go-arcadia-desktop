@@ -1,5 +1,5 @@
 /*
- * The AppKit debugger window over the Intel 8048 / 8244 debugger engine
+ * The AppKit debugger window over the Signetics 2650 / 2637 UVI debugger engine
  * (arcdebug.h).
  * SPDX-License-Identifier: GPL-3.0-or-later
  */

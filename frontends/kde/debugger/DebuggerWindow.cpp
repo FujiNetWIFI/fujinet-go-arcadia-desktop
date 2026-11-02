@@ -42,7 +42,7 @@ using dbgui::titleLabel;
 
 namespace {
 
-/* $0400, 0x0400, 400h, #1024; a bare number is hex, as everywhere in an 8048
+/* $0400, 0x0400, 400h, #1024; a bare number is hex, as everywhere in a
  * debugger. */
 bool parseNum(const QString &t, long *out)
 {
@@ -59,26 +59,15 @@ bool parseNum(const QString &t, long *out)
 }
 
 /* The order of the tabs, and their names for ARC_DEBUGGER_TAB. */
-enum { kTabPrompt, kTabCpu, kTabDisasm, kTabVideo, kTabEf, kTabIo, kTabBreaks, kTabCart, kTabFujinet };
-const char *const kTabNames[] = { "prompt", "cpu", "disassembly", "video", "ef9340", "io", "breakpoints", "cart", "fujinet" };
+enum { kTabPrompt, kTabCpu, kTabDisasm, kTabVideo, kTabIo, kTabBreaks, kTabCart, kTabFujinet };
+const char *const kTabNames[] = { "prompt", "cpu", "disassembly", "video", "io", "breakpoints", "cart", "fujinet" };
 /* other names a tab answers to */
 const struct { const char *name; int tab; } kTabAliases[] = {
-    { "ram", kTabCpu }, { "8244", kTabVideo }, { "vdc", kTabVideo }, { "ef", kTabEf }, { "sound", kTabIo },
-    { "voice", kTabIo }, { "keys", kTabIo }, { "mailbox", kTabCart },
+    { "ram", kTabCpu }, { "memory", kTabCpu }, { "uvi", kTabVideo }, { "2637", kTabVideo }, { "sound", kTabIo },
+    { "keys", kTabIo }, { "mailbox", kTabCart },
 };
 
 QPointer<DebuggerWindow> s_win;
-
-/* The external-data and program spaces' names for the breakpoint list. */
-const char *spaceName(int space)
-{
-    switch (space) {
-    case ARC_SPACE_PROG: return "program";
-    case ARC_SPACE_XDATA: return "external data";
-    case ARC_SPACE_IRAM: return "internal RAM";
-    default: return "8244 registers";
-    }
-}
 
 } // namespace
 
@@ -114,8 +103,6 @@ DebuggerWindow::DebuggerWindow(arcsession *session, QWidget *parent)
     tabs->addTab(buildDisasm(), QStringLiteral("Disassembly"));
     m_video = new VideoTab(m_dbg);
     tabs->addTab(m_video, QStringLiteral("Video"));
-    m_ef = new EfTab(m_dbg);
-    tabs->addTab(m_ef, QStringLiteral("EF9340"));
     m_io = new IoTab(m_dbg, m_session);
     tabs->addTab(m_io, QStringLiteral("Sound && I/O"));
     tabs->addTab(buildBreaks(), QStringLiteral("Breakpoints"));
@@ -189,13 +176,13 @@ QWidget *DebuggerWindow::buildToolbar()
     save->setFocusPolicy(Qt::NoFocus);
     auto *menu = new QMenu(save);
     static const struct { const char *kind, *title, *file; } saves[] = {
-        { "dis", "Disassembly (the BIOS and the cartridge, as mapped)", "disassembly.asm" },
-        { "ram", "RAM (64 internal and 128 external bytes)", "ram.bin" },
-        { "mailbox", "Mailbox page ($F20-$FFF)", "mailbox.bin" },
-        { "vdc", "8244 registers (256 bytes)", "vdc.bin" },
-        { "font", "Character set (the 8244's font)", "font.bin" },
+        { "dis", "Disassembly (the cartridge, as mapped)", "disassembly.asm" },
+        { "mailbox", "Mailbox page ($2B00-$2FFF)", "mailbox.bin" },
+        { "uvi", "UVI registers (768 bytes)", "uvi.bin" },
+        { "font", "Glyph table (64 x 8 bytes)", "font.bin" },
+        { "cart", "Cartridge image", "cartridge.bin" },
         { "screen", "Screen (PPM)", "screen.ppm" },
-        { "regs", "CPU, video and I/O state", "registers.txt" } };
+        { "regs", "CPU, UVI and I/O state", "registers.txt" } };
     for (const auto &s : saves) {
         const char *kind = s.kind;
         const char *title = s.title;
@@ -252,7 +239,7 @@ QWidget *DebuggerWindow::buildPrompt()
     m_promptOut->setLineWrapMode(QPlainTextEdit::WidgetWidth);
     m_promptOut->setPlainText(QStringLiteral("Debugger prompt. Type 'help' for every command.\n"));
     m_promptIn = new QLineEdit;
-    m_promptIn->setPlaceholderText(QStringLiteral("command (help, step, break, bpw, print, mem, poke, runto, disasm, vdc, objects, io, keys, cart ...)"
+    m_promptIn->setPlaceholderText(QStringLiteral("command (help, step, break, bpw, print, mem, poke, runto, disasm, uvi, objects, screen, io, keys, cart ...)"
                                                   " — Tab completes, Up/Down recall"));
     m_promptIn->installEventFilter(this);
     connect(m_promptIn, &QLineEdit::returnPressed, this, &DebuggerWindow::runPrompt);
@@ -273,18 +260,15 @@ QLineEdit *DebuggerWindow::regEdit(int reg, int digits, const QString &tip)
     return e;
 }
 
-/* A hex editor over one of the 8048's RAMs: sixteen to a row, the byte
- * a double-click (or a typed digit) edits, the ones that changed since the
- * last look in the accent. */
-QTableWidget *DebuggerWindow::hexTable(int space, int size)
+/* A hex editor over one of the address spaces: sixteen to a row, the byte a
+ * double-click (or a typed digit) edits, the ones that changed since the last
+ * look in the accent. The space and the base address are picked above it. */
+QTableWidget *DebuggerWindow::hexTable(int rows)
 {
-    const int rows = size / 16;
     auto *t = new QTableWidget(rows, 16);
-    QStringList cols, rowNames;
+    QStringList cols;
     for (int c = 0; c < 16; ++c) cols << hx(c, 1);
-    for (int r = 0; r < rows; ++r) rowNames << QStringLiteral("$") + hx(r * 16, 2);
     t->setHorizontalHeaderLabels(cols);
-    t->setVerticalHeaderLabels(rowNames);
     t->setFont(dbgui::monoFont(t->font()));
     const QFontMetrics fm(t->font());
     const int cw = fm.horizontalAdvance(QStringLiteral("00")) + 14, ch = fm.height() + 8;
@@ -292,9 +276,9 @@ QTableWidget *DebuggerWindow::hexTable(int space, int size)
     t->horizontalHeader()->setSectionResizeMode(QHeaderView::Fixed);
     t->verticalHeader()->setDefaultSectionSize(ch);
     t->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
-    const int vw = fm.horizontalAdvance(QStringLiteral("$00")) + 20;
+    const int vw = fm.horizontalAdvance(QStringLiteral("$0000")) + 20;
     t->verticalHeader()->setFixedWidth(vw);
-    t->setFixedSize(vw + 16 * cw + 2 * t->frameWidth() + 2,
+    t->setFixedSize(vw + 16 * cw + 2 * t->frameWidth() + 24,
                     t->horizontalHeader()->sizeHint().height() + rows * ch + 2 * t->frameWidth() + 2);
     t->setSelectionMode(QAbstractItemView::SingleSelection);
     t->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -305,11 +289,13 @@ QTableWidget *DebuggerWindow::hexTable(int space, int size)
             it->setTextAlignment(Qt::AlignCenter);
             t->setItem(r, c, it);
         }
-    connect(t, &QTableWidget::itemChanged, this, [this, space](QTableWidgetItem *it) {
+    connect(t, &QTableWidget::itemChanged, this, [this](QTableWidgetItem *it) {
         if (m_hexFilling) return;
         bool ok = false;
         const unsigned v = it->text().trimmed().toUInt(&ok, 16);
-        if (ok && v <= 0xFF) arcdebug_write(m_dbg, space, (uint16_t)(it->row() * 16 + it->column()), (uint8_t)v);
+        if (ok && v <= 0xFF)
+            arcdebug_write(m_dbg, m_memSpace->currentData().toInt(), m_memBase + (uint32_t)(it->row() * 16 + it->column()),
+                           (uint8_t)v);
         /* once the editor has closed, so the byte shows as two digits */
         QTimer::singleShot(0, this, [this] { refreshRam(); });
     });
@@ -322,85 +308,97 @@ QWidget *DebuggerWindow::buildCpu()
     auto *h = new QHBoxLayout(w);
     auto *left = new QVBoxLayout;
 
-    /* the registers, three columns of label and field; an edit goes in with
-     * Enter, while the machine is stopped */
-    auto *regs = new QGroupBox(QStringLiteral("Registers"));
+    /* the registers; an edit goes in with Enter, while the machine is stopped */
+    auto *regs = new QGroupBox(QStringLiteral("General registers"));
     auto *g = new QGridLayout(regs);
-    struct Field { int reg, digits; const char *name, *tip; };
-    static const Field cols[3][6] = {
-        { { ARC_REG_A, 2, "A", "The accumulator" },
-          { ARC_REG_PC, 3, "PC", "The program counter (12 bits): the instruction about to run" },
-          { ARC_REG_MB, 1, "MB", "The memory-bank latch (A11) that SEL MB0 and MB1 set" },
-          { ARC_REG_PSW, 2, "PSW", "The program status word as the 8048 keeps it: C AC F0 BS 1 SP2 SP1 SP0" },
-          { -1, 0, nullptr, nullptr } },
-        { { ARC_REG_C, 1, "C", "The carry (0 or 1)" },
-          { ARC_REG_AC, 1, "AC", "The auxiliary carry (0 or 1)" },
-          { ARC_REG_F0, 1, "F0", "Flag 0 (a PSW bit)" },
-          { ARC_REG_F1, 1, "F1", "Flag 1" },
-          { ARC_REG_BS, 1, "BS", "The register bank in use (0 or 1)" },
-          { ARC_REG_SP, 1, "SP", "The stack pointer, 0-7 (two bytes of internal RAM a level)" } },
-        { { ARC_REG_T, 2, "T", "The timer / event counter" },
-          { ARC_REG_CNT, 2, "CNT", "The timer's /32 prescaler count" },
-          { ARC_REG_P1, 2, "P1", "The P1 output latch" },
-          { ARC_REG_P2, 2, "P2", "The P2 output latch" },
-          { ARC_REG_BUS, 2, "BUS", "The BUS output latch" } },
-    };
-    for (int col = 0; col < 3; ++col)
-        for (int row = 0; row < 6; ++row) {
-            const Field &f = cols[col][row];
-            if (!f.name) continue;
-            auto *label = new QLabel(QString::fromUtf8(f.name));
-            label->setToolTip(QString::fromUtf8(f.tip));
-            g->addWidget(label, row, col * 3, Qt::AlignRight);
-            g->addWidget(regEdit(f.reg, f.digits, QString::fromUtf8(f.tip)), row, col * 3 + 1);
+    g->addWidget(new QLabel(QStringLiteral("R0")), 1, 0, Qt::AlignRight);
+    g->addWidget(regEdit(ARC_REG_R0, 2, QStringLiteral("R0: the same register in both banks")), 1, 1);
+    for (int b = 0; b < 2; ++b) {
+        m_bankHead[b] = new QLabel(QStringLiteral("Bank %1").arg(b));
+        m_bankHead[b]->setAlignment(Qt::AlignCenter);
+        g->addWidget(m_bankHead[b], 0, 3 + b * 3, 1, 2);
+    }
+    static const int bankRegs[2][3] = { { ARC_REG_R1, ARC_REG_R2, ARC_REG_R3 }, { ARC_REG_R1B, ARC_REG_R2B, ARC_REG_R3B } };
+    for (int b = 0; b < 2; ++b)
+        for (int n = 0; n < 3; ++n) {
+            g->addWidget(new QLabel(QStringLiteral("R%1%2").arg(n + 1).arg(b ? "'" : "")), 1 + n, 3 + b * 3, Qt::AlignRight);
+            g->addWidget(regEdit(bankRegs[b][n], 2, QStringLiteral("R%1 of register bank %2 (the one RS selects is in use)")
+                                                        .arg(n + 1).arg(b)),
+                         1 + n, 4 + b * 3);
         }
     g->setColumnMinimumWidth(2, 16);
     g->setColumnMinimumWidth(5, 16);
     g->setColumnStretch(8, 1);
     left->addWidget(regs);
 
-    /* R0-R7 of both banks: they are the first and fourth eight bytes of the
-     * internal RAM, so an edit is a store there */
-    auto *banks = new QGroupBox(QStringLiteral("Register banks (R0-R7)"));
-    auto *bg = new QGridLayout(banks);
-    for (int b = 0; b < 2; ++b) {
-        m_bankHead[b] = new QLabel(QStringLiteral("Bank %1").arg(b));
-        m_bankHead[b]->setAlignment(Qt::AlignCenter);
-        bg->addWidget(m_bankHead[b], 0, 1 + b);
-        for (int n = 0; n < 8; ++n) {
-            auto *e = m_bankReg[b][n] = new QLineEdit;
-            e->setMaxLength(2);
-            e->setFixedWidth(e->fontMetrics().horizontalAdvance(QStringLiteral("000")) + 14);
-            e->setToolTip(QStringLiteral("R%1 of bank %2: internal RAM $%3").arg(n).arg(b).arg(hx(b * 24 + n, 2)));
-            connect(e, &QLineEdit::returnPressed, this, [this, b, n, e] { setBankRegister(b, n, e); });
-            if (b == 0) bg->addWidget(new QLabel(QStringLiteral("R%1").arg(n)), 1 + n, 0, Qt::AlignRight);
-            bg->addWidget(e, 1 + n, 1 + b, Qt::AlignCenter);
-        }
-    }
-    bg->setColumnStretch(3, 1);
-    left->addWidget(banks);
+    auto *addr = new QGroupBox(QStringLiteral("Address"));
+    auto *ag = new QGridLayout(addr);
+    ag->addWidget(new QLabel(QStringLiteral("PC")), 0, 0, Qt::AlignRight);
+    ag->addWidget(regEdit(ARC_REG_PC, 4, QStringLiteral("The 15-bit address of the instruction about to run: the page (A14-A13) and the IAR")), 0, 1);
+    ag->addWidget(new QLabel(QStringLiteral("IAR")), 0, 3, Qt::AlignRight);
+    ag->addWidget(regEdit(ARC_REG_IAR, 4, QStringLiteral("The instruction address register: A12-A0, wrapping inside the 8K page")), 0, 4);
+    m_pageLabel = new QLabel;
+    ag->addWidget(m_pageLabel, 0, 6);
+    ag->setColumnStretch(7, 1);
+    left->addWidget(addr);
 
-    /* the timer, the interrupts and the pins: what the CPU reads, not
-     * editable */
-    auto *stateBox = new QGroupBox(QStringLiteral("Timer, interrupts and pins"));
-    auto *sg = new QGridLayout(stateBox);
-    static const struct { const char *name, *tip; } states[9] = {
-        { "TF", "The timer-overflow flag (JTF tests and clears it)" },
-        { "EN TCNTI", "The timer/counter interrupt is enabled" },
-        { "EN I", "The external interrupt is enabled" },
-        { "In interrupt", "An interrupt routine is running" },
-        { "IRQ pending", "The external interrupt is waiting" },
-        { "Timer IRQ pending", "The timer interrupt is waiting" },
-        { "T0", "The T0 input: the cartridge's (The Voice's LRQ)" },
-        { "T1", "The T1 input: vertical or horizontal blank" },
-        { "INT", "The INT input: the 8244's interrupt line" },
+    /* PSU and PSL, byte and bits */
+    auto *psw = new QGroupBox(QStringLiteral("Program status"));
+    auto *pg = new QGridLayout(psw);
+    struct Field { int reg, digits; const char *name, *tip; };
+    static const Field psu[] = {
+        { ARC_REG_PSU, 2, "PSU", "Program status upper: S F II - - SP2 SP1 SP0" },
+        { ARC_REG_F, 1, "F", "The FLAG output" },
+        { ARC_REG_II, 1, "II", "Interrupt inhibit" },
+        { ARC_REG_SP, 1, "SP", "The return-stack pointer, 0-7" },
     };
-    for (int i = 0; i < 9; ++i) {
+    static const Field psl[] = {
+        { ARC_REG_PSL, 2, "PSL", "Program status lower: CC1 CC0 IDC RS WC OVF COM C" },
+        { ARC_REG_CC, 1, "CC", "The condition code: 0 zero, 1 positive, 2 negative" },
+        { ARC_REG_IDC, 1, "IDC", "Inter-digit carry" },
+        { ARC_REG_RS, 1, "RS", "The register bank in use" },
+        { ARC_REG_WC, 1, "WC", "With carry (arithmetic uses C)" },
+        { ARC_REG_OVF, 1, "OVF", "Overflow" },
+        { ARC_REG_COM, 1, "COM", "Logical compare (unsigned)" },
+        { ARC_REG_C, 1, "C", "Carry" },
+    };
+    for (int i = 0; i < 4; ++i) {
+        pg->addWidget(new QLabel(QString::fromUtf8(psu[i].name)), 0, i * 2, Qt::AlignRight);
+        pg->addWidget(regEdit(psu[i].reg, psu[i].digits, QString::fromUtf8(psu[i].tip)), 0, i * 2 + 1);
+    }
+    for (int i = 0; i < 8; ++i) {
+        pg->addWidget(new QLabel(QString::fromUtf8(psl[i].name)), 1 + i / 4, (i % 4) * 2, Qt::AlignRight);
+        pg->addWidget(regEdit(psl[i].reg, psl[i].digits, QString::fromUtf8(psl[i].tip)), 1 + i / 4, (i % 4) * 2 + 1);
+    }
+    pg->setColumnStretch(8, 1);
+    left->addWidget(psw);
+
+    /* the return address stack: a call increments SP and stores at ras[SP] */
+    auto *ras = new QGroupBox(QStringLiteral("Return address stack (8 deep)"));
+    auto *rg = new QGridLayout(ras);
+    for (int i = 0; i < 8; ++i) {
+        m_rasLabel[i] = new QLabel(QStringLiteral("%1").arg(i));
+        rg->addWidget(m_rasLabel[i], i / 4, (i % 4) * 2, Qt::AlignRight);
+        rg->addWidget(regEdit(ARC_REG_RAS0 + i, 4, QStringLiteral("Return address slot %1 (the live returns are slots 1 to SP)").arg(i)),
+                      i / 4, (i % 4) * 2 + 1);
+    }
+    rg->setColumnStretch(8, 1);
+    left->addWidget(ras);
+
+    /* what the CPU reads, not editable */
+    auto *stateBox = new QGroupBox(QStringLiteral("Inputs and state"));
+    auto *sg = new QGridLayout(stateBox);
+    static const struct { const char *name, *tip; } states[3] = {
+        { "S (SENSE)", "The SENSE input: the UVI's vertical blank" },
+        { "Halted", "HALT executed: waiting for an interrupt" },
+        { "IRQ line", "The IRQ input (the Arcadia never drives it)" },
+    };
+    for (int i = 0; i < 3; ++i) {
         m_state[i] = new QCheckBox(QString::fromUtf8(states[i].name));
         m_state[i]->setAttribute(Qt::WA_TransparentForMouseEvents);
         m_state[i]->setFocusPolicy(Qt::NoFocus);
         m_state[i]->setToolTip(QString::fromUtf8(states[i].tip));
-        sg->addWidget(m_state[i], i / 3, i % 3);
+        sg->addWidget(m_state[i], 0, i);
     }
     left->addWidget(stateBox);
     m_cpuInfo = dbgui::dimLabel();
@@ -410,17 +408,57 @@ QWidget *DebuggerWindow::buildCpu()
     h->addLayout(left);
 
     auto *right = new QVBoxLayout;
-    right->addWidget(titleLabel(QStringLiteral("Internal RAM ($00-$3F): the register banks, the stack and your variables")));
-    m_hex[0] = hexTable(ARC_SPACE_IRAM, 64);
-    right->addWidget(m_hex[0]);
-    right->addSpacing(8);
-    right->addWidget(titleLabel(QStringLiteral("External RAM ($00-$7F, through MOVX)")));
-    m_hex[1] = hexTable(ARC_SPACE_XDATA, 128);
-    right->addWidget(m_hex[1]);
+    right->addWidget(titleLabel(QStringLiteral("Memory")));
+    auto *row = new QHBoxLayout;
+    m_memSpace = new QComboBox;
+    m_memSpace->addItem(QStringLiteral("Program (CPU view, 15-bit)"), ARC_SPACE_PROG);
+    m_memSpace->addItem(QStringLiteral("UVI registers ($000-$2FF = CPU $1800-$1AFF)"), ARC_SPACE_UVI);
+    m_memSpace->addItem(QStringLiteral("Cartridge image"), ARC_SPACE_CART);
+    m_memSpace->setToolTip(QStringLiteral("Reads have no side effects. An edit goes into the UVI with its write "
+                                          "effects, or into the cartridge's own buffer; the rest is ROM"));
+    m_memGo = new QLineEdit;
+    m_memGo->setPlaceholderText(QStringLiteral("$address or label"));
+    m_memGo->setMaximumWidth(140);
+    auto *prev = new QPushButton(QStringLiteral("◀"));
+    auto *next = new QPushButton(QStringLiteral("▶"));
+    prev->setFocusPolicy(Qt::NoFocus);
+    next->setFocusPolicy(Qt::NoFocus);
+    prev->setToolTip(QStringLiteral("The previous 384 bytes"));
+    next->setToolTip(QStringLiteral("The next 384 bytes"));
+    row->addWidget(m_memSpace, 1);
+    row->addWidget(m_memGo);
+    row->addWidget(prev);
+    row->addWidget(next);
+    right->addLayout(row);
+    m_hex = hexTable(kMemRows);
+    right->addWidget(m_hex);
     right->addWidget(dbgui::dimLabel(QStringLiteral("Double-click a byte to edit it (two hex digits, Enter). "
-                                                    "Changed since the last look: red.")));
+                                                    "Changed since the last look: gold.")));
     right->addStretch();
     h->addLayout(right, 1);
+    connect(m_memSpace, &QComboBox::currentIndexChanged, this, [this] {
+        m_memBase = 0;
+        m_hexPrev.clear();
+        refreshRam();
+    });
+    connect(m_memGo, &QLineEdit::returnPressed, this, [this] {
+        long a;
+        if (!addressOf(m_memGo->text(), &a)) { statusBar()->showMessage(QStringLiteral("No such address or label"), 4000); return; }
+        m_memBase = (uint32_t)a & ~0xFu;
+        m_hexPrev.clear();
+        refreshRam();
+    });
+    connect(prev, &QPushButton::clicked, this, [this] {
+        m_memBase = m_memBase >= kMemRows * 16u ? m_memBase - kMemRows * 16u : 0;
+        m_hexPrev.clear();
+        refreshRam();
+    });
+    connect(next, &QPushButton::clicked, this, [this] {
+        const uint32_t size = (uint32_t)arcdebug_space_size(m_dbg, m_memSpace->currentData().toInt());
+        if (size && m_memBase + kMemRows * 16u < size) m_memBase += kMemRows * 16u;
+        m_hexPrev.clear();
+        refreshRam();
+    });
     return w;
 }
 
@@ -437,75 +475,74 @@ void DebuggerWindow::setRegister(int reg, QLineEdit *edit)
     refreshAll();
 }
 
-void DebuggerWindow::setBankRegister(int bank, int n, QLineEdit *edit)
-{
-    long val;
-    if (!arcdebug_is_stopped(m_dbg))
-        statusBar()->showMessage(QStringLiteral("Stop the machine to edit a register"), 4000);
-    else if (parseNum(edit->text(), &val))
-        arcdebug_write(m_dbg, ARC_SPACE_IRAM, (uint16_t)(bank * 24 + n), (uint8_t)val);
-    edit->clearFocus();
-    refreshAll();
-}
-
 void DebuggerWindow::refreshCpu()
 {
     arcdebug_cpu c;
     arcdebug_cpu_get(m_dbg, &c);
-    auto set = [&](QLineEdit *e, unsigned v, int digits) {
+    auto set = [&](int reg, unsigned v, int digits) {
+        QLineEdit *e = m_reg[reg];
         if (!e || e->hasFocus()) return;
         const QString t = hx(v, digits);
         if (e->text() != t) e->setText(t);
     };
-    set(m_reg[ARC_REG_A], (unsigned)c.a & 0xFF, 2);
-    set(m_reg[ARC_REG_PC], (unsigned)c.pc & 0xFFF, 3);
-    set(m_reg[ARC_REG_MB], (unsigned)c.mb & 1, 1);
-    set(m_reg[ARC_REG_PSW], (unsigned)c.psw & 0xFF, 2);
-    set(m_reg[ARC_REG_C], (unsigned)c.cy & 1, 1);
-    set(m_reg[ARC_REG_AC], (unsigned)c.ac & 1, 1);
-    set(m_reg[ARC_REG_F0], (unsigned)c.f0 & 1, 1);
-    set(m_reg[ARC_REG_F1], (unsigned)c.f1 & 1, 1);
-    set(m_reg[ARC_REG_BS], (unsigned)c.bs & 1, 1);
-    set(m_reg[ARC_REG_SP], (unsigned)c.sp & 7, 1);
-    set(m_reg[ARC_REG_T], (unsigned)c.timer & 0xFF, 2);
-    set(m_reg[ARC_REG_CNT], (unsigned)c.prescaler & 0xFF, 2);
-    set(m_reg[ARC_REG_P1], (unsigned)c.p1 & 0xFF, 2);
-    set(m_reg[ARC_REG_P2], (unsigned)c.p2 & 0xFF, 2);
-    set(m_reg[ARC_REG_BUS], (unsigned)c.bus & 0xFF, 2);
-    for (int b = 0; b < 2; ++b) {
-        for (int n = 0; n < 8; ++n) set(m_bankReg[b][n], c.r[b][n], 2);
-        m_bankHead[b]->setText(c.bs == b ? QStringLiteral("Bank %1 (in use)").arg(b) : QStringLiteral("Bank %1").arg(b));
+    set(ARC_REG_R0, c.r0, 2);
+    for (int n = 0; n < 3; ++n) {
+        set(ARC_REG_R1 + n, c.r[0][n + 1], 2);
+        set(ARC_REG_R1B + n, c.r[1][n + 1], 2);
     }
-    const bool flags[9] = { c.tf != 0, c.tcnti_en != 0, c.ext_int_en != 0, c.in_interrupt != 0,
-                            c.irq_pending != 0, c.timer_irq_pending != 0, c.t0 != 0, c.t1 != 0, c.int_line != 0 };
-    for (int i = 0; i < 9; ++i) m_state[i]->setChecked(flags[i]);
-    static const char *const modes[3] = { "stopped", "timer (/32 of the machine cycle)", "event counter (T1)" };
-    m_cpuInfo->setText(QStringLiteral("Timer: %1. Cycles %2, instructions %3, beam line %4 dot %5, frame %6. %7.")
-                           .arg(QString::fromUtf8(modes[c.timer_mode < 0 || c.timer_mode > 2 ? 0 : c.timer_mode]))
+    set(ARC_REG_PC, (unsigned)c.pc & 0x7FFF, 4);
+    set(ARC_REG_IAR, (unsigned)c.iar & 0x1FFF, 4);
+    set(ARC_REG_PSU, (unsigned)c.psu & 0xFF, 2);
+    set(ARC_REG_PSL, (unsigned)c.psl & 0xFF, 2);
+    set(ARC_REG_F, (unsigned)c.flag & 1, 1);
+    set(ARC_REG_II, (unsigned)c.ii & 1, 1);
+    set(ARC_REG_SP, (unsigned)c.sp & 7, 1);
+    set(ARC_REG_CC, (unsigned)c.cc & 3, 1);
+    set(ARC_REG_IDC, (unsigned)c.idc & 1, 1);
+    set(ARC_REG_RS, (unsigned)c.rs & 1, 1);
+    set(ARC_REG_WC, (unsigned)c.wc & 1, 1);
+    set(ARC_REG_OVF, (unsigned)c.ovf & 1, 1);
+    set(ARC_REG_COM, (unsigned)c.com & 1, 1);
+    set(ARC_REG_C, (unsigned)c.c & 1, 1);
+    for (int i = 0; i < 8; ++i) {
+        set(ARC_REG_RAS0 + i, c.ras[i] & 0x7FFF, 4);
+        m_rasLabel[i]->setText(i == c.sp ? QStringLiteral("▶%1").arg(i) : QStringLiteral(" %1").arg(i));
+    }
+    for (int b = 0; b < 2; ++b)
+        m_bankHead[b]->setText(c.rs == b ? QStringLiteral("Bank %1 (in use)").arg(b) : QStringLiteral("Bank %1").arg(b));
+    m_pageLabel->setText(QStringLiteral("page $%1 (A14-A13 = %2)").arg(hx((unsigned)c.page, 4)).arg(c.page >> 13));
+    const bool flags[3] = { c.sense != 0, c.halted != 0, c.irq_line != 0 };
+    for (int i = 0; i < 3; ++i) m_state[i]->setChecked(flags[i]);
+    m_cpuInfo->setText(QStringLiteral("Cycles %1, instructions %2, beam line %3 dot %4, frame %5. %6.%7")
                            .arg((qulonglong)c.cycles).arg((qulonglong)c.instructions).arg(c.vpos).arg(c.hpos)
-                           .arg(c.frame).arg(QString::fromUtf8(arc_machine_name(c.machine))));
+                           .arg(c.frame).arg(QString::fromUtf8(arc_machine_name(c.machine)),
+                                             c.illegal_count ? QStringLiteral(" %1 illegal opcode(s), the last at $%2.")
+                                                                   .arg(c.illegal_count).arg(hx((unsigned)c.illegal_pc & 0x7FFF, 4))
+                                                             : QString()));
 }
 
 void DebuggerWindow::refreshRam()
 {
-    static const struct { int space, size; } spaces[2] = { { ARC_SPACE_IRAM, 64 }, { ARC_SPACE_XDATA, 128 } };
-    for (int k = 0; k < 2; ++k) {
-        QTableWidget *t = m_hex[k];
-        if (!t || dbgui::editing(t)) continue;
-        uint8_t buf[128] = {};
-        arcdebug_read(m_dbg, spaces[k].space, 0, buf, spaces[k].size);
-        const bool first = m_hexPrev[k].empty();
-        m_hexFilling = true;
-        for (int i = 0; i < spaces[k].size; ++i) {
-            QTableWidgetItem *it = t->item(i / 16, i % 16);
-            const QString text = hx(buf[i], 2);
-            if (it->text() != text) it->setText(text);
-            const bool changed = !first && m_hexPrev[k][(size_t)i] != buf[i];
-            it->setForeground(changed ? QBrush(arcAccentTextColor(t)) : QBrush());
-        }
-        m_hexFilling = false;
-        m_hexPrev[k].assign(buf, buf + spaces[k].size);
+    QTableWidget *t = m_hex;
+    if (!t || dbgui::editing(t)) return;
+    const int space = m_memSpace->currentData().toInt();
+    const int size = kMemRows * 16;
+    uint8_t buf[kMemRows * 16] = {};
+    arcdebug_read(m_dbg, space, m_memBase, buf, size);
+    const bool first = m_hexPrev.empty();
+    m_hexFilling = true;
+    for (int r = 0; r < kMemRows; ++r)
+        t->verticalHeaderItem(r) ? t->verticalHeaderItem(r)->setText(QStringLiteral("$") + hx(m_memBase + (uint32_t)r * 16, 4))
+                                 : t->setVerticalHeaderItem(r, new QTableWidgetItem(QStringLiteral("$") + hx(m_memBase + (uint32_t)r * 16, 4)));
+    for (int i = 0; i < size; ++i) {
+        QTableWidgetItem *it = t->item(i / 16, i % 16);
+        const QString text = hx(buf[i], 2);
+        if (it->text() != text) it->setText(text);
+        const bool changed = !first && m_hexPrev[(size_t)i] != buf[i];
+        it->setForeground(changed ? QBrush(arcAccentTextColor(t)) : QBrush());
     }
+    m_hexFilling = false;
+    m_hexPrev.assign(buf, buf + size);
 }
 
 /* ---- Disassembly -------------------------------------------------------------------------- */
@@ -558,7 +595,7 @@ void DebuggerWindow::refreshDisasm()
         char label[48];
         snprintf(label, sizeof label, "%.*s", labelWidth, lines[i].label);
         /* the gutter: a breakpoint dot, then the PC's arrow */
-        snprintf(buf, sizeof buf, " %c %03X  %-6s %-*s %-22s", lines[i].is_pc ? '>' : ' ', lines[i].address,
+        snprintf(buf, sizeof buf, " %c %04X  %-9s %-*s %-22s", lines[i].is_pc ? '>' : ' ', lines[i].address,
                  lines[i].bytes, labelWidth, label, lines[i].disasm);
         text += lines[i].has_breakpoint ? QStringLiteral("●") : QStringLiteral(" ");
         text += QString::fromUtf8(buf);
@@ -573,7 +610,7 @@ void DebuggerWindow::refreshDisasm()
             cur.select(QTextCursor::LineUnderCursor);
             QTextCharFormat fmt;
             fmt.setBackground(arcAccentColor());
-            fmt.setForeground(Qt::white);
+            fmt.setForeground(QColor(0x1B, 0x14, 0x08));
             cur.setCharFormat(fmt);
         } else if (lines[i].has_breakpoint) {
             QTextCursor cur(m_disasm->document()->findBlockByNumber(i));
@@ -590,7 +627,7 @@ void DebuggerWindow::jumpTo(const QString &text)
     long a;
     if (!addressOf(text, &a)) { statusBar()->showMessage(QStringLiteral("No such address or label"), 4000); return; }
     m_followPc->setChecked(false);
-    m_disasmTop = (uint16_t)arcdebug_row_address(m_dbg, (uint16_t)(a & 0xFFF), -(DISASM_WINDOW / 3));
+    m_disasmTop = (uint16_t)arcdebug_row_address(m_dbg, (uint16_t)(a & 0x7FFF), -(DISASM_WINDOW / 3));
     refreshDisasm();
 }
 
@@ -602,11 +639,9 @@ QWidget *DebuggerWindow::buildBreaks()
     auto *v = new QVBoxLayout(w);
     auto *row = new QHBoxLayout;
     m_bpType = new QComboBox;
-    m_bpType->addItems({ QStringLiteral("Exec"), QStringLiteral("Read"), QStringLiteral("Write"),
-                         QStringLiteral("In"), QStringLiteral("Out") });
-    m_bpType->setToolTip(QStringLiteral("Exec stops before an instruction runs; Read and Write on an access to "
-                                        "memory; In and Out on a read or write of a port"));
-    m_bpSpace = new QComboBox;
+    m_bpType->addItems({ QStringLiteral("Exec"), QStringLiteral("Read"), QStringLiteral("Write") });
+    m_bpType->setToolTip(QStringLiteral("Exec stops before an instruction runs; Read and Write on a data access to "
+                                        "program space (the UVI's registers at $1800-$1AFF are the write targets)"));
     m_bpStart = new QLineEdit;
     m_bpStart->setPlaceholderText(QStringLiteral("start ($400 or label)"));
     m_bpStart->setMinimumWidth(m_bpStart->fontMetrics().horizontalAdvance(m_bpStart->placeholderText()) + 16);
@@ -615,24 +650,20 @@ QWidget *DebuggerWindow::buildBreaks()
     m_bpEnd->setPlaceholderText(QStringLiteral("end (optional)"));
     m_bpEnd->setMaximumWidth(140);
     m_bpCond = new QLineEdit;
-    m_bpCond->setPlaceholderText(QStringLiteral("condition (optional, e.g. a == $FF or value & $80)"));
+    m_bpCond->setPlaceholderText(QStringLiteral("condition (optional, e.g. r0 == $FF or value & $80)"));
     auto *add = new QPushButton(QStringLiteral("Add"));
     auto doAdd = [this] {
-        static const int types[5] = { ARCDEBUG_BP_EXEC, ARCDEBUG_BP_READ, ARCDEBUG_BP_WRITE, ARCDEBUG_BP_IN, ARCDEBUG_BP_OUT };
+        static const int types[3] = { ARCDEBUG_BP_EXEC, ARCDEBUG_BP_READ, ARCDEBUG_BP_WRITE };
         const int type = m_bpType->currentIndex();
-        const bool port = type >= 3;
         long a = 0, b = 0;
-        if (!port) {
-            if (m_bpStart->text().trimmed().isEmpty()) return;
-            if (!addressOf(m_bpStart->text(), &a)) { statusBar()->showMessage(QStringLiteral("Bad start address"), 4000); return; }
-            b = a;
-            if (!m_bpEnd->text().trimmed().isEmpty() && !addressOf(m_bpEnd->text(), &b)) {
-                statusBar()->showMessage(QStringLiteral("Bad end address"), 4000);
-                return;
-            }
+        if (m_bpStart->text().trimmed().isEmpty()) return;
+        if (!addressOf(m_bpStart->text(), &a)) { statusBar()->showMessage(QStringLiteral("Bad start address"), 4000); return; }
+        b = a;
+        if (!m_bpEnd->text().trimmed().isEmpty() && !addressOf(m_bpEnd->text(), &b)) {
+            statusBar()->showMessage(QStringLiteral("Bad end address"), 4000);
+            return;
         }
-        /* a memory breakpoint names its space; a port one the port (BUS 0, P1 1, P2 2) */
-        const int space = type == 0 ? ARC_SPACE_PROG : m_bpSpace->currentData().toInt();
+        const int space = ARC_SPACE_PROG;
         const QByteArray cond = m_bpCond->text().trimmed().toUtf8();
         if (arcdebug_breakpoint_add(m_dbg, types[type], space, (uint16_t)a, (uint16_t)b, cond.constData()) < 0) {
             statusBar()->showMessage(QStringLiteral("The condition does not parse"), 6000);
@@ -647,15 +678,13 @@ QWidget *DebuggerWindow::buildBreaks()
     connect(m_bpStart, &QLineEdit::returnPressed, this, doAdd);
     connect(m_bpEnd, &QLineEdit::returnPressed, this, doAdd);
     connect(m_bpCond, &QLineEdit::returnPressed, this, doAdd);
-    connect(m_bpType, &QComboBox::currentIndexChanged, this, [this] { syncBpForm(); });
-    row->addWidget(m_bpType);
-    row->addWidget(m_bpSpace);
+        row->addWidget(m_bpType);
+    row->addWidget(new QLabel(QStringLiteral("program space")));
     row->addWidget(m_bpStart);
     row->addWidget(m_bpEnd);
     row->addWidget(m_bpCond, 1);
     row->addWidget(add);
     v->addLayout(row);
-    syncBpForm();
 
     m_bpTable = new QTableWidget(0, 7);
     m_bpTable->setHorizontalHeaderLabels({ QStringLiteral("On"), QStringLiteral("ID"), QStringLiteral("Type"),
@@ -692,29 +721,6 @@ QWidget *DebuggerWindow::buildBreaks()
     return w;
 }
 
-/* The space (or the port) a breakpoint watches, and whether it takes an
- * address, follow its type. */
-void DebuggerWindow::syncBpForm()
-{
-    const int type = m_bpType->currentIndex();
-    m_bpSpace->clear();
-    if (type == 0) {
-        m_bpSpace->addItem(QStringLiteral("program"), ARC_SPACE_PROG);
-    } else if (type == 1 || type == 2) {
-        m_bpSpace->addItem(QStringLiteral("external data"), ARC_SPACE_XDATA);
-        m_bpSpace->addItem(QStringLiteral("internal RAM"), ARC_SPACE_IRAM);
-        m_bpSpace->addItem(QStringLiteral("program"), ARC_SPACE_PROG);
-        m_bpSpace->addItem(QStringLiteral("8244 registers"), ARC_SPACE_VDC);
-    } else {
-        m_bpSpace->addItem(QStringLiteral("BUS"), 0);
-        m_bpSpace->addItem(QStringLiteral("P1"), 1);
-        m_bpSpace->addItem(QStringLiteral("P2"), 2);
-    }
-    m_bpSpace->setEnabled(type != 0);
-    m_bpStart->setEnabled(type < 3);
-    m_bpEnd->setEnabled(type < 3);
-}
-
 void DebuggerWindow::refreshBps()
 {
     arcdebug_breakpoint bps[256];
@@ -732,15 +738,10 @@ void DebuggerWindow::refreshBps()
         if (bps[i].type & ARCDEBUG_BP_EXEC) type << QStringLiteral("Exec");
         if (bps[i].type & ARCDEBUG_BP_READ) type << QStringLiteral("Read");
         if (bps[i].type & ARCDEBUG_BP_WRITE) type << QStringLiteral("Write");
-        if (bps[i].type & ARCDEBUG_BP_IN) type << QStringLiteral("In");
-        if (bps[i].type & ARCDEBUG_BP_OUT) type << QStringLiteral("Out");
         m_bpTable->setItem(i, 2, new QTableWidgetItem(type.join(QLatin1Char('/'))));
-        const bool port = (bps[i].type & (ARCDEBUG_BP_IN | ARCDEBUG_BP_OUT)) != 0;
-        static const char *const ports[3] = { "BUS", "P1", "P2" };
-        m_bpTable->setItem(i, 3, new QTableWidgetItem(port ? QString::fromLatin1(ports[bps[i].space < 0 || bps[i].space > 2 ? 0 : bps[i].space])
-                                                           : QString::fromUtf8(spaceName(bps[i].space))));
-        QString range = port ? QStringLiteral("—") : QStringLiteral("$") + hx(bps[i].start, 3);
-        if (!port && bps[i].end != bps[i].start) range += QStringLiteral("-$") + hx(bps[i].end, 3);
+        m_bpTable->setItem(i, 3, new QTableWidgetItem(QStringLiteral("program")));
+        QString range = QStringLiteral("$") + hx(bps[i].start, 4);
+        if (bps[i].end != bps[i].start) range += QStringLiteral("-$") + hx(bps[i].end, 4);
         m_bpTable->setItem(i, 4, new QTableWidgetItem(range));
         m_bpTable->setItem(i, 5, new QTableWidgetItem(QString::number(bps[i].hits)));
         m_bpTable->setItem(i, 6, new QTableWidgetItem(QString::fromUtf8(bps[i].condition)));
@@ -846,7 +847,6 @@ void DebuggerWindow::refreshTab(int index)
     case kTabCpu: refreshCpu(); refreshRam(); break;
     case kTabDisasm: refreshDisasm(); break;
     case kTabVideo: m_video->refresh(); break;
-    case kTabEf: m_ef->refresh(); break;
     case kTabIo: m_io->refresh(); break;
     case kTabBreaks: refreshBps(); break;
     case kTabCart: m_cart->refresh(); break;

@@ -1,8 +1,8 @@
 /*
- * Debugger window (Qt6 Widgets) over the MCS-48 / 8244 debugger engine, via
- * core/include/arcdebug.h. Mirrors the GNOME one tab for tab: Prompt, CPU &
- * RAM, Disassembly, Video (the 8244), EF9340, Sound & I/O, Breakpoints, Cart,
- * FujiNet.
+ * Debugger window (Qt6 Widgets) over the Signetics 2650 / 2637 UVI debugger
+ * engine, via core/include/arcdebug.h. Mirrors the GNOME one tab for tab:
+ * Prompt, CPU & RAM, Disassembly, Video (the UVI), Sound & I/O, Breakpoints,
+ * Cart, FujiNet.
  *
  * The engine is attached while the window is shown (which stops the machine,
  * as on every sibling) and detached when it is hidden, which lets the
@@ -34,7 +34,6 @@ extern "C" {
 }
 
 class CartTab;
-class EfTab;
 class IoTab;
 class VideoTab;
 
@@ -60,7 +59,7 @@ private:
     QWidget *buildDisasm();
     QWidget *buildBreaks();
     QWidget *buildFujinet();
-    QTableWidget *hexTable(int space, int size);
+    QTableWidget *hexTable(int rows);
     QLineEdit *regEdit(int reg, int digits, const QString &tip);
 
     void refreshAll();
@@ -79,8 +78,6 @@ private:
     void stepAnd(void (*fn)(arcdebug *));
     void loadSymbols(bool fromFile);
     void setRegister(int reg, QLineEdit *edit);
-    void setBankRegister(int bank, int n, QLineEdit *edit);
-    void syncBpForm();
     bool addressOf(const QString &text, long *out);
 
     arcsession *m_session;
@@ -99,13 +96,18 @@ private:
     QStringList m_history;
     int m_historyPos = 0;
 
+    static constexpr int kMemRows = 24;      /* the memory view: 24 rows of 16 */
     QLineEdit *m_reg[ARC_REG_COUNT] = {};
-    QLineEdit *m_bankReg[2][8] = {};
     QLabel *m_bankHead[2] = {};
-    QCheckBox *m_state[9] = {};
+    QLabel *m_rasLabel[8] = {};
+    QLabel *m_pageLabel = nullptr;
+    QCheckBox *m_state[3] = {};
     QLabel *m_cpuInfo = nullptr;
-    QTableWidget *m_hex[2] = {};            /* the internal and the external RAM */
-    std::vector<uint8_t> m_hexPrev[2];
+    QComboBox *m_memSpace = nullptr;
+    QLineEdit *m_memGo = nullptr;
+    uint32_t m_memBase = 0;
+    QTableWidget *m_hex = nullptr;
+    std::vector<uint8_t> m_hexPrev;
     bool m_hexFilling = false;
 
     QPlainTextEdit *m_disasm = nullptr;
@@ -115,12 +117,11 @@ private:
     std::vector<uint16_t> m_lineAddr;
 
     VideoTab *m_video = nullptr;
-    EfTab *m_ef = nullptr;
     IoTab *m_io = nullptr;
     CartTab *m_cart = nullptr;
 
     QTableWidget *m_bpTable = nullptr;
-    QComboBox *m_bpType = nullptr, *m_bpSpace = nullptr;
+    QComboBox *m_bpType = nullptr;
     QLineEdit *m_bpStart = nullptr, *m_bpEnd = nullptr, *m_bpCond = nullptr;
     bool m_bpFilling = false;
 
