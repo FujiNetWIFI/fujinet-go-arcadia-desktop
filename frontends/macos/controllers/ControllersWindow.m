@@ -158,7 +158,7 @@ static void drawFitted(NSString *text, NSRect r, CGFloat size, BOOL bold, NSColo
 
 @interface ArcControllersWindow () <NSWindowDelegate>
 - (void)ctlPressed:(ArcCtl *)c down:(BOOL)down;
-- (void)discHold:(unsigned)mask port:(int)port;
+- (void)discDeflect:(int)x y:(int)y port:(int)port;
 - (void)discPick:(int)target;
 - (NSString *)legendForTarget:(int)target;
 - (void)panelKeyDown:(NSEvent *)e;
@@ -382,20 +382,19 @@ static void drawFitted(NSString *text, NSRect r, CGFloat size, BOOL bold, NSColo
     return nil;
 }
 
-/* The directions a point on a disc holds: eight ways from its centre, none in
- * the middle. */
-static unsigned discMask(ArcCtl *c, NSPoint p)
+/* The analog deflection of a point on a disc: the offset from the centre over
+ * the radius, clamped to the rim, with a small dead zone (the view is flipped,
+ * so +y is down, as arcsession_disc_set wants). */
+static void discDeflection(ArcCtl *c, NSPoint p, int *x, int *y)
 {
-    const double dx = p.x - NSMidX(c.rect), dy = p.y - NSMidY(c.rect);
-    const double len = sqrt(dx * dx + dy * dy);
-    if (len < DISC_R * 0.25) return 0;
-    const double ux = dx / len, uy = dy / len;
-    unsigned m = 0;
-    if (uy < -0.38) m |= 1u << ARC_ACT_UP;
-    if (uy > 0.38) m |= 1u << ARC_ACT_DOWN;
-    if (ux > 0.38) m |= 1u << ARC_ACT_RIGHT;
-    if (ux < -0.38) m |= 1u << ARC_ACT_LEFT;
-    return m;
+    double dx = (p.x - NSMidX(c.rect)) / DISC_R, dy = (p.y - NSMidY(c.rect)) / DISC_R;
+    double len = sqrt(dx * dx + dy * dy);
+    *x = *y = 0;
+    if (len > 1.0) { dx /= len; dy /= len; len = 1.0; }
+    if (len > 0.12) {
+        *x = (int)lround(dx * 127.0);
+        *y = (int)lround(dy * 127.0);
+    }
 }
 
 - (void)mouseDown:(NSEvent *)e
@@ -405,7 +404,6 @@ static unsigned discMask(ArcCtl *c, NSPoint p)
     ArcCtl *c = [self controlAt:p];
     if (!c) return;
     if (c.kind == ARCCTL_DISC) {
-        const unsigned m = discMask(c, p);
         if (self.mapping) {
             /* Map: the quadrant clicked is the direction to rebind */
             const double dx = p.x - NSMidX(c.rect), dy = p.y - NSMidY(c.rect);
@@ -415,7 +413,9 @@ static unsigned discMask(ArcCtl *c, NSPoint p)
             return;
         }
         _down = c;
-        [self.owner discHold:m port:c.port];
+        int ax, ay;
+        discDeflection(c, p, &ax, &ay);
+        [self.owner discDeflect:ax y:ay port:c.port];
         return;
     }
     _down = c;
@@ -428,7 +428,9 @@ static unsigned discMask(ArcCtl *c, NSPoint p)
     if (!_down) return;
     const NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
     if (_down.kind == ARCCTL_DISC) {
-        [self.owner discHold:discMask(_down, p) port:_down.port];
+        int ax, ay;
+        discDeflection(_down, p, &ax, &ay);
+        [self.owner discDeflect:ax y:ay port:_down.port];
         return;
     }
     if (NSPointInRect(p, _down.rect)) return;
@@ -443,7 +445,7 @@ static unsigned discMask(ArcCtl *c, NSPoint p)
     if (!_down) return;
     ArcCtl *c = _down;
     _down = nil;
-    if (c.kind == ARCCTL_DISC) [self.owner discHold:0 port:c.port];
+    if (c.kind == ARCCTL_DISC) [self.owner discDeflect:0 y:0 port:c.port];
     else [self.owner ctlPressed:c down:NO];
 }
 
@@ -488,7 +490,6 @@ static unsigned discMask(ArcCtl *c, NSPoint p)
     int _builtMachine;
     CGFloat _consoleW, _consoleH;
     int _heldTarget;                        /* what the mouse holds here, or -1 */
-    unsigned _discMask[2];                  /* the directions the mouse holds on each disc */
     uint32_t _swallowKey;                   /* the key Map took: its repeats and release too */
     /* -2 idle, -1 armed and waiting for a control, >= 0 waiting for a key or
      * gamepad button to bind to that target */
@@ -726,28 +727,19 @@ static CGFloat snap(CGFloat v)
 - (void)letGo
 {
     [_console forgetMouse];
-    for (int port = 0; port < 2; port++) {
-        for (int a = 0; a < ARC_ACT_FIRE; a++)
-            if ((_discMask[port] >> a) & 1u) arcsession_press(_session, ARC_TARGET_PORT(port, a), 0);
-        _discMask[port] = 0;
-    }
+    for (int port = 0; port < 2; port++)
+        arcsession_disc_set(_session, port, 0, 0);
     if (_heldTarget >= 0) {
         arcsession_press(_session, _heldTarget, 0);
         _heldTarget = -1;
     }
 }
 
-/* The mouse holds `mask` on a disc: press and release the difference. */
-- (void)discHold:(unsigned)mask port:(int)port
+/* The mouse holds the disc at (x, y): the pots follow the pointer. */
+- (void)discDeflect:(int)x y:(int)y port:(int)port
 {
     if (_mapState != -2) return;
-    const unsigned old = _discMask[port];
-    for (int a = 0; a < ARC_ACT_FIRE; a++) {
-        const unsigned bit = 1u << a;
-        if ((mask & bit) != (old & bit))
-            arcsession_press(_session, ARC_TARGET_PORT(port, a), (mask & bit) ? 1 : 0);
-    }
-    _discMask[port] = mask;
+    arcsession_disc_set(_session, port, x, y);
     [self pollHeld];
 }
 
@@ -785,7 +777,7 @@ static CGFloat snap(CGFloat v)
         if (c.kind == ARCCTL_DISC) {
             int ax = 0, ay = 0;
             arcsession_disc_get(_session, c.port, &ax, &ay);
-            const unsigned m = (sticks[c.port] | _discMask[c.port]) & ((1u << ARC_ACT_FIRE) - 1u);
+            const unsigned m = sticks[c.port] & ((1u << ARC_ACT_FIRE) - 1u);
             if (m != c.mask || ax != c.ax || ay != c.ay) {
                 c.mask = m;
                 c.ax = ax;

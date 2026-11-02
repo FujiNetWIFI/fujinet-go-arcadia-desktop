@@ -35,7 +35,7 @@ embedded in any build: see `COMPLIANCE.md`. The **Palladium Video-Computer-Game*
 A fixed-size floating window drawn like the console: two hand controllers with
 the **12-key keypad** (1-9, CLEAR, 0, ENTER), the **disc** and the side fire
 button, and the panel's START, OPTION, SELECT and the red RESET. Click a key to
-press it, drag the disc to steer it; held keys light up in the accent colour
+press it, drag the disc to steer it (the pots follow the pointer, analog); held keys light up in the accent colour
 whoever holds them. **Map** rebinds any key, disc direction or fire to a host
 key or a gamepad button (a key moves to its new target and leaves its old
 one), **Defaults** puts them back. Fire is the keypad's `2` wire, as on the

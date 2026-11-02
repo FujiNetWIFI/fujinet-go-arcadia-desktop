@@ -322,6 +322,12 @@ int main(void)
         int dx = 9, dy = 9;
         arcsession_disc_get(s, 0, &dx, &dy);
         check(dx == 0 && dy == 0, "no gamepad: the analog disc is centred");
+        arcsession_disc_set(s, 1, 500, -40);
+        arcsession_disc_get(s, 1, &dx, &dy);
+        check(dx == 127 && dy == -40, "a pointer drag sets the analog disc, clamped");
+        arcsession_disc_set(s, 1, 0, 0);
+        arcsession_disc_get(s, 1, &dx, &dy);
+        check(dx == 0 && dy == 0, "0,0 releases it");
     }
     check(arcsession_key(s, ARC_KEYSYM_F11, 1) == 0, "an unbound key is ignored");
     check(arcsession_key_sysaction(s, ARC_KEYSYM_ESCAPE) == ARC_SYSACT_RESET_CONFIG,

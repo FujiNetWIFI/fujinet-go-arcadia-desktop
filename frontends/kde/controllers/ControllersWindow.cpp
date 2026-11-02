@@ -37,6 +37,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+#include <cmath>
 #include "ControllersWindow.h"
 
 #include <QCheckBox>
@@ -202,6 +203,15 @@ public:
         load();
     }
 
+    /* Lets go of the disc a drag holds (also on focus loss and rebuild). */
+    void releaseDisc()
+    {
+        if (m_analogDisc < 0) return;
+        arcsession_disc_set(m_session, m_analogDisc, 0, 0);
+        m_analogDisc = -1;
+        update();
+    }
+
     /* -2 idle, -1 armed, >= 0 waiting for a key or pad button for that target */
     void setMap(int state)
     {
@@ -257,10 +267,17 @@ protected:
     void mousePressEvent(QMouseEvent *e) override
     {
         if (e->button() != Qt::LeftButton) return;
+        const int disc = discPortAt(e->position());
+        if (disc >= 0 && m_map == -2 && !(m_caps.size() && capAt(e->position()) >= 0)) {
+            /* a drag on a disc is analog: the pots follow the pointer */
+            m_analogDisc = disc;
+            discFollow(e->position());
+            return;
+        }
         const int t = targetAt(e->position(), -1);
         if (t < 0) return;
         m_pressed = t;
-        m_pressedDisc = discPortAt(e->position());
+        m_pressedDisc = disc;
         m_onPress(t, true);
     }
 
@@ -268,6 +285,7 @@ protected:
      * one direction to the next. */
     void mouseMoveEvent(QMouseEvent *e) override
     {
+        if (m_analogDisc >= 0) { discFollow(e->position()); return; }
         if (m_pressed < 0) return;
         const int t = targetAt(e->position(), m_pressedDisc);
         if (t == m_pressed) return;
@@ -282,6 +300,7 @@ protected:
 
     void mouseReleaseEvent(QMouseEvent *e) override
     {
+        if (e->button() == Qt::LeftButton && m_analogDisc >= 0) { releaseDisc(); return; }
         if (e->button() != Qt::LeftButton || m_pressed < 0) return;
         const int t = m_pressed;
         m_pressed = -1;
@@ -351,6 +370,31 @@ private:
         return QRectF(x, k.top() + 8, w, k.height() - 16);
     }
     /* The panel's red RESET sits at the centre in the layout: a cap of its own. */
+
+    int capAt(const QPointF &pos) const
+    {
+        for (const Cap &c : m_caps)
+            if (c.rect.contains(pos)) return c.target;
+        return -1;
+    }
+
+    /* The pointer's place on the disc is the analog deflection: the offset
+     * from the centre over the radius, clamped to the rim, with a small dead
+     * zone, so a corner is a true diagonal. */
+    void discFollow(const QPointF &pos)
+    {
+        const QPointF d = (pos - discCentre(m_analogDisc)) / kDiscR;
+        qreal len = std::hypot(d.x(), d.y());
+        QPointF n = d;
+        if (len > 1.0) { n = d / len; len = 1.0; }
+        int ax = 0, ay = 0;
+        if (len > 0.12) {
+            ax = int(std::lround(n.x() * 127.0));
+            ay = int(std::lround(n.y() * 127.0));
+        }
+        arcsession_disc_set(m_session, m_analogDisc, ax, ay);
+        update();
+    }
 
     /* Which disc `pos` is over (inside its circle, or a bit past), or -1. */
     int discPortAt(const QPointF &pos) const
@@ -606,6 +650,7 @@ private:
 
     arcsession *m_session;
     std::function<void(int, bool)> m_onPress;
+    int m_analogDisc = -1;
     std::vector<Cap> m_caps;
     std::vector<char> m_held;
     char m_dheld[2][ARC_ACT_PER_PORT] = {};
@@ -755,6 +800,7 @@ void ControllersWindow::onPress(int target, bool down)
 /* Lets go of what the mouse holds in this window. */
 void ControllersWindow::letGo()
 {
+    m_console->releaseDisc();
     if (m_mouseTarget >= 0) {
         arcsession_press(m_session, m_mouseTarget, 0);
         m_mouseTarget = -1;

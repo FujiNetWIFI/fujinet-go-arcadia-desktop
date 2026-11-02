@@ -274,6 +274,13 @@ unsigned arcsession_buttons_held(arcsession *s, int port);
  * the core lets a non-zero analog value override them. For the controllers
  * window's disc indicator. */
 void arcsession_disc_get(arcsession *s, int port, int *x, int *y);
+/* Drive the analog disc of `port` from a pointer (the controllers window's
+ * mouse drag): x -128..127 (+ right), y -128..127 (+ DOWN), clamped; 0,0
+ * releases it. It is one more source beside the gamepads (the strongest
+ * deflection wins, and a non-zero value overrides the digital directions in
+ * the core), so it shows in arcsession_disc_get and the disc indicator.
+ * Call it with 0,0 when the drag ends or the window loses the pointer. */
+void arcsession_disc_set(arcsession *s, int port, int x, int y);
 /* Whether console key `key` (0-26) is held, from any source. */
 int arcsession_key_held(arcsession *s, int key);
 /* Whether a console button is held (arc_switch). */

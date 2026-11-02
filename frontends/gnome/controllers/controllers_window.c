@@ -606,41 +606,34 @@ static int disc_at(const Pane *p, double x, double y)
     return -1;
 }
 
-/* The pointer's place on a disc becomes the held directions: beyond a dead
- * zone in an axis presses that way, so a corner is a diagonal. */
+/* The pointer's place on a disc is the analog deflection: the offset from the
+ * centre over the disc's radius, clamped to the rim, with a small dead zone,
+ * so a corner is a real diagonal and the pots follow the pointer. */
 static void disc_follow(const Pane *p, double x, double y)
 {
-    unsigned mask = 0;
-    double cx = 0, cy = 0, r = DISC_R1;
-    int i, act;
+    double cx = 0, cy = 0, r = DISC_R1, dx, dy, len;
+    int i, ax = 0, ay = 0;
 
     for (i = 0; i < p->n; i++)
         if (p->items[i].kind == K_DISC && p->items[i].port == g_drag.port) {
             cx = p->items[i].x; cy = p->items[i].y; r = p->items[i].w;
         }
-    {
-        const double dz = r * 0.28, dx = x - cx, dy = y - cy;
-        if (dx > dz) mask |= 1u << ARC_ACT_RIGHT;
-        if (dx < -dz) mask |= 1u << ARC_ACT_LEFT;
-        if (dy > dz) mask |= 1u << ARC_ACT_DOWN;
-        if (dy < -dz) mask |= 1u << ARC_ACT_UP;
+    dx = (x - cx) / r;
+    dy = (y - cy) / r;
+    len = hypot(dx, dy);
+    if (len > 1.0) { dx /= len; dy /= len; len = 1.0; }
+    if (len > 0.12) {
+        ax = (int)lround(dx * 127.0);
+        ay = (int)lround(dy * 127.0);
     }
-    for (act = ARC_ACT_UP; act < ARC_ACT_FIRE; act++) {
-        unsigned bit = 1u << act;
-        if ((mask & bit) != (g_drag.mask & bit))
-            arcsession_press(g_session, ARC_TARGET_PORT(g_drag.port, act), (mask & bit) != 0);
-    }
-    g_drag.mask = mask;
+    arcsession_disc_set(g_session, g_drag.port, ax, ay);
     gtk_widget_queue_draw(g_pane[PANE_CONSOLE].area);
 }
 
 static void disc_release(void)
 {
-    int act;
     if (!g_drag.active) return;
-    for (act = ARC_ACT_UP; act < ARC_ACT_FIRE; act++)
-        if ((g_drag.mask >> act) & 1)
-            arcsession_press(g_session, ARC_TARGET_PORT(g_drag.port, act), 0);
+    arcsession_disc_set(g_session, g_drag.port, 0, 0);
     g_drag.active = FALSE;
     g_drag.mask = 0;
     if (g_pane[PANE_CONSOLE].area)

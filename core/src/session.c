@@ -741,7 +741,7 @@ static void push_disc_locked(struct arcsession *s, int port)
 {
     int bx = 0, by = 0, best = 0;
 
-    for (int o = 0; o < ARC_MAX_PADS; o++) {
+    for (int o = 0; o <= ARC_MAX_PADS; o++) {
         int mag = abs(s->disc_x[o][port]) + abs(s->disc_y[o][port]);
         if (mag > best) {
             best = mag;
@@ -867,7 +867,7 @@ void arcsession_disc_get(arcsession *s, int port, int *x, int *y)
 
     if (port >= 0 && port <= 1) {
         pthread_mutex_lock(&s->input_mtx);
-        for (int o = 0; o < ARC_MAX_PADS; o++) {
+        for (int o = 0; o <= ARC_MAX_PADS; o++) {
             int mag = abs(s->disc_x[o][port]) + abs(s->disc_y[o][port]);
             if (mag > best) {
                 best = mag;
@@ -948,6 +948,21 @@ void session_gamepad_disc(struct arcsession *s, int owner, int port, int x, int 
     pthread_mutex_lock(&s->input_mtx);
     s->disc_x[owner][port] = x;
     s->disc_y[owner][port] = y;
+    push_disc_locked(s, port);
+    pthread_mutex_unlock(&s->input_mtx);
+}
+
+void arcsession_disc_set(arcsession *s, int port, int x, int y)
+{
+    if (!s->running || port < 0 || port > 1)
+        return;
+    if (x < -128) x = -128;
+    if (x > 127) x = 127;
+    if (y < -128) y = -128;
+    if (y > 127) y = 127;
+    pthread_mutex_lock(&s->input_mtx);
+    s->disc_x[ARC_MAX_PADS][port] = x;
+    s->disc_y[ARC_MAX_PADS][port] = y;
     push_disc_locked(s, port);
     pthread_mutex_unlock(&s->input_mtx);
 }

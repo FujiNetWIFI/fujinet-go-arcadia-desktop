@@ -76,8 +76,8 @@ struct arcsession {
     uint32_t key_src[ARC_KEY_COUNT];
     uint32_t sw_src[ARC_SW_COUNT];
     /* each pad's analog disc deflection per port, -128..127 (0 = centre) */
-    int disc_x[8][2];
-    int disc_y[8][2];
+    int disc_x[9][2];     /* [ARC_MAX_PADS] = the pointer (arcsession_disc_set) */
+    int disc_y[9][2];
 
     void *audio;              /* audio_sdl.c state, NULL until started */
     void *gamepad;            /* gamepad_sdl.c state, NULL until started */

@@ -34,6 +34,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+#include <math.h>
 #include "controllers_window.h"
 
 /* GET_X_LPARAM / GET_Y_LPARAM live here, not in windows.h. */
@@ -113,7 +114,6 @@ static int g_built_machine = -1;
 static int g_unit;              /* the keyboard's key unit, in 96-dpi pixels */
 
 static pads_state g_pads_shown;
-static unsigned g_disc_mask[2];     /* directions the mouse holds on each disc */
 static int g_disc_shown[2][2];      /* the analog deflection last painted */
 
 static int g_total_w, g_total_h;
@@ -218,32 +218,23 @@ static int control_target(const control *c)
     return c->target;
 }
 
-/* The directions the mouse holds on a disc: press and release only the ones
- * that changed. */
-static void disc_apply(int port, unsigned mask)
-{
-    int act;
-    for (act = 0; act < 4; act++) {
-        const unsigned bit = 1u << act;
-        if ((mask ^ g_disc_mask[port]) & bit)
-            arcsession_press(g_session, ARC_TARGET_PORT(port, act), (mask & bit) != 0);
-    }
-    g_disc_mask[port] = mask;
-}
-
-/* Where the pointer is on a disc, as its four digital directions (an eighth
- * of the width is the dead zone, so a diagonal is two of them). */
+/* Where the pointer is on a disc, as the analog deflection: the offset from
+ * the centre over the radius, clamped to the rim, with a small dead zone, so
+ * a corner is a true diagonal and the pots follow the pointer. */
 static void disc_follow(int i, POINT p)
 {
     const control *c = &g_ctl[i];
-    const int cx = (c->rc.left + c->rc.right) / 2, cy = (c->rc.top + c->rc.bottom) / 2;
-    const int dead = (c->rc.right - c->rc.left) / 8;
-    unsigned mask = 0;
-    if (p.y < cy - dead) mask |= 1u << ARC_ACT_UP;
-    if (p.y > cy + dead) mask |= 1u << ARC_ACT_DOWN;
-    if (p.x < cx - dead) mask |= 1u << ARC_ACT_LEFT;
-    if (p.x > cx + dead) mask |= 1u << ARC_ACT_RIGHT;
-    disc_apply(c->port, mask);
+    const double r = (c->rc.right - c->rc.left) / 2.0;
+    double dx = (p.x - (c->rc.left + c->rc.right) / 2.0) / r;
+    double dy = (p.y - (c->rc.top + c->rc.bottom) / 2.0) / r;
+    double len = sqrt(dx * dx + dy * dy);
+    int ax = 0, ay = 0;
+    if (len > 1.0) { dx /= len; dy /= len; len = 1.0; }
+    if (len > 0.12) {
+        ax = (int)floor(dx * 127.0 + (dx < 0 ? -0.5 : 0.5));
+        ay = (int)floor(dy * 127.0 + (dy < 0 ? -0.5 : 0.5));
+    }
+    arcsession_disc_set(g_session, c->port, ax, ay);
     InvalidateRect(g_panel, &g_stick_rc[c->port], FALSE);
 }
 
@@ -259,7 +250,7 @@ static void mouse_release(int fire_action)
     if (i >= g_nctl) return;
     c = &g_ctl[i];
     if (c->kind == CT_DISC) {
-        disc_apply(c->port, 0);
+        arcsession_disc_set(g_session, c->port, 0, 0);
     } else if (c->kind == CT_ACTION) {
         if (fire_action) arcsession_sysaction_post(g_session, c->act);
     } else {
