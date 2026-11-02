@@ -18,7 +18,7 @@ void arc_display_destroy(void);
 /* The picture is on screen (the main window is not minimized): off, the
  * render thread sleeps until it is on again, with no wakeups at all. */
 void arc_display_set_active(int active);
-/* tv: the television's 4:3 (else square pixels, 360:243); smooth: bilinear
+/* tv: the television's 4:3 (else square pixels, 192:262); smooth: bilinear
  * (else sharp pixels). Safe from any thread. */
 void arc_display_set_options(int tv, int smooth);
 /* "Direct3D 11", "Direct3D 11 (WARP)" or "GDI": what is drawing. */

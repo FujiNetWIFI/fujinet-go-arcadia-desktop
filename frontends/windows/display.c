@@ -110,9 +110,11 @@ static uint32_t g_gdi_fb[FB_W * FB_H];
 static int g_gdi_have;
 static CRITICAL_SECTION g_gdi_lock;
 
-/* The picture inside a client of w x h, centred: the television's 4:3 (the
- * 8244's 360 x 243 fills the whole tube) or the framebuffer's own square
- * pixels. */
+/* The picture inside a client of w x h, centred: the television's 4:3 or the
+ * framebuffer's own square pixels. The whole 192 x 262 frame (128 pixels of
+ * playfield between 32-pixel borders) fills the tube: MAME's arcadia driver
+ * declares no aspect, so it shows the visible area at the default 4:3, which
+ * is what "TV" does here. */
 static RECT picture_rect(int w, int h)
 {
     RECT r;

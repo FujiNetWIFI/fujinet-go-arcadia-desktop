@@ -9,8 +9,6 @@
 #define IDM_OPEN           1001
 #define IDM_EJECT          1002
 #define IDM_IMPORT_SD      1003
-#define IDM_IMPORT_BIOS    1004
-#define IDM_IMPORT_FOLDER  1005
 #define IDM_PAUSE          1006
 #define IDM_RESET          1007
 #define IDM_RESET_CONFIG   1008
@@ -27,9 +25,7 @@
 #define IDM_FUJINET_LOG    1031
 #define IDM_ABOUT          1040
 
-/* The main window's banner and status bar */
-#define IDC_BANNER_TEXT    2001
-#define IDC_BANNER_IMPORT  2002
+/* The main window's status bar */
 #define IDC_STATUSBAR      2003
 #define IDC_LOG_EDIT       2004
 

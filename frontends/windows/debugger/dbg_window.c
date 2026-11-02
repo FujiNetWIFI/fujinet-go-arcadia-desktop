@@ -1,17 +1,18 @@
 /*
- * Debugger window (Win32) over the MCS-48 / 8244 debugger engine, via
- * core/include/arcdebug.h. Mirrors the GTK and Qt debuggers tab for tab --
- * Prompt, CPU & RAM, Disassembly, Video, EF9340, Sound & I/O, Breakpoints,
- * Cart, FujiNet -- built from plain common controls, with the disassembly,
- * the 8244's pictures and object tables, the keyboard matrix and the
- * EF9340's text page drawn by hand.
+ * Debugger window (Win32) over the Signetics 2650 / 2637 UVI debugger engine,
+ * via core/include/arcdebug.h. Mirrors the GTK and Qt debuggers tab for tab --
+ * Prompt, CPU & RAM, Disassembly, Video, Sound & I/O, Breakpoints, Cart,
+ * FujiNet -- built from plain common controls, with the disassembly, the
+ * UVI's pictures and object tables, the character screen and the keypad
+ * matrix drawn by hand.
  *
  * The Video tab is the showpiece: the display as the chip draws it (the
  * finished frame, the registers re-rendered with chosen layers and overlays,
- * or the frame as far as the beam has got), a hover that names the object
- * under the pointer, and beside it the objects with their bitmaps, the grid,
- * every register, the control and status bits, the sound shifter and the
- * font, shape and palette sheets.
+ * or the frame as far as the beam has got), a hover that names the object or
+ * character cell under the pointer, the objects boxed and numbered on the
+ * picture, and beside it the object list with their bitmaps, the 16 x 13/26
+ * character screen with its colour bits, every register decoded and editable,
+ * the status and collision bits, and the glyph, object and palette sheets.
  *
  * The engine only exists while this window is showing: showing it attaches
  * (which stops the machine, as on every sibling) and hiding it detaches,
@@ -46,8 +47,8 @@
 #endif
 
 #define TRACE_MAX 512        /* FujiNet packets shown */
-#define MAILBOX_BASE 0xF20
-#define MAILBOX_SIZE 0xE0
+#define MAILBOX_BASE 0x2B00  /* the cartridge's mailbox page, as the console reads it */
+#define MAILBOX_SIZE 0x500
 
 #define WM_DBG_ACCEPT  (WM_APP + 2)   /* wp: control id -- Enter in an edit */
 #define WM_DBG_TAB     (WM_APP + 3)   /* Tab in the prompt: complete */
@@ -64,18 +65,18 @@ enum {
     IDC_FIELD0, IDC_FIELD_LAST = IDC_FIELD0 + NFIELDS - 1,
     IDC_FLAG0, IDC_FLAG_LAST = IDC_FLAG0 + NFLAGS - 1,
     IDC_INPUT0, IDC_INPUT_LAST = IDC_INPUT0 + NINPUTS - 1,
-    IDC_BANK0, IDC_BANK_LAST = IDC_BANK0 + 15,
-    IDC_CPU_STATE, IDC_IRAM_VIEW, IDC_XRAM_VIEW, IDC_RAM_SPACE, IDC_RAM_GOTO, IDC_RAM_ADDR, IDC_RAM_VAL,
+    IDC_RAS0, IDC_RAS_LAST = IDC_RAS0 + NSTACK - 1,
+    IDC_CPU_STATE, IDC_MEM_VIEW, IDC_RAM_SPACE, IDC_RAM_GOTO, IDC_RAM_PREV, IDC_RAM_NEXT, IDC_RAM_ADDR,
+    IDC_RAM_VAL,
     IDC_FOLLOW_PC, IDC_JUMP, IDC_DISASM,
     IDC_VIEW_MODE, IDC_LAYER0, IDC_LAYER_LAST = IDC_LAYER0 + NLAYERS - 1,
     IDC_OVL0, IDC_OVL_LAST = IDC_OVL0 + NOVERLAYS - 1,
     IDC_VPIC, IDC_VSTATUS, IDC_VTABS,
-    IDC_OBJECTS, IDC_GRID, IDC_REGS_LIST, IDC_REG_ADDR, IDC_REG_VAL, IDC_REG_WRITE,
-    IDC_CTRL_TEXT, IDC_SOUND_VIEW, IDC_SOUND_TEXT,
+    IDC_OBJECTS, IDC_SCREEN, IDC_REGS_LIST, IDC_REG_ADDR, IDC_REG_VAL, IDC_REG_WRITE,
+    IDC_STATUS_TEXT,
     IDC_SHEET0, IDC_SHEET_LAST = IDC_SHEET0 + NSHEETS - 1,
-    IDC_EF_NONE, IDC_EF_TEXT, IDC_EF_GRID, IDC_EF_PIC, IDC_EF_STATUS,
     IDC_IO_TEXT, IDC_IO_MATRIX,
-    IDC_BP_LIST, IDC_BP_TYPE, IDC_BP_SPACE, IDC_BP_START, IDC_BP_END, IDC_BP_COND, IDC_BP_ADD,
+    IDC_BP_LIST, IDC_BP_TYPE, IDC_BP_START, IDC_BP_END, IDC_BP_COND, IDC_BP_ADD,
     IDC_BP_REMOVE, IDC_BP_ENABLE, IDC_BP_CLEAR,
     IDC_CART_TEXT, IDC_CART_MAILBOX,
     IDC_FUJI_NOTE, IDC_FUJI_CLEAR, IDC_FUJI_TEXT, IDC_FUJI_STATE,
@@ -87,46 +88,42 @@ enum {
 
 debugger *g_debugger;
 
-static const char *const kSaveKinds[NSAVE] = { "dis", "ram", "mailbox", "vdc", "font", "screen", "regs" };
+static const char *const kSaveKinds[NSAVE] = { "dis", "mailbox", "uvi", "font", "cart", "screen", "regs" };
 static const char *const kSaveTitles[NSAVE] = {
-    "Disassembly (BIOS and cartridge)...", "RAM (internal and external)...", "Mailbox page...",
-    "8244 registers...", "Character set...", "Screen (PPM)...", "Registers (text)..." };
+    "Disassembly (PROG space)...", "Mailbox page...", "UVI registers...", "Glyph table...",
+    "Cartridge image...", "Screen (PPM)...", "Registers (text)..." };
 
 /* The editable CPU fields, in the order the CPU page lays them out. */
 typedef struct { const char *name; int reg; int digits; } cpu_field;
 static const cpu_field kFields[NFIELDS] = {
-    { "A", ARC_REG_A, 2 }, { "PC", ARC_REG_PC, 3 }, { "MB", ARC_REG_MB, 1 },
-    { "PSW", ARC_REG_PSW, 2 }, { "SP", ARC_REG_SP, 1 }, { "Timer", ARC_REG_T, 2 },
-    { "P1", ARC_REG_P1, 2 }, { "P2", ARC_REG_P2, 2 }, { "BUS", ARC_REG_BUS, 2 } };
-static const char *const kFlagNames[NFLAGS] = { "C", "AC", "F0", "F1", "BS" };
-static const int kFlagIds[NFLAGS] = { ARC_REG_C, ARC_REG_AC, ARC_REG_F0, ARC_REG_F1, ARC_REG_BS };
-static const char *const kInputNames[NINPUTS] = { "Timer flag", "EN TCNTI", "EN I", "In interrupt",
-                                                  "T0", "T1", "INT" };
+    { "R0", ARC_REG_R0, 2 }, { "R1", ARC_REG_R1, 2 }, { "R2", ARC_REG_R2, 2 }, { "R3", ARC_REG_R3, 2 },
+    { "R1'", ARC_REG_R1B, 2 }, { "R2'", ARC_REG_R2B, 2 }, { "R3'", ARC_REG_R3B, 2 },
+    { "PC", ARC_REG_PC, 4 }, { "PSU", ARC_REG_PSU, 2 }, { "PSL", ARC_REG_PSL, 2 },
+    { "SP", ARC_REG_SP, 1 }, { "CC", ARC_REG_CC, 1 } };
+static const char *const kFlagNames[NFLAGS] = { "F", "II", "C", "COM", "OVF", "WC", "IDC", "RS" };
+static const int kFlagIds[NFLAGS] = { ARC_REG_F, ARC_REG_II, ARC_REG_C, ARC_REG_COM, ARC_REG_OVF, ARC_REG_WC,
+                                      ARC_REG_IDC, ARC_REG_RS };
+static const char *const kInputNames[NINPUTS] = { "SENSE (vblank)", "Halted", "IRQ line" };
 
 /* The page names ARC_DEBUGGER_TAB accepts, by page. */
-static const char *const kPageNames[PAGE_COUNT] = { "prompt", "cpu", "disassembly", "video", "ef9340",
-                                                    "io", "breakpoints", "cart", "fujinet" };
+static const char *const kPageNames[PAGE_COUNT] = { "prompt", "cpu", "disassembly", "video", "io",
+                                                    "breakpoints", "cart", "fujinet" };
 static const wchar_t *const kPageTitles[PAGE_COUNT] = {
-    L"Prompt", L"CPU && RAM", L"Disassembly", L"Video", L"EF9340", L"Sound && I/O", L"Breakpoints",
-    L"Cart", L"FujiNet" };
+    L"Prompt", L"CPU && RAM", L"Disassembly", L"Video", L"Sound && I/O", L"Breakpoints", L"Cart",
+    L"FujiNet" };
 static const wchar_t *const kSectionTitles[SEC_COUNT] = {
-    L"Objects", L"Grid", L"Registers", L"Control/Status", L"Sound", L"Sheets" };
+    L"Objects", L"Screen", L"Registers", L"Status", L"Sheets" };
 
-static const wchar_t *const kLayerNames[NLAYERS] = {
-    L"Background", L"Grid", L"Vertical grid", L"Dots", L"Sprites", L"Singles", L"Quads" };
-static const unsigned kLayerBits[NLAYERS] = {
-    I8244_L_BG, I8244_L_GRID, I8244_L_VGRID, I8244_L_DOTS, I8244_L_SPRITES, I8244_L_SINGLES, I8244_L_QUADS };
+static const wchar_t *const kLayerNames[NLAYERS] = { L"Characters", L"Objects" };
+static const unsigned kLayerBits[NLAYERS] = { ARCDEBUG_UVI_L_CHARS, ARCDEBUG_UVI_L_OBJECTS };
 static const wchar_t *const kOverlayNames[NOVERLAYS] = {
-    L"Bounding boxes", L"Collision highlight", L"Overlap highlight", L"Show hidden", L"Ignore enables",
-    L"Beam cross-hair" };
+    L"Object boxes", L"Character grid", L"Collisions", L"Beam cross-hair" };
 static const unsigned kOverlayBits[NOVERLAYS] = {
-    I8244_F_BOXES, I8244_F_COLLISION, I8244_F_OVERLAP, I8244_F_SHOW_HIDDEN, I8244_F_IGNORE_ENABLE,
-    I8244_F_BEAM };
+    ARCDEBUG_UVI_F_BOXES, ARCDEBUG_UVI_F_GRID, ARCDEBUG_UVI_F_COLLIDE, ARCDEBUG_UVI_F_BEAM };
 
-/* The collision latch ($A2): the order MAME's collision_status uses. */
-static const char *const kCollisionBits[8] = {
-    "Sprite 0", "Sprite 1", "Sprite 2", "Sprite 3", "Grid", "Dots", "External (CX)", "Characters" };
-
+/* The collision registers: $19FC objects x characters, $19FD object pairs (a 0
+ * bit is a hit). */
+static const char *const kPairNames[6] = { "0-1", "0-2", "0-3", "1-2", "1-3", "2-3" };
 
 /* ---- text helpers ----------------------------------------------------------- */
 
@@ -300,11 +297,6 @@ static HBRUSH make_brush(uint32_t rgb)
 {
     return CreateSolidBrush(RGB((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff));
 }
-
-
-
-
-
 /* ---- images ------------------------------------------------------------------ */
 
 static int image_reserve(image *im, size_t px)
@@ -325,87 +317,73 @@ static int fetch_view(debugger *d, image *im, int view, unsigned layers, unsigne
 {
     int w = 0, h = 0;
     im->w = im->h = 0;
-    arcdebug_vdc_view(d->dbg, view, layers, flags, scale, NULL, 0, &w, &h);
+    arcdebug_uvi_view(d->dbg, view, layers, flags, scale, NULL, 0, &w, &h);
     if (w > 0 && h > 0) {
         if (!image_reserve(im, (size_t)w * (size_t)h)) return 0;
-    } else if (!image_reserve(im, ARCDEBUG_VDC_VIEW_MAX_PIXELS)) {
+    } else if (!image_reserve(im, (size_t)ARCDEBUG_UVI_VIEW_MAX_PIXELS * (size_t)scale * (size_t)scale)) {
         return 0;
     }
     w = h = 0;
-    if (!arcdebug_vdc_view(d->dbg, view, layers, flags, scale, im->px, im->cap, &w, &h) || w <= 0 || h <= 0)
+    if (!arcdebug_uvi_view(d->dbg, view, layers, flags, scale, im->px, im->cap, &w, &h) || w <= 0 || h <= 0)
         return 0;
     im->w = w;
     im->h = h;
     return 1;
 }
 
-
-
-
 /* ---- the Video tab's state ---------------------------------------------------- */
 
-/* The layers the checkboxes ask for. The finished frame has no layers to
- * choose: it is what the display shows. */
+/* The layers the checkboxes ask for. Only the re-rendered picture has layers
+ * to choose; the other two are what the machine drew. */
 static unsigned video_layers(const debugger *d)
 {
     unsigned bits = 0;
     int i;
-    if (SendMessageW(d->view_mode, CB_GETCURSEL, 0, 0) == ARCDEBUG_VDC_FRAME) return I8244_L_ALL;
+    if (SendMessageW(d->view_mode, CB_GETCURSEL, 0, 0) != ARCDEBUG_UVI_RENDER) return ARCDEBUG_UVI_L_ALL;
     for (i = 0; i < NLAYERS; i++)
         if (SendMessageW(d->layer[i], BM_GETCHECK, 0, 0) == BST_CHECKED) bits |= kLayerBits[i];
     return bits;
 }
 
+/* The overlays apply to all three pictures. */
 static unsigned video_flags(const debugger *d)
 {
     unsigned bits = 0;
     int i;
-    if (SendMessageW(d->view_mode, CB_GETCURSEL, 0, 0) == ARCDEBUG_VDC_FRAME) return 0;
     for (i = 0; i < NOVERLAYS; i++)
         if (SendMessageW(d->overlay[i], BM_GETCHECK, 0, 0) == BST_CHECKED) bits |= kOverlayBits[i];
     return bits;
 }
 
-/* The finished frame has neither layers nor overlays; the frame in progress
- * has overlays (the beam among them) but draws every layer it has reached. */
 static void video_enable_state(debugger *d)
 {
     const int mode = (int)SendMessageW(d->view_mode, CB_GETCURSEL, 0, 0);
     int i;
-    for (i = 0; i < NLAYERS; i++) EnableWindow(d->layer[i], mode == ARCDEBUG_VDC_RENDER);
-    for (i = 0; i < NOVERLAYS; i++) {
-        const int beam = kOverlayBits[i] == I8244_F_BEAM;
-        EnableWindow(d->overlay[i], mode == ARCDEBUG_VDC_RENDER ? !beam
-                                    : mode == ARCDEBUG_VDC_PROGRESS ? beam : 0);
-    }
+    for (i = 0; i < NLAYERS; i++) EnableWindow(d->layer[i], mode == ARCDEBUG_UVI_RENDER);
 }
 
-/* The 16 colours, sampled from the palette strip (8 dim above 8 bright): the
- * grid diagram and the register colours use the chip's own. */
+/* The 8 colours, sampled from the palette strip: the character screen and
+ * the status text use the chip's own. */
 static void refresh_palette(debugger *d)
 {
     image *im = &d->palimg;
-    int col, row;
-    if (!fetch_view(d, im, ARCDEBUG_VDC_PALETTE, I8244_L_ALL, 0, 4) || im->w < 8 || im->h < 2) return;
-    for (row = 0; row < 2; row++)
-        for (col = 0; col < 8; col++) {
-            const int x = col * (im->w / 8) + (im->w / 8) / 2, y = row * (im->h / 2) + (im->h / 2) / 2;
-            d->pal[row * 8 + col] = im->px[y * im->w + x];
-        }
+    int col;
+    if (!fetch_view(d, im, ARCDEBUG_UVI_PALETTE, ARCDEBUG_UVI_L_ALL, 0, 4) || im->w < 8 || im->h < 1) return;
+    for (col = 0; col < 8; col++) {
+        const int x = col * (im->w / 8) + (im->w / 8) / 2, y = im->h / 2;
+        d->pal[col] = im->px[y * im->w + x];
+    }
 }
 
-/* The bitmaps of the object tables: 4 sprites, 12 singles, the 16 quad
- * characters, at true screen size on a mid-grey so any colour shows. */
+/* The four objects' bitmaps at twice their size on a mid-grey so any colour
+ * shows. */
 static void refresh_objects(debugger *d)
 {
     int k;
     for (k = 0; k < OBJ_COUNT; k++) {
-        const int kind = k < 4 ? 0 : k < 16 ? 1 : 2, idx = k < 4 ? k : k < 16 ? k - 4 : k - 16;
         int w = 0, h = 0;
-        if (!d->obj_bm[k]) d->obj_bm[k] = calloc(OBJ_BM_PX, sizeof *d->obj_bm[k]);
         d->obj_w[k] = d->obj_h[k] = 0;
-        if (!d->obj_bm[k]) continue;
-        if (arcdebug_vdc_object(d->dbg, kind, idx, 2, 0x00707070, d->obj_bm[k], OBJ_BM_PX, &w, &h) &&
+        if (arcdebug_uvi_thing(d->dbg, ARCDEBUG_UVI_OBJECT, k, 2, 0x00707070, d->obj_bm[k], OBJ_BM_PX, &w, &h) &&
             w > 0 && h > 0 && (size_t)w * (size_t)h <= OBJ_BM_PX) {
             d->obj_w[k] = w;
             d->obj_h[k] = h;
@@ -414,165 +392,136 @@ static void refresh_objects(debugger *d)
     InvalidateRect(d->objects, NULL, FALSE);
 }
 
-/* $00-$FF with the names and decoded values the chip gives them. */
+/* The character screen: the cells, and the 64 glyphs they are drawn from. */
+static void refresh_screen(debugger *d)
+{
+    int g, ok = 1;
+    d->cell_rows = arcdebug_uvi_cells(d->dbg, d->cells);
+    if (d->cell_rows < 0) d->cell_rows = 0;
+    for (g = 0; g < 64; g++) {
+        int w = 0, h = 0;
+        if (!arcdebug_uvi_thing(d->dbg, ARCDEBUG_UVI_GLYPH, g, 1, GLYPH_CLEAR, d->glyph[g], 64, &w, &h) ||
+            w != 8 || h != 8)
+            ok = 0;
+    }
+    d->glyph_ok = ok;
+    InvalidateRect(d->screen, NULL, FALSE);
+}
+
+/* $000-$2FF with the names and decoded values the chip gives them. */
 static void refresh_regs(debugger *d)
 {
     int off;
-    for (off = 0; off < 256; off++)
-        arcdebug_vdc_describe(d->dbg, (unsigned)off, d->vdc_regname[off], sizeof d->vdc_regname[off],
-                             d->vdc_regtext[off], sizeof d->vdc_regtext[off]);
+    for (off = 0; off < UVI_REGS; off++)
+        arcdebug_uvi_describe(d->dbg, (unsigned)off, d->reg_name[off], sizeof d->reg_name[off],
+                              d->reg_text[off], sizeof d->reg_text[off]);
     InvalidateRect(d->regs_list, NULL, FALSE);
 }
 
-/* $A0-$A3 and the beam, bit by bit. */
-static void refresh_ctrl(debugger *d)
+/* Beam, screen, colours, collisions, sound and the pots, decoded. */
+static void refresh_status_text(debugger *d)
 {
-    const i8244_snapshot *s = &d->snap;
+    const arcdebug_uvi *u = &d->uvi;
     static char t[4096];
     size_t len = 0;
     int b;
     len = addf(t, len, sizeof t,
-        "$A0 CONTROL = $%02X\n"
-        "  bit 0  (unused)               %d\n"
-        "  bit 1  beam position          %s\n"
-        "  bit 2  sound interrupt        %s\n"
-        "  bit 3  grid                   %s\n"
-        "  bit 4  external interrupt     %s\n"
-        "  bit 5  foreground (objects)   %s\n"
-        "  bit 6  dots                   %s\n"
-        "  bit 7  fill (wide verticals)  %s\n"
-        "  Write lockouts: $00-$7F %s, $C0-$FF %s\n\n",
-        s->control, s->ctl_bit0, s->strobe ? "latched by the strobe" : "live",
-        s->sound_irq_en ? "on" : "off", s->grid_en ? "on" : "off", s->ext_irq_en ? "on" : "off",
-        s->fg_en ? "on" : "off", s->dots_en ? "on" : "off", s->fill ? "on" : "off",
-        s->lock_objects ? "locked (foreground on)" : "open", s->lock_grid ? "locked (grid on)" : "open");
+        "BEAM  line %d/%d   row %d   SENSE %d\n\n"
+        "SCREEN  ($18FC, $18FD, $18FE, $19F8)\n"
+        "  first line          %d\n"
+        "  fine scroll         %d pixels\n"
+        "  rows                %d of %d lines each%s\n"
+        "  block graphics      %s from the top of the screen\n"
+        "  multicolor          %s\n"
+        "  pots                %s\n\n",
+        u->line, u->lines, u->charline, u->vblank, u->first_line, u->shift, u->rows, u->cell_height,
+        u->two_screens ? "  (two screens)" : "", u->block_graphics ? "on" : "off", u->multicolor ? "on" : "off",
+        u->pot_y ? "reading the Y axis" : "reading the X axis");
     len = addf(t, len, sizeof t,
-        "$A1 STATUS = $%02X   (_INTR %s)\n"
-        "  horizontal status             %d\n"
-        "  strobe                        %d\n"
-        "  sound                         %d\n"
-        "  vertical blank                %d\n"
-        "  external overlap (CX)         %d\n"
-        "  character overlap             %d\n\n",
-        s->status, s->irq ? "asserted" : "clear", s->st_hstatus, s->st_strobe, s->st_sound, s->st_vblank,
-        s->st_ext_overlap, s->st_char_overlap);
-    len = addf(t, len, sizeof t, "$A2 COLLISION   mask $%02X   latch $%02X\n", s->col_mask, s->col_result);
-    for (b = 0; b < 8; b++)
-        len = addf(t, len, sizeof t, "  bit %d  %-14s mask %-3s latched %s\n", b, kCollisionBits[b],
-                   (s->col_mask >> b) & 1 ? "yes" : "no", (s->col_result >> b) & 1 ? "yes" : "no");
+        "COLOURS\n"
+        "  screen              %d  %s\n"
+        "  characters          %d  %s\n"
+        "  alternate screen    %d  %s\n"
+        "  alternate chars     %d  %s\n\n",
+        u->screen_colour, arcdebug_uvi_colour_name(u->screen_colour), u->char_colour,
+        arcdebug_uvi_colour_name(u->char_colour), u->alt_screen_colour,
+        arcdebug_uvi_colour_name(u->alt_screen_colour), u->alt_char_colour,
+        arcdebug_uvi_colour_name(u->alt_char_colour));
+    len = addf(t, len, sizeof t, "COLLISIONS  ($19FC, $19FD: a 0 bit is a hit)\n");
+    for (b = 0; b < 4; b++)
+        len = addf(t, len, sizeof t, "  object %d  hits a character   %s\n", b,
+                   (u->coll_chars >> b) & 1 ? "no" : "YES");
+    for (b = 0; b < 6; b++)
+        len = addf(t, len, sizeof t, "  objects %s  overlap        %s\n", kPairNames[b],
+                   (u->coll_objects >> b) & 1 ? "no" : "YES");
     len = addf(t, len, sizeof t,
-        "\n$A3 COLOURS = $%02X\n"
-        "  background                    %d  %s\n"
-        "  grid                          %d  %s, %s\n"
-        "  P17 LUM (every pixel)         %s\n\n",
-        s->color_reg, s->bg_color, i8244_colour_name(s->bg_color), s->grid_color,
-        i8244_colour_name(s->grid_color), s->grid_lum ? "bright" : "dim",
-        s->p17_lum ? "low: brightened" : "high");
-    len = addf(t, len, sizeof t,
-        "BEAM at pixel %d, line %d\n"
-        "  $A5 x                         %d   (latched %d)\n"
-        "  $A4 y                         %d   (latched %d)\n"
-        "  the renderer has reached      line %d, pixel %d\n\n"
-        "TIMING  %s\n"
-        "  pixel clock                   %.0f Hz\n"
-        "  line rate                     %.2f Hz\n"
-        "  frame rate                    %.2f Hz\n"
-        "  frames since power-on         %llu\n",
-        s->hpos, s->vpos, s->x_beam, s->x_beam_latched, s->y_beam, s->y_beam_latched, s->last_scan,
-        s->part_hpos, s->is_pal ? "8245 (PAL)" : "8244 (NTSC)", s->pixel_hz, s->line_hz, s->frame_hz,
-        (unsigned long long)s->frames);
-    view_set(d->ctrl_text, t);
+        "\nSOUND  ($18FD, $18FE)\n"
+        "  pitch divider       %d\n"
+        "  volume              %d of 7\n"
+        "  tone                %s\n"
+        "  noise               %s\n",
+        u->sound_pitch, u->sound_volume, u->sound_tone ? "on" : "off", u->sound_noise ? "on" : "off");
+    view_set(d->status_text, t);
 }
 
-/* The shifter's 24 bits and what drives it. */
-static void refresh_sound(debugger *d)
-{
-    const i8244_snapshot *s = &d->snap;
-    static char t[2048];
-    size_t len = 0;
-    len = addf(t, len, sizeof t,
-        "Shift register  $%06X   ($A7 $%02X  $A8 $%02X  $A9 $%02X)\n"
-        "Sound control   $AA = $%02X\n"
-        "  output        %s\n"
-        "  fast clock    %s   (the shifter runs at %.0f Hz)\n"
-        "  noise         %s\n"
-        "  volume        %d of 15\n\n",
-        s->shift & 0xffffff, s->regs[0xA7], s->regs[0xA8], s->regs[0xA9], s->snd_reg,
-        s->snd_enable ? "enabled" : "disabled", s->snd_fast ? "yes" : "no", s->shift_clock_hz,
-        s->snd_noise ? "yes (the shifter is fed back)" : "no", s->snd_volume);
-    if (s->snd_noise)
-        len = addf(t, len, sizeof t, "Pitch           noise: no pitch\n");
-    else if (s->freq_hz > 0)
-        len = addf(t, len, sizeof t, "Pitch           %.1f Hz   (the bits repeat every %d)\n", s->freq_hz,
-                   s->pattern_period);
-    else
-        len = addf(t, len, sizeof t, "Pitch           none: a steady level\n");
-    len = addf(t, len, sizeof t,
-        "\nShifter state   output bit %d   count %d   prescaler %d\n"
-        "                a load is %s, a write is %s\n",
-        s->sh_output, s->sh_count, s->sh_prescaler, s->sh_pending ? "pending" : "not pending",
-        s->sh_written ? "waiting" : "done");
-    view_set(d->sound_text, t);
-    InvalidateRect(d->sound_view, NULL, FALSE);
-}
-
+/* The glyph, object and palette sheets, each as the engine draws it. */
 static void layout(debugger *d);
 
-/* The font, shape and palette sheets, each as the engine draws it. */
 static void refresh_sheets(debugger *d)
 {
-    static const int views[NSHEETS] = { ARCDEBUG_VDC_FONT, ARCDEBUG_VDC_SHAPES, ARCDEBUG_VDC_PALETTE };
-    static const int scales[NSHEETS] = { 1, 1, 4 };
+    static const int views[NSHEETS] = { ARCDEBUG_UVI_FONT, ARCDEBUG_UVI_OBJECTS, ARCDEBUG_UVI_PALETTE };
+    static const int scales[NSHEETS] = { 1, 1, 1 };
     int i, changed = 0;
     for (i = 0; i < NSHEETS; i++) {
         const int w = d->sheet_pv[i].img.w, h = d->sheet_pv[i].img.h;
-        fetch_view(d, &d->sheet_pv[i].img, views[i], I8244_L_ALL, 0, scales[i]);
+        fetch_view(d, &d->sheet_pv[i].img, views[i], ARCDEBUG_UVI_L_ALL, 0, scales[i]);
         if (d->sheet_pv[i].img.w != w || d->sheet_pv[i].img.h != h) changed = 1;
         InvalidateRect(d->sheet[i], NULL, FALSE);
     }
     if (changed) layout(d);
 }
 
-/* What the pointer is over, in words: the topmost object first. */
-static void describe_object(const debugger *d, int kind, int idx, char *out, int n)
+/* What the pointer is over, in words: the topmost thing first. */
+static void describe_hit(const debugger *d, int kind, int idx, char *out, int n)
 {
-    const i8244_snapshot *s = &d->snap;
-    if (kind == 0 && idx >= 0 && idx < 4) {
-        const i8244_sprite_info *o = &s->sprites[idx];
-        snprintf(out, (size_t)n, "Sprite %d: x=%d y=%d colour=%s zoom=%s", idx, o->x, o->y,
-                 i8244_colour_name(o->color), o->zoom ? "x2" : "x1");
-    } else if (kind == 1 && idx >= 0 && idx < 12) {
-        const i8244_char_info *o = &s->singles[idx];
-        snprintf(out, (size_t)n, "Single %d: x=%d y=%d glyph=%d colour=%s", idx, o->x, o->y, o->glyph,
-                 i8244_colour_name(o->color));
-    } else if (kind == 2 && idx >= 0 && idx < 16) {
-        const i8244_char_info *o = &s->quads[idx / 4].chars[idx % 4];
-        snprintf(out, (size_t)n, "Quad %d char %d: x=%d y=%d glyph=%d colour=%s", idx / 4, idx % 4, o->x, o->y,
-                 o->glyph, i8244_colour_name(o->color));
+    const arcdebug_uvi *u = &d->uvi;
+    if (kind == ARCDEBUG_UVI_HIT_OBJECT && idx >= 0 && idx < 4) {
+        const arcdebug_uvi_object *o = &u->obj[idx];
+        snprintf(out, (size_t)n, "Object %d: x=%d y=%d colour=%s udc=$%02X%s", idx, o->x, o->y,
+                 arcdebug_uvi_colour_name(o->colour), o->udc, o->double_height ? " double height" : "");
+    } else if (kind == ARCDEBUG_UVI_HIT_CELL && idx >= 0 && idx < ARCDEBUG_UVI_COLS * ARCDEBUG_UVI_MAX_ROWS) {
+        snprintf(out, (size_t)n, "Character row %d col %d", idx / ARCDEBUG_UVI_COLS, idx % ARCDEBUG_UVI_COLS);
+        if (idx / ARCDEBUG_UVI_COLS < d->cell_rows) {
+            const arcdebug_uvi_cell *c = &d->cells[idx];
+            char more[80];
+            snprintf(more, sizeof more, ": code $%02X glyph $%02X %s fg %s bg %s", c->code, c->glyph,
+                     c->graphics ? "block graphics" : "", arcdebug_uvi_colour_name(c->fg),
+                     arcdebug_uvi_colour_name(c->bg));
+            strncat(out, more, (size_t)n - strlen(out) - 1);
+        }
     } else {
-        snprintf(out, (size_t)n, "Glyph %d", idx);
+        snprintf(out, (size_t)n, "Nothing");
     }
 }
-
 
 /* The pointer's pixel in the frame: asks the engine what draws there and
  * puts the answer under the picture. */
 void dbg_update_hover(debugger *d)
 {
-    char text[200], more[40];
+    char text[240], more[40];
     if (!d->hover_valid) {
         d->nhits = 0;
-        dbg_label_set(d->vstatus, "Hover over the picture to name the object under the pointer.");
+        dbg_label_set(d->vstatus, "Hover over the picture to name the object or character under the pointer.");
         InvalidateRect(d->vpic, NULL, FALSE);
         return;
     }
-    d->nhits = arcdebug_vdc_hit_test(d->dbg, d->hover_x, d->hover_y, d->hits,
-                                    (int)(sizeof d->hits / sizeof d->hits[0]));
+    d->nhits = arcdebug_uvi_hit_test(d->dbg, d->hover_x, d->hover_y, d->hits,
+                                     (int)(sizeof d->hits / sizeof d->hits[0]));
     if (d->nhits < 0) d->nhits = 0;
     if (d->nhits == 0) {
         snprintf(text, sizeof text, "Nothing here (x=%d y=%d)", d->hover_x, d->hover_y);
     } else {
-        describe_object(d, d->hits[0].kind, d->hits[0].index, text, sizeof text);
+        describe_hit(d, d->hits[0].kind, d->hits[0].index, text, sizeof text);
         if (d->nhits > 1) {
             snprintf(more, sizeof more, "   (+%d under it)", d->nhits - 1);
             strncat(text, more, sizeof text - strlen(text) - 1);
@@ -588,17 +537,17 @@ void dbg_update_hover(debugger *d)
 static void refresh_video(debugger *d, int slow)
 {
     const int mode = (int)SendMessageW(d->view_mode, CB_GETCURSEL, 0, 0);
-    arcdebug_vdc_get(d->dbg, &d->snap);
+    arcdebug_uvi_get(d->dbg, &d->uvi);
     refresh_palette(d);
     video_enable_state(d);
-    fetch_view(d, &d->vimg, mode < 0 ? ARCDEBUG_VDC_FRAME : mode, video_layers(d), video_flags(d), 1);
+    fetch_view(d, &d->vimg, mode < 0 ? ARCDEBUG_UVI_FRAME : mode, video_layers(d), video_flags(d), 1);
+    if (d->vsec != SEC_SCREEN && d->cell_rows == 0) refresh_screen(d);   /* the hover names cells too */
     dbg_update_hover(d);
     switch (d->vsec) {
     case SEC_OBJECTS: refresh_objects(d); break;
-    case SEC_GRID: InvalidateRect(d->grid, NULL, FALSE); break;
+    case SEC_SCREEN: refresh_screen(d); break;
     case SEC_REGS: if (slow) refresh_regs(d); break;
-    case SEC_CTRL: refresh_ctrl(d); break;
-    case SEC_SOUND: refresh_sound(d); break;
+    case SEC_STATUS: refresh_status_text(d); break;
     case SEC_SHEETS: if (slow) refresh_sheets(d); break;
     default: break;
     }
@@ -619,16 +568,45 @@ static void refresh_status(debugger *d)
     InvalidateRect(d->run_btn, NULL, FALSE);
 }
 
+static int mem_space_now(const debugger *d)
+{
+    const int sel = (int)SendMessageW(d->ram_space, CB_GETCURSEL, 0, 0);
+    return sel == 1 ? ARC_SPACE_UVI : sel == 2 ? ARC_SPACE_CART : ARC_SPACE_PROG;
+}
+
+static int mem_digits(int space)
+{
+    return space == ARC_SPACE_PROG ? 4 : space == ARC_SPACE_UVI ? 3 : 5;
+}
+
+/* The memory view: 16 rows of 16 bytes from mem_base in the space showing. */
+static void refresh_mem(debugger *d)
+{
+    static uint8_t bytes[16 * MEM_ROWS];
+    static char dump[2048];
+    const int space = mem_space_now(d);
+    const uint32_t size = (uint32_t)arcdebug_space_size(d->dbg, space);
+    char title[96];
+    if (d->mem_base >= size) d->mem_base = size > sizeof bytes ? (size - 1) & ~0xfu : 0;
+    memset(bytes, 0xff, sizeof bytes);
+    arcdebug_read(d->dbg, space, d->mem_base, bytes, (int)sizeof bytes);
+    hexdump(dump, sizeof dump, bytes, (int)sizeof bytes, d->mem_base, mem_digits(space));
+    view_set(d->mem_view, dump);
+    snprintf(title, sizeof title, "%s from $%0*X (size $%X; reads have no side effects)",
+             space == ARC_SPACE_PROG ? "Program space" : space == ARC_SPACE_UVI ? "UVI registers" : "Cartridge image",
+             mem_digits(space), d->mem_base, size);
+    dbg_label_set(d->mem_label, title);
+}
+
 static void refresh_cpu(debugger *d)
 {
     arcdebug_cpu *c = &d->cpu;
     static char buf[1024];
-    static uint8_t ram[128];
-    static char dump[1024];
-    int i, b;
+    int i;
     arcdebug_cpu_get(d->dbg, c);
     {
-        const int v[NFIELDS] = { c->a, c->pc, c->mb, c->psw, c->sp, c->timer, c->p1, c->p2, c->bus };
+        const int v[NFIELDS] = { c->r0, c->r[c->rs ? 1 : 0][1], c->r[c->rs ? 1 : 0][2], c->r[c->rs ? 1 : 0][3],
+                                 c->r[1][1], c->r[1][2], c->r[1][3], c->pc, c->psu, c->psl, c->sp, c->cc };
         for (i = 0; i < NFIELDS; i++) {
             if (GetFocus() == d->fld[i]) continue;      /* do not fight the user's typing */
             snprintf(buf, sizeof buf, "%0*X", kFields[i].digits, v[i] & ((1 << (4 * kFields[i].digits)) - 1));
@@ -636,47 +614,40 @@ static void refresh_cpu(debugger *d)
         }
     }
     {
-        const int flags[NFLAGS] = { c->cy, c->ac, c->f0, c->f1, c->bs };
-        const int inputs[NINPUTS] = { c->tf, c->tcnti_en, c->ext_int_en, c->in_interrupt, c->t0, c->t1,
-                                      c->int_line };
+        const int flags[NFLAGS] = { c->flag, c->ii, c->c, c->com, c->ovf, c->wc, c->idc, c->rs };
+        const int inputs[NINPUTS] = { c->sense, c->halted, c->irq_line };
         for (i = 0; i < NFLAGS; i++)
             SendMessageW(d->flag[i], BM_SETCHECK, flags[i] ? BST_CHECKED : BST_UNCHECKED, 0);
         for (i = 0; i < NINPUTS; i++)
             SendMessageW(d->input[i], BM_SETCHECK, inputs[i] ? BST_CHECKED : BST_UNCHECKED, 0);
     }
-    for (b = 0; b < 2; b++) {
-        snprintf(buf, sizeof buf, "Register bank %d  (internal RAM $%02X-$%02X)%s", b, b * 24, b * 24 + 7,
-                 c->bs == b ? "  - in use" : "");
-        dbg_label_set(d->bank_head[b], buf);
-        for (i = 0; i < 8; i++) {
-            if (GetFocus() == d->bank_edit[b * 8 + i]) continue;
-            snprintf(buf, sizeof buf, "%02X", c->r[b][i]);
-            dbg_label_set(d->bank_edit[b * 8 + i], buf);
-        }
+    snprintf(buf, sizeof buf, "Return address stack  (SP %d; the live returns are 1..SP)", c->sp);
+    dbg_label_set(d->stack_head, buf);
+    for (i = 0; i < NSTACK; i++) {
+        if (GetFocus() == d->stack_edit[i]) continue;
+        snprintf(buf, sizeof buf, "%04X", c->ras[i] & 0x7fff);
+        dbg_label_set(d->stack_edit[i], buf);
+        snprintf(buf, sizeof buf, "%s%d", i == c->sp ? ">" : " ", i);
+        dbg_label_set(d->stack_label[i], buf);
     }
     snprintf(buf, sizeof buf,
-        "PC $%03X (MB %d)   A $%02X   PSW $%02X   SP %d\n"
-        "Timer %s   value $%02X   prescaler %d   overflow flag %d\n"
-        "Interrupts   external %s   timer %s   %s\n"
+        "PC $%04X  (page $%04X, IAR $%04X)   registers: set %d\n"
+        "R0 $%02X   R1-R3  $%02X $%02X $%02X   R1'-R3' $%02X $%02X $%02X\n"
+        "PSU $%02X  S%d F%d II%d SP%d      PSL $%02X  CC%d IDC%d RS%d WC%d OVF%d COM%d C%d\n"
+        "%s\n"
         "Beam         line %d   pixel %d   frame %u\n"
-        "Cycles %llu   instructions %llu\n"
+        "Cycles %llu   instructions %llu   illegal opcodes %u\n"
         "Machine      %s\n",
-        c->pc & 0xfff, c->mb, c->a & 0xff, c->psw & 0xff, c->sp,
-        c->timer_mode == 1 ? "running as a timer" : c->timer_mode == 2 ? "counting T1" : "stopped",
-        c->timer & 0xff, c->prescaler, c->tf, c->irq_pending ? "pending" : "clear",
-        c->timer_irq_pending ? "pending" : "clear", c->in_interrupt ? "(in a routine)" : "",
+        c->pc & 0x7fff, c->page, c->iar, c->rs,
+        c->r0, c->r[0][1], c->r[0][2], c->r[0][3], c->r[1][1], c->r[1][2], c->r[1][3],
+        c->psu & 0xff, c->sense, c->flag, c->ii, c->sp, c->psl & 0xff, c->cc, c->idc, c->rs, c->wc, c->ovf,
+        c->com, c->c,
+        c->halted ? "HALTed, waiting for an interrupt" : "running",
         c->vpos, c->hpos, c->frame, (unsigned long long)c->cycles, (unsigned long long)c->instructions,
+        c->illegal_count,
         arc_machine_name(c->machine));
     view_set(d->cpu_state, buf);
-
-    memset(ram, 0, sizeof ram);
-    arcdebug_read(d->dbg, ARC_SPACE_IRAM, 0, ram, 64);
-    hexdump(dump, sizeof dump, ram, 64, 0, 2);
-    view_set(d->iram_view, dump);
-    memset(ram, 0, sizeof ram);
-    arcdebug_read(d->dbg, ARC_SPACE_XDATA, 0, ram, 128);
-    hexdump(dump, sizeof dump, ram, 128, 0, 2);
-    view_set(d->xram_view, dump);
+    refresh_mem(d);
 }
 
 void dbg_refresh_disasm(debugger *d)
@@ -699,133 +670,38 @@ void dbg_refresh_disasm(debugger *d)
     InvalidateRect(d->disasm, NULL, FALSE);
 }
 
-/* The EF9340 page: absent on all but the G7400, else its registers, the text
- * page it holds and the layer it renders. */
-static void apply_visibility(debugger *d);
-
-static void refresh_ef(debugger *d)
-{
-    static char t[2048];
-    size_t len = 0;
-    int w = 0, h = 0;
-    const int present = arcdebug_ef_present(d->dbg);
-    const int sec = present ? EFSEC_PRESENT : EFSEC_ABSENT;
-    const ef9340_snapshot_t *e = &d->ef;
-    if (sec != d->ef_sec) {
-        d->ef_sec = sec;
-        apply_visibility(d);
-    }
-    if (!present) return;
-    arcdebug_ef_get(d->dbg, &d->ef);
-    len = addf(t, len, sizeof t,
-        "EF9341   TA $%02X   TB $%02X   %s\n\n"
-        "EF9340   X %d   Y %d   Y0 $%02X   R $%02X   M $%02X\n\n"
-        "R  $%02X\n"
-        "  display          %s\n"
-        "  boxed display    %s\n"
-        "  conceal          %s\n"
-        "  service row      %s\n"
-        "  cursor           %s%s\n"
-        "  lines            %s\n"
-        "  blink            %s (counter %d)\n\n"
-        "Y0 $%02X\n"
-        "  first row        %d\n"
-        "  zoom             %s\n\n"
-        "M  $%02X\n"
-        "  mode             %s\n"
-        "  slice            %d\n\n"
-        "Character set      %s\n"
-        "Lines drawn        %llu\n",
-        e->ta, e->tb, e->busy ? "busy" : "ready", e->x, e->y, e->y0, e->r, e->m, e->r,
-        e->display_on ? "on" : "off", e->box_mode ? "on" : "off", e->conceal_enabled ? "on" : "off",
-        e->service_row ? "shown" : "hidden", e->cursor_on ? "on" : "off",
-        e->cursor_on && e->cursor_visible ? ", at the cell (x, y)" : "",
-        e->lines625 ? "250 lines, 24-frame blink" : "210 lines, 32-frame blink",
-        e->blink_enabled ? "on" : "off", e->blink_prescaler, e->y0, e->first_row,
-        e->zoom ? "double height below the service row" : "off", e->m, e->mode_name ? e->mode_name : "?",
-        e->slice, e->font_present ? "imported" : "not imported (blank glyphs)",
-        (unsigned long long)e->lines_drawn);
-    view_set(d->ef_text, t);
-    d->ef_pv.img.w = d->ef_pv.img.h = 0;
-    arcdebug_ef_view(d->dbg, NULL, 0, &w, &h);
-    if (image_reserve(&d->ef_pv.img, w > 0 && h > 0 ? (size_t)w * (size_t)h : (size_t)EF9340_LAYER_STRIDE * EF9340_LAYER_ROWS)) {
-        w = h = 0;
-        if (arcdebug_ef_view(d->dbg, d->ef_pv.img.px, d->ef_pv.img.cap, &w, &h) && w > 0 && h > 0) {
-            d->ef_pv.img.w = w;
-            d->ef_pv.img.h = h;
-        }
-    }
-    InvalidateRect(d->ef_grid, NULL, FALSE);
-    InvalidateRect(d->ef_pic, NULL, FALSE);
-}
-
-/* P1 and P2 by function, the 8244's sound, The Voice, and what BIOS and
- * character set are running. */
+/* The console's inputs as the CPU reads them, and the beeper. */
 static void refresh_io(debugger *d)
 {
     arcdebug_io *io = &d->io;
     static char s[4096];
     size_t len = 0;
+    int i;
     arcdebug_io_get(d->dbg, io);
     len = addf(s, len, sizeof s,
-        "Machine         %s\n"
-        "BIOS            %s\n"
-        "Character set   %s\n\n",
-        arc_machine_name(io->machine),
-        io->stub_running ? "the stand-in (CONFIG and FujiNet apps; a game needs the BIOS)"
-                         : io->have_bios ? "imported" : "none",
-        io->have_font ? "imported" : "not imported: text is blank");
-    if (io->missing)
-        len = addf(s, len, sizeof s, "Missing         %s%s%s\n\n",
-                   io->missing & ARC_MISSING_BIOS ? "BIOS " : "", io->missing & ARC_MISSING_FONT ? "character-set " : "",
-                   io->missing & ARC_MISSING_VOICE ? "Voice-ROM" : "");
-    len = addf(s, len, sizeof s,
-        "P1 = $%02X\n"
-        "  P10, P11  cartridge bank        %d\n"
-        "  P12       keyboard and sticks   %s\n"
-        "  P13       8244 selected         %s\n"
-        "  P14       external RAM + cart   %s\n"
-        "  P15       EF9340/41 selected    %s\n"
-        "  P16       copy mode             %s\n"
-        "  P17       LUM                   %s\n"
-        "P2 = $%02X\n"
-        "  P20-P22   keyboard row          %d\n\n",
-        io->p1 & 0xff, io->cart_bank, io->kbd_enable ? "on" : "off", io->vdc_select ? "yes" : "no",
-        io->ram_select ? "yes" : "no", io->ef_select ? "yes" : "no",
-        io->copy_mode ? "on: external writes and VDC reads are gated off" : "off",
-        io->lum ? "low: every pixel brightened" : "high", io->p2 & 0xff, io->kbd_row);
-    len = addf(s, len, sizeof s,
-        "8244 sound      %s, %s%s, volume %d, %.1f Hz\n\n",
-        d->snap.snd_enable ? "enabled" : "disabled", d->snap.snd_fast ? "fast clock" : "slow clock",
-        d->snap.snd_noise ? ", noise" : "", d->snap.snd_volume, d->snap.freq_hz);
-    if (io->voice_present) {
-        const sp0256_debug_t *v = &io->voice;
+        "Machine         %s%s\n"
+        "BIOS            none: the console has no BIOS\n"
+        "Cartridge       %s\n"
+        "Console RESET   %s      SENSE %d   FLAG %d\n\n",
+        arc_machine_name(io->machine), io->is_pal ? " (not verified against MAME)" : "",
+        io->cart_type == 3 ? "FujiNet" : io->cart_type == 2 ? "Golf" : io->cart_type == 1 ? "standard" : "none",
+        io->reset_held ? "held" : "released", io->sense, io->flag);
+    len = addf(s, len, sizeof s, "Keypad columns ($1900-$1907):");
+    for (i = 0; i < 8; i++) len = addf(s, len, sizeof s, " %02X", io->pad[i]);
+    len = addf(s, len, sizeof s, "\nPanel ($1908) = $%02X  (b0 START, b1 OPTION, b2 SELECT)\n\n", io->panel);
+    for (i = 0; i < 2; i++)
         len = addf(s, len, sizeof s,
-            "The Voice (SP0256)\n"
-            "  LRQ %d  SBY %d  %s\n"
-            "  allophone speaking %d  pending %d  last %d\n"
-            "  ROM address $%05X bit %u   FIFO %u decles\n"
-            "  period %u  amplitude %d  repeat %d  %s\n"
-            "  samples made %llu  allophones dropped %llu  rate %u Hz\n",
-            v->lrq, v->sby, v->halted ? "halted" : "running", v->allophone, v->pending, v->last_allophone,
-            v->rom_addr, v->rom_bit, v->fifo_count, v->period, v->amp, v->rpt,
-            v->noise ? "noise" : v->silent ? "silent" : "voiced", (unsigned long long)v->samples_made,
-            (unsigned long long)v->alds_dropped, v->rate_hz);
-    } else {
-        len = addf(s, len, sizeof s, "The Voice       not present\n");
-    }
+            "Stick %d   digital $%02X   disc %d,%d%s   pots x $%02X y $%02X\n", i + 1, io->sticks[i],
+            io->disc[i][0], io->disc[i][1], (io->disc[i][0] || io->disc[i][1]) ? " (analog overrides)" : "",
+            io->pot[i][0], io->pot[i][1]);
+    len = addf(s, len, sizeof s,
+        "\nSound  ($18FD, $18FE)\n"
+        "  pitch divider %d   volume %d of 7   tone %s   noise %s\n"
+        "  %llu samples made since power-on\n",
+        d->uvi.sound_pitch, d->uvi.sound_volume, d->uvi.sound_tone ? "on" : "off",
+        d->uvi.sound_noise ? "on" : "off", (unsigned long long)io->audio_samples);
     view_set(d->io_text, s);
     InvalidateRect(d->io_matrix, NULL, FALSE);
-}
-
-static const char *space_name(int space)
-{
-    switch (space) {
-    case ARC_SPACE_PROG: return "prog";
-    case ARC_SPACE_XDATA: return "xdata";
-    case ARC_SPACE_IRAM: return "iram";
-    default: return "vdc";
-    }
 }
 
 static void refresh_bps(debugger *d)
@@ -836,20 +712,14 @@ static void refresh_bps(debugger *d)
     SendMessageW(d->bp_list, LB_RESETCONTENT, 0, 0);
     for (i = 0; i < d->nbps; i++) {
         const arcdebug_breakpoint *b = &d->bps[i];
-        const int port = (b->type & (ARCDEBUG_BP_IN | ARCDEBUG_BP_OUT)) != 0;
         char line[256], kind[8] = "", where[40];
         wchar_t w[256];
         if (b->type & ARCDEBUG_BP_EXEC) strcat(kind, "x");
         if (b->type & ARCDEBUG_BP_READ) strcat(kind, "r");
         if (b->type & ARCDEBUG_BP_WRITE) strcat(kind, "w");
-        if (b->type & ARCDEBUG_BP_IN) strcat(kind, "i");
-        if (b->type & ARCDEBUG_BP_OUT) strcat(kind, "o");
-        if (port) snprintf(where, sizeof where, "%s", b->space == 1 ? "P1" : b->space == 2 ? "P2" : "BUS");
-        else if (b->start == b->end) snprintf(where, sizeof where, "%s $%03X",
-                                              (b->type & ARCDEBUG_BP_EXEC) ? "prog" : space_name(b->space), b->start);
-        else snprintf(where, sizeof where, "%s $%03X-$%03X",
-                      (b->type & ARCDEBUG_BP_EXEC) ? "prog" : space_name(b->space), b->start, b->end);
-        snprintf(line, sizeof line, "%c %3d  %-3s  %-20s  hits %-6u %s%s", b->enabled ? '+' : '-', b->id, kind,
+        if (b->start == b->end) snprintf(where, sizeof where, "$%04X", b->start);
+        else snprintf(where, sizeof where, "$%04X-$%04X", b->start, b->end);
+        snprintf(line, sizeof line, "%c %3d  %-3s  %-14s  hits %-6u %s%s", b->enabled ? '+' : '-', b->id, kind,
                  where, b->hits, b->condition[0] ? "if " : "", b->condition);
         dbg_wide_from(line, w, 256);
         SendMessageW(d->bp_list, LB_ADDSTRING, 0, (LPARAM)w);
@@ -864,7 +734,7 @@ static void refresh_bps(debugger *d)
 
 static int cart_is_fujinet(const arcdebug_cart *c)
 {
-    return c->present && c->type_name && strstr(c->type_name, "FujiNet") != NULL;
+    return c->present && c->type == 3;
 }
 
 static void refresh_cart(debugger *d)
@@ -872,7 +742,7 @@ static void refresh_cart(debugger *d)
     arcdebug_cart *c = &d->cart_state;
     char info[256];
     static char s[4096];
-    static char dump[2048];
+    static char dump[MAILBOX_SIZE / 16 * 56 + 256];
     size_t len = 0;
     arcdebug_cart_get(d->dbg, c);
     arcdebug_cart_info(d->dbg, info, sizeof info);
@@ -881,8 +751,7 @@ static void refresh_cart(debugger *d)
         view_set(d->cart_mailbox, "");
         return;
     }
-    len = addf(s, len, sizeof s, "%s\n\nType            %s%s\n", info, c->type_name ? c->type_name : "?",
-               c->voice_in_front ? "   (The Voice in front)" : "");
+    len = addf(s, len, sizeof s, "%s\n\nType            %s\n", info, c->type_name ? c->type_name : "?");
     if (cart_is_fujinet(c)) {
         len = addf(s, len, sizeof s,
             "Link            %s%s\n"
@@ -893,7 +762,7 @@ static void refresh_cart(debugger *d)
             c->link_up ? "up" : "down", c->link_off ? " (switched off)" : "",
             c->mailbox ? "open" : "closed",
             c->app_live ? "a FujiNet app" : c->booted_game ? "a game from the network" : "CONFIG",
-            c->armed ? "yes (a swap waits for the console's next fetch of $400)" : "no", c->live_size,
+            c->armed ? "yes (a swap waits for the next reset)" : "no", c->live_size,
             c->live_crc, c->staged_mailbox ? ", claims the mailbox" : "");
         if (c->staged_size)
             len = addf(s, len, sizeof s, "Staged          %s%s, %u bytes, CRC-32 %08X\n",
@@ -903,18 +772,17 @@ static void refresh_cart(debugger *d)
             len = addf(s, len, sizeof s, "Staged          nothing\n");
         len = addf(s, len, sizeof s,
             "Swaps           %d\n"
-            "Banks           %d, showing %d\n"
+            "APPBANK pages   %d, showing %d at $0800\n"
             "Boot            state %d   %d%%   error %d\n\n"
             "Mailbox         ACKSEQ $%02X   STATUS $%02X   last error %u\n"
             "                reply cmd $%02X   RXLEN %u\n"
             "Queue           %u deep\n",
             c->swaps, c->nbanks, c->fbank, c->boot_state, c->boot_pct, c->boot_err, c->ackseq, c->status,
             c->last_error, c->reply_cmd, c->rxlen, c->queue_depth);
-        hexdump(dump, sizeof dump, c->mailbox_page, MAILBOX_SIZE, MAILBOX_BASE, 3);
+        hexdump(dump, sizeof dump, c->mailbox_page, MAILBOX_SIZE, MAILBOX_BASE, 4);
         view_set(d->cart_mailbox, dump);
     } else {
-        len = addf(s, len, sizeof s, "Image           %u bytes\nBank            %d\nControl         $%02X\n",
-                   c->rom_size, c->bank, c->control);
+        len = addf(s, len, sizeof s, "Image           %u bytes\n", c->rom_size);
         view_set(d->cart_mailbox, "(the mailbox page is the FujiNet cartridge's)");
     }
     view_set(d->cart_text, s);
@@ -972,9 +840,8 @@ static void refresh_page(debugger *d, int slow)
     case PAGE_CPU: refresh_cpu(d); break;
     case PAGE_DISASM: dbg_refresh_disasm(d); break;
     case PAGE_VIDEO: refresh_video(d, slow); break;
-    case PAGE_EF: refresh_ef(d); break;
     case PAGE_IO:
-        arcdebug_vdc_get(d->dbg, &d->snap);
+        arcdebug_uvi_get(d->dbg, &d->uvi);
         refresh_io(d);
         break;
     case PAGE_BREAKS: refresh_bps(d); break;
@@ -1082,34 +949,27 @@ static void jump_to(debugger *d, const char *text)
     dbg_refresh_disasm(d);
 }
 
-/* The RAM view the space combo names: internal ($00-$3F) or external
- * ($00-$7F). */
-static int ram_space_now(const debugger *d)
+/* Memory view: Go to puts the address in the first row (a multiple of 16);
+ * the buttons page through the space. */
+static void mem_goto(debugger *d, const char *text)
 {
-    return SendMessageW(d->ram_space, CB_GETCURSEL, 0, 0) == 1 ? ARC_SPACE_XDATA : ARC_SPACE_IRAM;
-}
-
-/* Selects a byte in the dump so the eye finds it: the rows are 16 wide,
- * each "$XX: " then three characters a byte, after a header of the same
- * length. */
-static void ram_goto(debugger *d, const char *text)
-{
-    const int space = ram_space_now(d);
-    const int size = space == ARC_SPACE_IRAM ? 64 : 128;
+    const int space = mem_space_now(d);
+    const int size = arcdebug_space_size(d->dbg, space);
     const int addr = resolve_addr(d, text);
-    const int row_len = 5 + 48 + 2;
-    HWND view = space == ARC_SPACE_IRAM ? d->iram_view : d->xram_view;
-    int start;
     if (addr < 0 || addr >= size) {
-        view_append(d->prompt_out, addr < 0 ? "No such label or address.\n"
-                                            : space == ARC_SPACE_IRAM ? "Internal RAM is $00-$3F.\n"
-                                                                     : "External RAM is $00-$7F.\n");
+        view_append(d->prompt_out, addr < 0 ? "No such label or address.\n" : "Past the end of that space.\n");
         return;
     }
-    start = (addr / 16 + 1) * row_len + 5 + (addr % 16) * 3;
-    SetFocus(view);
-    SendMessageW(view, EM_SETSEL, (WPARAM)start, (LPARAM)(start + 2));
-    SendMessageW(view, EM_SCROLLCARET, 0, 0);
+    d->mem_base = (uint32_t)addr & ~0xfu;
+    refresh_mem(d);
+}
+
+static void mem_page(debugger *d, int dir)
+{
+    const int size = arcdebug_space_size(d->dbg, mem_space_now(d));
+    const int next = (int)d->mem_base + dir * 16 * MEM_ROWS;
+    d->mem_base = next < 0 ? 0 : next >= size ? d->mem_base : (uint32_t)next;
+    refresh_mem(d);
 }
 
 static int pick_file(debugger *d, int save, const char *title, const wchar_t *filter, wchar_t *path, DWORD pathsz)
@@ -1192,55 +1052,28 @@ static void load_symbols(debugger *d, int beside_cart)
     refresh_all(d);
 }
 
-/* The breakpoint space combo follows the type: where a read or write
- * watches, or which port a port breakpoint watches. */
-static void bp_sync_space(debugger *d)
-{
-    static const wchar_t *const spaces[] = { L"Program", L"External data", L"Internal RAM", L"8244 registers" };
-    static const wchar_t *const ports[] = { L"P1", L"P2", L"BUS" };
-    const int type = (int)SendMessageW(d->bp_type, CB_GETCURSEL, 0, 0);
-    int i, n;
-    const wchar_t *const *items;
-    SendMessageW(d->bp_space, CB_RESETCONTENT, 0, 0);
-    if (type == 4 || type == 5) { items = ports; n = 3; }
-    else { items = spaces; n = 4; }
-    for (i = 0; i < n; i++) SendMessageW(d->bp_space, CB_ADDSTRING, 0, (LPARAM)items[i]);
-    SendMessageW(d->bp_space, CB_SETCURSEL, 0, 0);
-    EnableWindow(d->bp_space, type != 0);
-    EnableWindow(d->bp_start, type != 4 && type != 5);
-    EnableWindow(d->bp_end, type != 4 && type != 5);
-}
-
+/* Breakpoints are on PROG space (the UVI is at $1800-$1AFF in it). */
 static void add_breakpoint(debugger *d)
 {
-    static const int types[6] = { ARCDEBUG_BP_EXEC, ARCDEBUG_BP_READ, ARCDEBUG_BP_WRITE,
-                                  ARCDEBUG_BP_READ | ARCDEBUG_BP_WRITE, ARCDEBUG_BP_IN, ARCDEBUG_BP_OUT };
+    static const int types[4] = { ARCDEBUG_BP_EXEC, ARCDEBUG_BP_READ, ARCDEBUG_BP_WRITE,
+                                  ARCDEBUG_BP_READ | ARCDEBUG_BP_WRITE };
     char a[64], b[64], cond[256];
-    int start = 0, end = 0xff, sel, id, space = ARC_SPACE_PROG, port;
+    int start, end, sel, id;
     edit_text(d->bp_start, a, sizeof a);
     edit_text(d->bp_end, b, sizeof b);
     edit_text(d->bp_cond, cond, sizeof cond);
     sel = (int)SendMessageW(d->bp_type, CB_GETCURSEL, 0, 0);
-    if (sel < 0 || sel > 5) sel = 0;
-    port = (types[sel] & (ARCDEBUG_BP_IN | ARCDEBUG_BP_OUT)) != 0;
-    if (port) {
-        /* P1 = 1, P2 = 2, BUS = 0 (arcdebug_breakpoint's space for IN/OUT) */
-        const int c = (int)SendMessageW(d->bp_space, CB_GETCURSEL, 0, 0);
-        space = c == 0 ? 1 : c == 1 ? 2 : 0;
-    } else {
-        if (sel != 0) {
-            const int c = (int)SendMessageW(d->bp_space, CB_GETCURSEL, 0, 0);
-            space = c == 1 ? ARC_SPACE_XDATA : c == 2 ? ARC_SPACE_IRAM : c == 3 ? ARC_SPACE_VDC : ARC_SPACE_PROG;
-        }
-        start = resolve_addr(d, a);
-        if (start < 0) {
-            arc_message(d->hwnd, "The start is not an address or label.", "Breakpoint", MB_ICONWARNING | MB_OK);
-            return;
-        }
-        end = b[0] ? resolve_addr(d, b) : start;
-        if (end < start) end = start;
+    if (sel < 0 || sel > 3) sel = 0;
+    start = resolve_addr(d, a);
+    if (start < 0 || start > 0x7fff) {
+        arc_message(d->hwnd, "The start is not an address ($0000-$7FFF) or label.", "Breakpoint",
+                    MB_ICONWARNING | MB_OK);
+        return;
     }
-    id = arcdebug_breakpoint_add(d->dbg, types[sel], space, (uint16_t)start, (uint16_t)end, cond);
+    end = b[0] ? resolve_addr(d, b) : start;
+    if (end < start) end = start;
+    if (end > 0x7fff) end = 0x7fff;
+    id = arcdebug_breakpoint_add(d->dbg, types[sel], ARC_SPACE_PROG, (uint16_t)start, (uint16_t)end, cond);
     if (id < 0) {
         arc_message(d->hwnd, "The condition does not parse.", "Breakpoint", MB_ICONWARNING | MB_OK);
         return;
@@ -1250,17 +1083,6 @@ static void add_breakpoint(debugger *d)
     SetWindowTextW(d->bp_cond, L"");
     refresh_bps(d);
     dbg_refresh_disasm(d);
-}
-
-/* A bank register's edit: bank 1 has its own register ids; bank 0 is the
- * one in use only while BS is clear, else it is internal RAM $00-$07. */
-static void set_bank_reg(debugger *d, int bank, int i, int value)
-{
-    arcdebug_cpu c;
-    arcdebug_cpu_get(d->dbg, &c);
-    if (bank == 1) arcdebug_cpu_set(d->dbg, ARC_REG_R0_B1 + i, value);
-    else if (c.bs == 0) arcdebug_cpu_set(d->dbg, ARC_REG_R0 + i, value);
-    else arcdebug_write(d->dbg, ARC_SPACE_IRAM, (uint16_t)i, (uint8_t)value);
 }
 
 static void on_accept(debugger *d, int id)
@@ -1275,10 +1097,10 @@ static void on_accept(debugger *d, int id)
         refresh_all(d);
         return;
     }
-    if (id >= IDC_BANK0 && id <= IDC_BANK_LAST) {
-        const int n = id - IDC_BANK0;
-        edit_text(d->bank_edit[n], buf, sizeof buf);
-        if (parse_num(buf, &v)) set_bank_reg(d, n / 8, n % 8, (int)v);
+    if (id >= IDC_RAS0 && id <= IDC_RAS_LAST) {
+        const int n = id - IDC_RAS0;
+        edit_text(d->stack_edit[n], buf, sizeof buf);
+        if (parse_num(buf, &v)) arcdebug_cpu_set(d->dbg, ARC_REG_RAS0 + n, (int)v);
         SetFocus(d->hwnd);
         refresh_all(d);
         return;
@@ -1287,18 +1109,18 @@ static void on_accept(debugger *d, int id)
     case IDC_PROMPT_IN: run_prompt(d); break;
     case IDC_RAM_GOTO:
         edit_text(d->ram_goto, buf, sizeof buf);
-        ram_goto(d, buf);
+        mem_goto(d, buf);
         break;
     case IDC_RAM_ADDR:
     case IDC_RAM_VAL: {
         char abuf[64];
-        const int space = ram_space_now(d);
+        const int space = mem_space_now(d);
         int a;
         edit_text(d->ram_addr, abuf, sizeof abuf);
         edit_text(d->ram_val, buf, sizeof buf);
         a = resolve_addr(d, abuf);
-        if (a >= 0 && a < (space == ARC_SPACE_IRAM ? 64 : 128) && parse_num(buf, &v))
-            arcdebug_write(d->dbg, space, (uint16_t)a, (uint8_t)v);
+        if (a >= 0 && a < arcdebug_space_size(d->dbg, space) && parse_num(buf, &v))
+            arcdebug_write(d->dbg, space, (uint32_t)a, (uint8_t)v);
         refresh_all(d);
         break;
     }
@@ -1319,8 +1141,9 @@ static void on_accept(debugger *d, int id)
     }
 }
 
-/* Write an 8244 register: only while stopped, as the engine's contract has it. */
-static void write_vdc_register(debugger *d)
+/* Write a UVI register: the CPU address ($18F0) or the offset ($0F0); only
+ * while stopped, as the engine's contract has it. */
+static void write_uvi_register(debugger *d)
 {
     char a[64], b[64];
     long addr, val;
@@ -1328,17 +1151,20 @@ static void write_vdc_register(debugger *d)
     edit_text(d->reg_val, b, sizeof b);
     if (!arcdebug_is_stopped(d->dbg)) {
         arc_message(d->hwnd, "Stop the machine first (F5): registers are edited while it is stopped.",
-                   "8244 register", MB_ICONINFORMATION | MB_OK);
+                   "UVI register", MB_ICONINFORMATION | MB_OK);
         return;
     }
-    if (!parse_num(a, &addr) || addr < 0 || addr > 0xff || !parse_num(b, &val) || val < 0 || val > 0xff) {
-        arc_message(d->hwnd, "The address and the value are each a byte, in hex ($A0, 3F).", "8244 register",
-                   MB_ICONWARNING | MB_OK);
+    if (parse_num(a, &addr) && addr >= 0x1800) addr -= 0x1800;
+    else if (!parse_num(a, &addr)) addr = -1;
+    if (addr < 0 || addr >= UVI_REGS || !parse_num(b, &val) || val < 0 || val > 0xff) {
+        arc_message(d->hwnd, "The address is the CPU address ($1800-$1AFF) or the offset ($000-$2FF), the value a byte, "
+                             "both in hex ($18F0, 3F).", "UVI register", MB_ICONWARNING | MB_OK);
         return;
     }
-    arcdebug_vdc_write(d->dbg, (unsigned)addr, (uint8_t)val);
+    arcdebug_uvi_write(d->dbg, (unsigned)addr, (uint8_t)val);
     refresh_all(d);
 }
+
 
 /* ---- edit subclassing ------------------------------------------------------------- */
 
@@ -1436,12 +1262,11 @@ static void build_controls(debugger *d)
 {
     static const wchar_t *const views[3] = { L"Frame (what the display shows)", L"Rendered from the registers",
                                              L"Frame in progress (to the beam)" };
-    static const wchar_t *const bp_types[6] = { L"Execute", L"Read", L"Write", L"Read/Write", L"Port in",
-                                                L"Port out" };
-    static const wchar_t *const ram_spaces[2] = { L"Internal RAM", L"External RAM" };
+    static const wchar_t *const bp_types[4] = { L"Execute", L"Read", L"Write", L"Read/Write" };
+    static const wchar_t *const ram_spaces[NSPACES] = { L"Program (CPU view)", L"UVI registers", L"Cartridge" };
     static const char *const sheet_names[NSHEETS] = {
-        "Character set: 64 glyphs, the lower 256 bytes then the upper",
-        "Sprite shape tables", "Palette: 8 colours dim above 8 bright" };
+        "Glyph table: 64 characters ($38-$3F are the UDCs)",
+        "Objects: the four images", "Palette: the UVI's 8 colours" };
     TCITEMW item;
     LVCOLUMNW col;
     int i;
@@ -1470,10 +1295,10 @@ static void build_controls(debugger *d)
     /* Prompt */
     d->prompt_out = view(d, IDC_PROMPT_OUT, PAGE_PROMPT, -1, 1);
     SetWindowTextW(d->prompt_out,
-                   L"Magnavox Arcadia 2001 debugger prompt (MCS-48 / 8244). Type 'help' for every command.\r\n");
+                   L"Emerson Arcadia 2001 debugger prompt (Signetics 2650 / 2637 UVI). Type 'help' for every command.\r\n");
     d->prompt_in = field(d, IDC_PROMPT_IN, PAGE_PROMPT, -1, 1, 0);
     SendMessageW(d->prompt_in, EM_SETCUEBANNER, TRUE,
-                 (LPARAM)L"command (help, step, break, bpw, print, mem, runto, vdc, ...) - Tab completes, Up/Down recall");
+                 (LPARAM)L"command (help, step, break, bpw, print, mem, runto, uvi, ...) - Tab completes, Up/Down recall");
 
     /* CPU & RAM */
     for (i = 0; i < NFIELDS; i++) {
@@ -1488,23 +1313,23 @@ static void build_controls(debugger *d)
     for (i = 0; i < NINPUTS; i++) {
         wchar_t w[32];
         dbg_wide_from(kInputNames[i], w, 32);
-        /* state the CPU keeps or samples, not set from here: shown, not edited */
+        /* state the CPU samples, not set from here: shown, not edited */
         d->input[i] = checkbox(d, w, IDC_INPUT0 + i, PAGE_CPU, -1);
         EnableWindow(d->input[i], FALSE);
     }
-    for (i = 0; i < 2; i++) d->bank_head[i] = label(d, "Register bank", PAGE_CPU, -1);
-    for (i = 0; i < 16; i++) {
+    d->stack_head = label(d, "Return address stack", PAGE_CPU, -1);
+    for (i = 0; i < NSTACK; i++) {
         char name[8];
-        snprintf(name, sizeof name, "R%d", i % 8);
-        d->bank_label[i] = label(d, name, PAGE_CPU, -1);
-        d->bank_edit[i] = field(d, IDC_BANK0 + i, PAGE_CPU, -1, 1, 2);
+        snprintf(name, sizeof name, " %d", i);
+        d->stack_label[i] = label(d, name, PAGE_CPU, -1);
+        d->stack_edit[i] = field(d, IDC_RAS0 + i, PAGE_CPU, -1, 1, 4);
     }
     d->cpu_state = view(d, IDC_CPU_STATE, PAGE_CPU, -1, 0);
-    d->iram_label = label(d, "Internal RAM ($00-$3F)", PAGE_CPU, -1);
-    d->iram_view = view(d, IDC_IRAM_VIEW, PAGE_CPU, -1, 0);
-    d->xram_label = label(d, "External RAM ($00-$7F)", PAGE_CPU, -1);
-    d->xram_view = view(d, IDC_XRAM_VIEW, PAGE_CPU, -1, 0);
-    d->ram_space = combo(d, IDC_RAM_SPACE, ram_spaces, 2, PAGE_CPU, -1);
+    d->mem_label = label(d, "Memory", PAGE_CPU, -1);
+    d->mem_view = view(d, IDC_MEM_VIEW, PAGE_CPU, -1, 0);
+    d->ram_space = combo(d, IDC_RAM_SPACE, ram_spaces, NSPACES, PAGE_CPU, -1);
+    d->ram_prev = button(d, L"\x25C0 256", IDC_RAM_PREV, PAGE_CPU, -1);
+    d->ram_next = button(d, L"256 \x25B6", IDC_RAM_NEXT, PAGE_CPU, -1);
     d->ram_goto_label = label(d, "Go to", PAGE_CPU, -1);
     d->ram_goto = field(d, IDC_RAM_GOTO, PAGE_CPU, -1, 1, 0);
     d->ram_addr_label = label(d, "Write", PAGE_CPU, -1);
@@ -1531,10 +1356,10 @@ static void build_controls(debugger *d)
     d->overlays_label = label(d, "Overlays", PAGE_VIDEO, -1);
     for (i = 0; i < NOVERLAYS; i++) {
         d->overlay[i] = checkbox(d, kOverlayNames[i], IDC_OVL0 + i, PAGE_VIDEO, -1);
-        if (kOverlayBits[i] == I8244_F_BEAM) SendMessageW(d->overlay[i], BM_SETCHECK, BST_CHECKED, 0);
+        if (kOverlayBits[i] == ARCDEBUG_UVI_F_BOXES) SendMessageW(d->overlay[i], BM_SETCHECK, BST_CHECKED, 0);
     }
-    d->vpic = mk(d, WS_EX_CLIENTEDGE, L"ArcDbgVdc", L"", 0, IDC_VPIC, PAGE_VIDEO, -1, 0);
-    d->vstatus = label(d, "Hover over the picture to name the object under the pointer.", PAGE_VIDEO, -1);
+    d->vpic = mk(d, WS_EX_CLIENTEDGE, L"ArcDbgUvi", L"", 0, IDC_VPIC, PAGE_VIDEO, -1, 0);
+    d->vstatus = label(d, "Hover over the picture to name the object or character under the pointer.", PAGE_VIDEO, -1);
     /* ... and the sections beside it. The strip is a tab control used as a
      * strip alone, the sections below it controls of their own. */
     d->vtabs = mk(d, 0, WC_TABCONTROLW, L"", WS_CLIPSIBLINGS | WS_TABSTOP, IDC_VTABS, PAGE_VIDEO, -1, 0);
@@ -1542,8 +1367,9 @@ static void build_controls(debugger *d)
         item.pszText = (wchar_t *)kSectionTitles[i];
         SendMessageW(d->vtabs, TCM_INSERTITEMW, (WPARAM)i, (LPARAM)&item);
     }
-    d->objects = mk(d, WS_EX_CLIENTEDGE, L"ArcDbgObjects", L"", WS_VSCROLL, IDC_OBJECTS, PAGE_VIDEO, SEC_OBJECTS, 1);
-    d->grid = mk(d, WS_EX_CLIENTEDGE, L"ArcDbgGrid", L"", 0, IDC_GRID, PAGE_VIDEO, SEC_GRID, 1);
+    d->objects = mk(d, WS_EX_CLIENTEDGE, L"ArcDbgObjects", L"", 0, IDC_OBJECTS, PAGE_VIDEO, SEC_OBJECTS, 1);
+    d->screen = mk(d, WS_EX_CLIENTEDGE, L"ArcDbgScreen", L"", 0, IDC_SCREEN, PAGE_VIDEO, SEC_SCREEN, 1);
+    d->screen_status = label(d, "Hover over a cell for its code, glyph and colours.", PAGE_VIDEO, SEC_SCREEN);
     d->regs_list = mk(d, WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                       LVS_REPORT | LVS_OWNERDATA | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_TABSTOP | WS_VSCROLL,
                       IDC_REGS_LIST, PAGE_VIDEO, SEC_REGS, 1);
@@ -1558,31 +1384,19 @@ static void build_controls(debugger *d)
             SendMessageW(d->regs_list, LVM_INSERTCOLUMNW, (WPARAM)i, (LPARAM)&col);
         }
     }
-    ListView_SetItemCountEx(d->regs_list, 256, LVSICF_NOINVALIDATEALL);
+    ListView_SetItemCountEx(d->regs_list, UVI_REGS, LVSICF_NOINVALIDATEALL);
     d->reg_addr_label = label(d, "Register $", PAGE_VIDEO, SEC_REGS);
     d->reg_addr = field(d, IDC_REG_ADDR, PAGE_VIDEO, SEC_REGS, 1, 0);
     d->reg_val_label = label(d, "value $", PAGE_VIDEO, SEC_REGS);
     d->reg_val = field(d, IDC_REG_VAL, PAGE_VIDEO, SEC_REGS, 1, 0);
     d->reg_write = button(d, L"Write", IDC_REG_WRITE, PAGE_VIDEO, SEC_REGS);
-    d->ctrl_text = view(d, IDC_CTRL_TEXT, PAGE_VIDEO, SEC_CTRL, 1);
-    d->sound_view = mk(d, 0, L"ArcDbgSound", L"", 0, IDC_SOUND_VIEW, PAGE_VIDEO, SEC_SOUND, 1);
-    d->sound_text = view(d, IDC_SOUND_TEXT, PAGE_VIDEO, SEC_SOUND, 1);
+    d->status_text = view(d, IDC_STATUS_TEXT, PAGE_VIDEO, SEC_STATUS, 1);
     for (i = 0; i < NSHEETS; i++) {
         d->sheet_label[i] = label(d, sheet_names[i], PAGE_VIDEO, SEC_SHEETS);
         d->sheet[i] = mk(d, WS_EX_CLIENTEDGE, L"ArcDbgPic", L"", 0, IDC_SHEET0 + i, PAGE_VIDEO, SEC_SHEETS, 0);
         d->sheet_pv[i].center = 1;
         SetWindowLongPtrW(d->sheet[i], GWLP_USERDATA, (LONG_PTR)&d->sheet_pv[i]);
     }
-
-    /* EF9340 */
-    d->ef_none = mk(d, 0, L"STATIC", L"Videopac+ G7400 only", SS_CENTER | SS_NOPREFIX, IDC_EF_NONE, PAGE_EF,
-                    EFSEC_ABSENT, 0);
-    d->ef_text = view(d, IDC_EF_TEXT, PAGE_EF, EFSEC_PRESENT, 1);
-    d->ef_grid = mk(d, WS_EX_CLIENTEDGE, L"ArcDbgEfGrid", L"", 0, IDC_EF_GRID, PAGE_EF, EFSEC_PRESENT, 1);
-    d->ef_pic = mk(d, WS_EX_CLIENTEDGE, L"ArcDbgPic", L"", 0, IDC_EF_PIC, PAGE_EF, EFSEC_PRESENT, 0);
-    d->ef_pv.center = 1;
-    SetWindowLongPtrW(d->ef_pic, GWLP_USERDATA, (LONG_PTR)&d->ef_pv);
-    d->ef_status = label(d, "Hover over the page for a cell's attribute and code.", PAGE_EF, EFSEC_PRESENT);
 
     /* Sound & I/O */
     d->io_text = view(d, IDC_IO_TEXT, PAGE_IO, -1, 1);
@@ -1591,8 +1405,7 @@ static void build_controls(debugger *d)
     /* Breakpoints */
     d->bp_list = mk(d, WS_EX_CLIENTEDGE, L"LISTBOX", L"", WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_TABSTOP,
                     IDC_BP_LIST, PAGE_BREAKS, -1, 1);
-    d->bp_type = combo(d, IDC_BP_TYPE, bp_types, 6, PAGE_BREAKS, -1);
-    d->bp_space = combo(d, IDC_BP_SPACE, NULL, 0, PAGE_BREAKS, -1);
+    d->bp_type = combo(d, IDC_BP_TYPE, bp_types, 4, PAGE_BREAKS, -1);
     d->bp_start_label = label(d, "Address", PAGE_BREAKS, -1);
     d->bp_start = field(d, IDC_BP_START, PAGE_BREAKS, -1, 1, 0);
     d->bp_end_label = label(d, "to", PAGE_BREAKS, -1);
@@ -1604,12 +1417,11 @@ static void build_controls(debugger *d)
     d->bp_remove = button(d, L"Remove", IDC_BP_REMOVE, PAGE_BREAKS, -1);
     d->bp_enable = button(d, L"Enable/Disable", IDC_BP_ENABLE, PAGE_BREAKS, -1);
     d->bp_clear = button(d, L"Clear all", IDC_BP_CLEAR, PAGE_BREAKS, -1);
-    bp_sync_space(d);
 
     /* Cart */
     d->cart_text = view(d, IDC_CART_TEXT, PAGE_CART, -1, 1);
-    d->cart_mailbox_label = label(d, "The mailbox page the console reads ($F20-$FFF)", PAGE_CART, -1);
-    d->cart_mailbox = view(d, IDC_CART_MAILBOX, PAGE_CART, -1, 0);
+    d->cart_mailbox_label = label(d, "The mailbox page the console reads ($2B00-$2FFF)", PAGE_CART, -1);
+    d->cart_mailbox = view(d, IDC_CART_MAILBOX, PAGE_CART, -1, 1);
 
     /* FujiNet: the note and the log are Unicode (the engine's text has arrows
      * and a times sign) */
@@ -1635,7 +1447,6 @@ static int ctl_wanted(const debugger *d, const ctl_t *c)
     if (c->page != d->page) return 0;
     if (c->sec < 0) return 1;
     if (c->page == PAGE_VIDEO) return c->sec == d->vsec;
-    if (c->page == PAGE_EF) return c->sec == d->ef_sec;
     return 1;
 }
 
@@ -1687,55 +1498,51 @@ static void layout_cpu(debugger *d, int px, int py, int pw, int ph)
 {
     const int rh = d->row_h, gap = S(4), lw = S(500);
     const int fcol = S(150), flab = S(46), fed = S(64);
-    int y = py, i, b, rx, rw, view_w;
+    int y = py, i, rx, rw, view_w;
     (void)pw;
     for (i = 0; i < NFIELDS; i++) {
         const int cx = px + (i % 3) * fcol, cy = y + (i / 3) * (rh + gap);
         put(d->fld_label[i], cx, cy + (rh - d->ui_h) / 2, flab, d->ui_h + 2);
         put(d->fld[i], cx + flab, cy, fed, rh);
     }
-    y += 3 * (rh + gap) + S(2);
+    y += ((NFIELDS + 2) / 3) * (rh + gap) + S(2);
     y = flow(d, d->flag, NFLAGS, px, y, px + lw);
     y = flow(d, d->input, NINPUTS, px, y, px + lw);
     y += S(4);
-    for (b = 0; b < 2; b++) {
-        const int bx = px + b * (lw / 2);
-        int by = y;
-        put(d->bank_head[b], bx, by, lw / 2 - S(8), d->ui_h + 2);
-        by += d->ui_h + S(6);
-        for (i = 0; i < 8; i++) {
-            put(d->bank_label[b * 8 + i], bx, by + (rh - d->ui_h) / 2, S(30), d->ui_h + 2);
-            put(d->bank_edit[b * 8 + i], bx + S(32), by, S(52), rh);
-            by += rh + gap;
-        }
-        if (b == 1) y = by;
+    put(d->stack_head, px, y, lw, d->ui_h + 2);
+    y += d->ui_h + S(6);
+    for (i = 0; i < NSTACK; i++) {
+        const int cx = px + (i % 4) * (lw / 4), cy = y + (i / 4) * (rh + gap);
+        put(d->stack_label[i], cx, cy + (rh - d->ui_h) / 2, S(22), d->ui_h + 2);
+        put(d->stack_edit[i], cx + S(24), cy, S(64), rh);
     }
-    y += S(4);
+    y += 2 * (rh + gap) + S(4);
     put(d->cpu_state, px, y, lw, ph - (y - py) > 6 * d->mono_h ? ph - (y - py) : 6 * d->mono_h);
 
     rx = px + lw + S(16);
     rw = px + pw - rx;
-    view_w = 54 * d->mono_w + S(14);
+    view_w = (8 + 16 * 3) * d->mono_w + S(18);
     if (view_w > rw) view_w = rw;
     y = py;
-    put(d->iram_label, rx, y, rw, d->ui_h + 2);
+    put(d->mem_label, rx, y, rw, d->ui_h + 2);
     y += d->ui_h + S(6);
-    put(d->iram_view, rx, y, view_w, 5 * d->mono_h + S(8));
-    y += 5 * d->mono_h + S(8) + S(10);
-    put(d->xram_label, rx, y, rw, d->ui_h + 2);
-    y += d->ui_h + S(6);
-    put(d->xram_view, rx, y, view_w, 9 * d->mono_h + S(8));
-    y += 9 * d->mono_h + S(8) + S(12);
+    put(d->mem_view, rx, y, view_w, (MEM_ROWS + 1) * d->mono_h + S(8));
+    y += (MEM_ROWS + 1) * d->mono_h + S(8) + S(12);
     {
         int x = rx;
-        put(d->ram_space, x, y, S(120), rh + S(120));
-        x += S(128);
+        put(d->ram_space, x, y, S(150), rh + S(120));
+        x += S(158);
+        put(d->ram_prev, x, y - 1, S(64), rh + 2);
+        x += S(68);
+        put(d->ram_next, x, y - 1, S(64), rh + 2);
+        y += rh + S(8);
+        x = rx;
         put(d->ram_goto_label, x, y + (rh - d->ui_h) / 2, S(40), d->ui_h + 2);
-        put(d->ram_goto, x + S(42), y, S(64), rh);
-        x += S(118);
+        put(d->ram_goto, x + S(42), y, S(70), rh);
+        x += S(124);
         put(d->ram_addr_label, x, y + (rh - d->ui_h) / 2, S(40), d->ui_h + 2);
-        put(d->ram_addr, x + S(42), y, S(56), rh);
-        x += S(102);
+        put(d->ram_addr, x + S(42), y, S(70), rh);
+        x += S(116);
         put(d->ram_val_label, x, y + (rh - d->ui_h) / 2, S(14), d->ui_h + 2);
         put(d->ram_val, x + S(16), y, S(52), rh);
     }
@@ -1771,7 +1578,7 @@ static void layout_video(debugger *d, int px, int py, int pw, int ph)
     {
         /* the picture at twice its size, whole, when the sections can spare
          * the room: its window is a client edge wider */
-        const int want = 2 * ((d->dpi + 48) / 96 > 0 ? (d->dpi + 48) / 96 : 1) * I8244_WIDTH + S(8);
+        const int want = 2 * ((d->dpi + 48) / 96 > 0 ? (d->dpi + 48) / 96 : 1) * ARCSESSION_FB_WIDTH + S(8);
         if (lw < want && pw - want - gap >= S(360)) {
             lw = want;
             rw = pw - lw - gap;
@@ -1796,44 +1603,39 @@ static void layout_video(debugger *d, int px, int py, int pw, int ph)
     sw = rw;
     sh = ph - th - S(4);
     put(d->objects, sx, sy, sw, sh);
-    put(d->grid, sx, sy, sw, sh);
+    put(d->screen, sx, sy, sw, sh - rh - S(6));
+    put(d->screen_status, sx, sy + sh - rh, sw, rh);
     {
-        int cw = S(50) + S(120) + S(54) + S(24);
+        int cw = S(50) + S(160) + S(54) + S(24);
         put(d->regs_list, sx, sy, sw, sh - rh - S(6));
         ListView_SetColumnWidth(d->regs_list, 0, S(50));
-        ListView_SetColumnWidth(d->regs_list, 1, S(120));
+        ListView_SetColumnWidth(d->regs_list, 1, S(160));
         ListView_SetColumnWidth(d->regs_list, 2, S(54));
         ListView_SetColumnWidth(d->regs_list, 3, sw - cw > S(120) ? sw - cw : S(120));
         y = sy + sh - rh;
         put(d->reg_addr_label, sx, y + (rh - d->ui_h) / 2, S(74), d->ui_h + 2);
-        put(d->reg_addr, sx + S(76), y, S(48), rh);
-        put(d->reg_val_label, sx + S(134), y + (rh - d->ui_h) / 2, S(54), d->ui_h + 2);
-        put(d->reg_val, sx + S(190), y, S(48), rh);
-        put(d->reg_write, sx + S(250), y - 1, S(72), rh + 2);
+        put(d->reg_addr, sx + S(76), y, S(56), rh);
+        put(d->reg_val_label, sx + S(142), y + (rh - d->ui_h) / 2, S(54), d->ui_h + 2);
+        put(d->reg_val, sx + S(198), y, S(48), rh);
+        put(d->reg_write, sx + S(258), y - 1, S(72), rh + 2);
     }
-    put(d->ctrl_text, sx, sy, sw, sh);
-    {
-        const int vh = 2 * d->mono_h + S(60);
-        put(d->sound_view, sx, sy, sw, vh);
-        put(d->sound_text, sx, sy + vh + S(6), sw, sh - vh - S(6));
-    }
+    put(d->status_text, sx, sy, sw, sh);
     layout_sheets(d, sx, sy, sw - S(8));
-    dbg_objects_scroll_update(d);
 }
 
-static void layout_ef(debugger *d, int px, int py, int pw, int ph)
+/* The screen cell's size in the Screen section: 8 x 8 glyph pixels at a whole
+ * scale, so the 16 columns fill the width. */
+void dbg_screen_cell(const debugger *d, int *cw, int *ch)
 {
-    int cw, ch, lw = S(330), gx, gw, gh, picx;
-    dbg_ef_cell(d, &cw, &ch);
-    gw = EF9340_COLUMNS * cw;
-    gh = (EF9340_ROWS + 1) * ch + S(6);
-    put(d->ef_none, px, py + ph / 2 - d->row_h, pw, 2 * d->row_h);
-    put(d->ef_text, px, py, lw, ph);
-    gx = px + lw + S(10);
-    put(d->ef_grid, gx, py, gw + 4, gh + 4);
-    put(d->ef_status, gx, py + gh + S(10), gw, d->row_h);
-    picx = gx + gw + S(14);
-    put(d->ef_pic, picx, py, px + pw - picx > S(120) ? px + pw - picx : S(120), ph);
+    RECT c;
+    int s = 3;
+    GetClientRect(d->screen, &c);
+    if (c.right > 0) {
+        s = c.right / (ARCDEBUG_UVI_COLS * 8);
+        if (s < 1) s = 1;
+        if (s > 6) s = 6;
+    }
+    *cw = *ch = 8 * s;
 }
 
 static void layout_io(debugger *d, int px, int py, int pw, int ph)
@@ -1851,10 +1653,8 @@ static void layout_breaks(debugger *d, int px, int py, int pw, int ph)
     const int rh = d->row_h;
     int ry = py + ph - 2 * rh - S(14), x = px, cond_w;
     put(d->bp_list, px, py, pw, ry - py - S(6));
-    put(d->bp_type, x, ry, S(110), rh + S(120));
-    x += S(118);
-    put(d->bp_space, x, ry, S(140), rh + S(120));
-    x += S(148);
+    put(d->bp_type, x, ry, S(120), rh + S(120));
+    x += S(130);
     put(d->bp_start_label, x, ry + (rh - d->ui_h) / 2, S(50), d->ui_h + 2);
     put(d->bp_start, x + S(52), ry, S(84), rh);
     x += S(144);
@@ -1873,10 +1673,10 @@ static void layout_breaks(debugger *d, int px, int py, int pw, int ph)
 
 static void layout_cart(debugger *d, int px, int py, int pw, int ph)
 {
-    const int lw = pw * 52 / 100, rx = px + lw + S(14), rw = pw - lw - S(14);
+    const int lw = pw * 46 / 100, rx = px + lw + S(14), rw = pw - lw - S(14);
     put(d->cart_text, px, py, lw, ph);
     put(d->cart_mailbox_label, rx, py, rw, d->ui_h + 2);
-    put(d->cart_mailbox, rx, py + d->ui_h + S(6), rw, 16 * d->mono_h + S(12));
+    put(d->cart_mailbox, rx, py + d->ui_h + S(6), rw, ph - d->ui_h - S(6));
 }
 
 static void layout_fujinet(debugger *d, int px, int py, int pw, int ph)
@@ -1940,7 +1740,6 @@ static void layout(debugger *d)
         put(d->disasm, px, py + rh + S(8), pw, ph - rh - S(8));
         break;
     case PAGE_VIDEO: layout_video(d, px, py, pw, ph); break;
-    case PAGE_EF: layout_ef(d, px, py, pw, ph); break;
     case PAGE_IO: layout_io(d, px, py, pw, ph); break;
     case PAGE_BREAKS: layout_breaks(d, px, py, pw, ph); break;
     case PAGE_CART: layout_cart(d, px, py, pw, ph); break;
@@ -2001,7 +1800,7 @@ static void detach_and_hide(debugger *d)
 
 /* ---- window proc -------------------------------------------------------------------- */
 
-/* Stopped, Run wears the accent with white text on it. */
+/* Stopped, Run wears the accent with dark text on it. */
 static void draw_run_button(debugger *d, const DRAWITEMSTRUCT *di)
 {
     wchar_t text[32];
@@ -2010,7 +1809,7 @@ static void draw_run_button(debugger *d, const DRAWITEMSTRUCT *di)
     if (stopped) {
         FillRect(di->hDC, &r, d->accent);
         FrameRect(di->hDC, &r, (HBRUSH)GetStockObject(GRAY_BRUSH));
-        SetTextColor(di->hDC, RGB(255, 255, 255));
+        SetTextColor(di->hDC, RGB(0x1e, 0x1e, 0x1e));
     } else {
         DrawFrameControl(di->hDC, &r, DFC_BUTTON, DFCS_BUTTONPUSH | ((di->itemState & ODS_SELECTED) ? DFCS_PUSHED : 0));
         SetTextColor(di->hDC, GetSysColor(COLOR_BTNTEXT));
@@ -2031,12 +1830,12 @@ static void regs_dispinfo(debugger *d, NMLVDISPINFOW *di)
     static wchar_t buf[160];
     char text[160];
     const int i = di->item.iItem;
-    if (i < 0 || i > 255 || !(di->item.mask & LVIF_TEXT)) return;
+    if (i < 0 || i >= UVI_REGS || !(di->item.mask & LVIF_TEXT)) return;
     switch (di->item.iSubItem) {
-    case 0: snprintf(text, sizeof text, "$%02X", i); break;
-    case 1: snprintf(text, sizeof text, "%s", d->vdc_regname[i]); break;
-    case 2: snprintf(text, sizeof text, "%02X", d->snap.regs[i]); break;
-    default: snprintf(text, sizeof text, "%s", d->vdc_regtext[i]); break;
+    case 0: snprintf(text, sizeof text, "$%04X", 0x1800 + i); break;
+    case 1: snprintf(text, sizeof text, "%s", d->reg_name[i]); break;
+    case 2: snprintf(text, sizeof text, "%02X", d->uvi.reg[i]); break;
+    default: snprintf(text, sizeof text, "%s", d->reg_text[i]); break;
     }
     dbg_wide_from(text, buf, 160);
     di->item.pszText = buf;
@@ -2046,10 +1845,10 @@ static void regs_dispinfo(debugger *d, NMLVDISPINFOW *di)
 static void regs_selected(debugger *d, int i)
 {
     char t[16];
-    if (i < 0 || i > 255) return;
-    snprintf(t, sizeof t, "%02X", i);
+    if (i < 0 || i >= UVI_REGS) return;
+    snprintf(t, sizeof t, "%04X", 0x1800 + i);
     dbg_label_set(d->reg_addr, t);
-    snprintf(t, sizeof t, "%02X", d->snap.regs[i]);
+    snprintf(t, sizeof t, "%02X", d->uvi.reg[i]);
     dbg_label_set(d->reg_val, t);
 }
 
@@ -2083,10 +1882,12 @@ static void on_command(debugger *d, int id, int code, HWND src)
     case IDC_VIEW_MODE:
         if (code == CBN_SELCHANGE) refresh_video(d, 0);
         break;
-    case IDC_REG_WRITE: write_vdc_register(d); break;
-    case IDC_BP_TYPE:
-        if (code == CBN_SELCHANGE) bp_sync_space(d);
+    case IDC_RAM_SPACE:
+        if (code == CBN_SELCHANGE) { d->mem_base = 0; refresh_mem(d); }
         break;
+    case IDC_RAM_PREV: mem_page(d, -1); break;
+    case IDC_RAM_NEXT: mem_page(d, 1); break;
+    case IDC_REG_WRITE: write_uvi_register(d); break;
     case IDC_BP_ADD: add_breakpoint(d); break;
     case IDC_BP_REMOVE:
     case IDC_BP_ENABLE: {
@@ -2226,7 +2027,7 @@ static LRESULT CALLBACK dbg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         break;
     case WM_CTLCOLORSTATIC:
         if ((HWND)lp == d->status || (HWND)lp == d->disasm_hint || (HWND)lp == d->fuji_note ||
-            (HWND)lp == d->vstatus || (HWND)lp == d->ef_status || (HWND)lp == d->ef_none) {
+            (HWND)lp == d->vstatus || (HWND)lp == d->screen_status) {
             SetTextColor((HDC)wp, GetSysColor(COLOR_GRAYTEXT));
             SetBkColor((HDC)wp, GetSysColor(COLOR_BTNFACE));
             return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
@@ -2250,9 +2051,7 @@ static LRESULT CALLBACK dbg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         DestroyAcceleratorTable(d->accel);
         free(d->vimg.px);
         free(d->palimg.px);
-        free(d->ef_pv.img.px);
         for (i = 0; i < NSHEETS; i++) free(d->sheet_pv[i].img.px);
-        for (i = 0; i < OBJ_COUNT; i++) free(d->obj_bm[i]);
         free(d);
         g_debugger = NULL;
         return 0;
@@ -2276,8 +2075,9 @@ static void register_class(HINSTANCE inst, const wchar_t *name, WNDPROC proc, HB
     RegisterClassW(&wc);
 }
 
+
 /* ARC_DEBUGGER_TAB: a page number, or its name (prompt, cpu, disassembly,
- * video, ef9340, io, breakpoints, cart, fujinet). */
+ * video, io, breakpoints, cart, fujinet). */
 static int page_from_env(void)
 {
     const char *tab = getenv("ARC_DEBUGGER_TAB");
@@ -2325,12 +2125,12 @@ void arc_debugger_show(HWND parent, arcsession *session)
     d->inst = inst;
     d->fuji_count = -1;
     d->vsec = SEC_OBJECTS;
-    d->ef_sec = EFSEC_ABSENT;
+    d->screen_hover = -1;
     d->dpi = arc_window_dpi(parent);
-    for (i = 0; i < 16; i++) d->pal[i] = 0x00808080;
+    for (i = 0; i < 8; i++) d->pal[i] = 0x00808080;
     g_debugger = d;
 
-    d->hwnd = CreateWindowExW(0, L"ArcDebuggerWindow", L"Debugger", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+    d->hwnd = CreateWindowExW(0, L"ArcDebuggerWindow", L"FujiNet Go Arcadia 2001 Debugger", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                               CW_USEDEFAULT, CW_USEDEFAULT, 1180, 820, NULL, NULL, inst, NULL);
     if (!d->hwnd) { free(d); g_debugger = NULL; return; }
 
@@ -2354,6 +2154,11 @@ void arc_debugger_show(HWND parent, arcsession *session)
     d->accel = CreateAcceleratorTableW(accels, 7);
 
     d->page = page_from_env();
+    {   /* ARC_DEBUGGER_SECTION: the Video tab's section (0-4), for scripted checks */
+        const char *sec = getenv("ARC_DEBUGGER_SECTION");
+        if (sec && *sec >= '0' && *sec < '0' + SEC_COUNT) d->vsec = *sec - '0';
+        SendMessageW(d->vtabs, TCM_SETCURSEL, (WPARAM)d->vsec, 0);
+    }
     SendMessageW(d->tabs, TCM_SETCURSEL, (WPARAM)d->page, 0);
     apply_visibility(d);
     layout(d);
@@ -2378,5 +2183,6 @@ int arc_debugger_visible(void)
 void arc_debugger_toggle(HWND parent, arcsession *session)
 {
     if (arc_debugger_visible()) detach_and_hide(g_debugger);
+
     else arc_debugger_show(parent, session);
 }

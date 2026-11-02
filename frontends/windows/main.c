@@ -59,16 +59,14 @@
 #endif
 
 static arcsession *g_session;
-static HWND g_hwnd, g_display, g_statusbar, g_banner_text, g_banner_import;
+static HWND g_hwnd, g_display, g_statusbar;
 static int g_aspect = 1, g_smooth = 0, g_fullscreen = 0;    /* the TV's 4:3 on */
-static int g_banner_shown;
 static WINDOWPLACEMENT g_placement;
 static int g_sysact_down[ARC_SYSACT_COUNT];
 static unsigned g_pad_generation;
 static char g_notice[160];
 static DWORD g_notice_until;
 static HBRUSH g_accent_brush;
-static int g_bios_alert;         /* needs_bios as last seen: alert once per rise */
 
 static void update_status(void);
 static void sync_menu_checks(void);
@@ -99,45 +97,7 @@ static void notice(const char *text)
     update_status();
 }
 
-/* A question with two buttons of our own words. Task dialogs need the
- * version 6 common controls (the manifest asks for them); looked up rather
- * than imported, so a process without them still gets a plain Yes/No. 1 for
- * the first button. */
-static int ask(HWND owner, const char *text, const char *title, const char *yes, const char *no)
-{
-    typedef HRESULT (WINAPI *task_fn)(const TASKDIALOGCONFIG *, int *, int *, BOOL *);
-    HMODULE cc = LoadLibraryA("comctl32.dll");
-    task_fn fn = cc ? (task_fn)(void (*)(void))GetProcAddress(cc, "TaskDialogIndirect") : NULL;
-    if (fn) {
-        wchar_t *wt = arc_wide_dup(text), *wc = arc_wide_dup(title);
-        wchar_t *wy = arc_wide_dup(yes), *wn = arc_wide_dup(no);
-        TASKDIALOG_BUTTON buttons[2];
-        TASKDIALOGCONFIG cfg;
-        int chosen = 0;
-        HRESULT hr;
-        memset(&cfg, 0, sizeof cfg);
-        buttons[0].nButtonID = 1001;
-        buttons[0].pszButtonText = wy;
-        buttons[1].nButtonID = 1002;
-        buttons[1].pszButtonText = wn;
-        cfg.cbSize = sizeof cfg;
-        cfg.hwndParent = owner;
-        cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
-        cfg.pszWindowTitle = wc;
-        cfg.pszMainIcon = TD_INFORMATION_ICON;
-        cfg.pszContent = wt;
-        cfg.cButtons = 2;
-        cfg.pButtons = buttons;
-        cfg.nDefaultButton = 1001;
-        hr = fn(&cfg, &chosen, NULL, NULL);
-        free(wt); free(wc); free(wy); free(wn);
-        if (SUCCEEDED(hr))
-            return chosen == 1001;
-    }
-    return arc_message(owner, text, title, MB_ICONINFORMATION | MB_YESNO) == IDYES;
-}
-
-/* ---- layout: banner, picture, status bar --------------------------------------- */
+/* ---- layout: picture, status bar --------------------------------------- */
 
 static int statusbar_height(void)
 {
@@ -147,48 +107,16 @@ static int statusbar_height(void)
     return r.bottom - r.top;
 }
 
-/* The banner over the picture, the picture above the status bar. */
+/* The picture fills the client area above the status bar. */
 static void layout_children(void)
 {
     RECT rc;
-    int top = 0, bottom;
+    int bottom;
     if (!g_display) return;
     GetClientRect(g_hwnd, &rc);
     bottom = rc.bottom - statusbar_height();
     if (bottom < 0) bottom = 0;
-    if (g_banner_shown && !g_fullscreen) {
-        const int bh = S(34), bw = S(150);
-        MoveWindow(g_banner_text, S(10), 0, rc.right - bw - S(24) > 40 ? rc.right - bw - S(24) : 40, bh, TRUE);
-        MoveWindow(g_banner_import, rc.right - bw - S(8), S(4), bw, bh - S(8), TRUE);
-        top = bh;
-    }
-    MoveWindow(g_display, 0, top, rc.right, bottom > top ? bottom - top : 0, TRUE);
-}
-
-/* What is missing for the console as it runs now: the 8244's character set
- * (text is blank), or the speech ROMs. A game that needs the BIOS is an
- * alert, not a banner. */
-static void update_banner(void)
-{
-    const unsigned missing = arcsession_missing(g_session);
-    const char *text = NULL;
-    int show;
-    if (missing & ARC_MISSING_FONT)
-        text = "Character set not imported \xe2\x80\x94 text will be blank. Import BIOS...";
-    else if (missing & ARC_MISSING_VOICE)
-        text = "The Voice's speech ROMs are not imported \xe2\x80\x94 speech is silent. Import BIOS...";
-    show = text != NULL;
-    if (text) {
-        wchar_t cur[256], *w = arc_wide_dup(text);
-        GetWindowTextW(g_banner_text, cur, 256);
-        if (w && wcscmp(cur, w) != 0) SetWindowTextW(g_banner_text, w);
-        free(w);
-    }
-    if (show == g_banner_shown) return;
-    g_banner_shown = show;
-    ShowWindow(g_banner_text, show && !g_fullscreen ? SW_SHOW : SW_HIDE);
-    ShowWindow(g_banner_import, show && !g_fullscreen ? SW_SHOW : SW_HIDE);
-    layout_children();
+    MoveWindow(g_display, 0, 0, rc.right, bottom, TRUE);
 }
 
 /* ---- the machine ----------------------------------------------------------------- */
@@ -202,7 +130,6 @@ static void restart_session(void)
         arc_message(g_hwnd, arcsession_last_error(g_session), "Could not start", MB_ICONWARNING | MB_OK);
     arc_controllers_window_refresh();
     update_status();
-    update_banner();
 }
 
 static void run_sysaction(int sa)
@@ -219,70 +146,18 @@ static void run_sysaction(int sa)
     }
 }
 
-/* The ROMs changed under a console that was missing some: what the machine
- * is missing is a snapshot taken at power-up, so the session restarts to see
- * the new ones -- the cartridge it runs again, or CONFIG. */
-static void apply_new_roms(unsigned was_missing)
-{
-    arc_prefs_roms_changed();
-    if (was_missing)
-        restart_session();
-    arc_controllers_window_refresh();
-    update_status();
-    update_banner();
-}
-
-/* Import BIOS from the menu, the banner or an alert: files or a folder.
- * Returns 1 when something was imported. */
-static int import_bios(HWND owner, int folder)
-{
-    const unsigned was_missing = arcsession_missing(g_session);
-    const int n = arc_import_bios(owner, g_session, folder);
-    if (n > 0) apply_new_roms(was_missing);
-    return n > 0;
-}
-
-/* A game or a Voice game the console cannot run yet: the session says so
- * and the message names Import BIOS when importing fixes it. */
-static int import_would_fix(const char *err)
-{
-    return err && strstr(err, "Import BIOS") != NULL;
-}
-
 static void open_cart(const char *path)
 {
-    char again[1024];
-    int tries;
-    snprintf(again, sizeof again, "%s", path);
-    for (tries = 0; tries < 3; tries++) {
-        char msg[700];
-        if (arcsession_load_cart(g_session, again) == 0) break;
-        snprintf(msg, sizeof msg, "%s", arcsession_last_error(g_session));
-        if (!import_would_fix(msg)) {
-            arc_message(g_hwnd, msg, "Could not open", MB_ICONWARNING | MB_OK);
-            break;
-        }
-        /* the refused cartridge is tried again once the ROMs are in */
-        if (!ask(g_hwnd, msg, "BIOS needed", "Import BIOS...", "Not Now") || !import_bios(g_hwnd, 0))
-            break;
-    }
+    if (arcsession_load_cart(g_session, path) != 0)
+        arc_message(g_hwnd, arcsession_last_error(g_session), "Could not open", MB_ICONWARNING | MB_OK);
     update_status();
-    update_banner();
 }
 
-/* A dropped file, or one named on the command line: a ROM (a BIOS, a
- * character set, a zip of them) is imported, a cartridge opened, anything
- * else copied to FujiNet's SD folder for CONFIG to mount. */
+/* A dropped file, or one named on the command line: a cartridge is opened,
+ * anything else copied to FujiNet's SD folder for CONFIG to mount. */
 static void load_media(const char *path)
 {
     char dest[1024];
-    if (arcsession_media_is_rom(path)) {
-        const unsigned was_missing = arcsession_missing(g_session);
-        const char *one[1];
-        one[0] = path;
-        if (arc_import_roms(g_hwnd, g_session, one, 1) > 0) apply_new_roms(was_missing);
-        return;
-    }
     if (arcsession_media_is_cartridge(path)) { open_cart(path); return; }
     if (arcsession_import_media(g_session, path, dest, sizeof dest) != 0) {
         arc_message(g_hwnd, arcsession_last_error(g_session), "Import failed", MB_ICONWARNING | MB_OK);
@@ -290,26 +165,6 @@ static void load_media(const char *path)
     }
     arc_message(g_hwnd, "Copied to FujiNet's SD folder. Mount it from the CONFIG client.", "Imported",
                MB_ICONINFORMATION | MB_OK);
-}
-
-/* The stand-in met a game (CONFIG booted one from the network with no BIOS
- * imported): say so once per occurrence, and offer the import, after which
- * the console boots on the real BIOS. Polled from the status timers; the
- * latch keeps the alert from coming back while it is still up (a modal loop
- * lets the timers keep firing). */
-static void poll_needs_bios(void)
-{
-    if (!arcsession_needs_bios(g_session)) { g_bios_alert = 0; return; }
-    if (g_bios_alert) return;
-    g_bios_alert = 1;
-    if (!ask(g_hwnd,
-             "This cartridge needs the Arcadia 2001 BIOS.\n\n"
-             "Arcadia 2001 games call routines in the BIOS, so only the real one runs them; "
-             "CONFIG and FujiNet apps run without it.\n\n"
-             "Machine > Import BIOS... adds your own dump.",
-             "BIOS needed", "Import BIOS...", "Not Now"))
-        return;
-    import_bios(g_hwnd, 0);
 }
 
 /* ---- status ------------------------------------------------------------------------- */
@@ -434,8 +289,6 @@ static void build_menu(HWND hwnd)
     AppendMenuA(machine, MF_STRING, IDM_OPEN, "&Open Cartridge...\tCtrl+O");
     AppendMenuA(machine, MF_STRING, IDM_EJECT, "&Eject Cartridge");
     AppendMenuA(machine, MF_STRING, IDM_IMPORT_SD, "&Import Cartridge to SD...");
-    AppendMenuA(machine, MF_STRING, IDM_IMPORT_BIOS, "Import &BIOS...");
-    AppendMenuA(machine, MF_STRING, IDM_IMPORT_FOLDER, "Import BIOS from a &Folder...");
     AppendMenuA(machine, MF_SEPARATOR, 0, NULL);
     AppendMenuA(machine, MF_STRING, IDM_PAUSE, "&Pause");
     AppendMenuA(machine, MF_STRING, IDM_RESET, "&Reset");
@@ -478,11 +331,6 @@ static void read_display_settings(void)
     sync_menu_checks();
 }
 
-static void prefs_roms_changed(void)
-{
-    update_banner();
-}
-
 static void prefs_closed(int dirty)
 {
     if (!dirty) return;
@@ -492,7 +340,7 @@ static void prefs_closed(int dirty)
 
 static void show_prefs(void)
 {
-    static const arc_prefs_hooks hooks = { read_display_settings, prefs_roms_changed, prefs_closed };
+    static const arc_prefs_hooks hooks = { read_display_settings, prefs_closed };
     arc_prefs_show(g_hwnd, g_session, &hooks);
 }
 
@@ -524,9 +372,9 @@ static void show_about(void)
 {
     arc_message(g_hwnd,
         APP_TITLE " " ARC_VERSION_STRING "\n"
-        "Magnavox Arcadia 2001 and Philips Videopac with built-in FujiNet\n\n"
-        "The emulator is MAME's Arcadia 2001 / Videopac (Intel 8048, the 8244/8245 video\n"
-        "chip, the EF9340/41 and The Voice's SP0256; BSD-3-Clause), transposed to C.\n"
+        "Emerson Arcadia 2001 (and its clones) with built-in FujiNet\n\n"
+        "The emulator is MAME's Arcadia 2001 (Signetics 2650, 2637 UVI; BSD-3-Clause\n"
+        "CPU, GPL-2.0+ driver), transposed to C.\n"
         "The FujiNet firmware and the cartridge: Thomas Cherryhomes and the FujiNet\n"
         "contributors.\n\n"
         "Copyright \xc2\xa9 2026 Thomas Cherryhomes \xe2\x80\x94 GPL-3.0-or-later\n"
@@ -550,8 +398,6 @@ static void toggle_fullscreen(HWND hwnd)
             SetWindowLong(hwnd, GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
             SetMenu(hwnd, NULL);
             ShowWindow(g_statusbar, SW_HIDE);
-            ShowWindow(g_banner_text, SW_HIDE);
-            ShowWindow(g_banner_import, SW_HIDE);
             g_fullscreen = 1;
             SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
                          mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
@@ -562,10 +408,6 @@ static void toggle_fullscreen(HWND hwnd)
         build_menu(hwnd);
         ShowWindow(g_statusbar, SW_SHOW);
         g_fullscreen = 0;
-        if (g_banner_shown) {
-            ShowWindow(g_banner_text, SW_SHOW);
-            ShowWindow(g_banner_import, SW_SHOW);
-        }
         SetWindowPlacement(hwnd, &g_placement);
         SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
@@ -587,14 +429,6 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_DRAWITEM:
         if (wp == IDC_STATUSBAR) { draw_status_dot((const DRAWITEMSTRUCT *)lp); return TRUE; }
-        break;
-    case WM_CTLCOLORSTATIC:
-        if ((HWND)lp == g_banner_text) {
-            SetTextColor((HDC)wp, RGB(255, 255, 255));
-            SetBkColor((HDC)wp, RGB((ARCSESSION_ACCENT_RGB >> 16) & 0xff, (ARCSESSION_ACCENT_RGB >> 8) & 0xff,
-                                    ARCSESSION_ACCENT_RGB & 0xff));
-            return (LRESULT)g_accent_brush;
-        }
         break;
     case WM_INITMENUPOPUP:
         sync_machine_menu();
@@ -674,7 +508,6 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_TIMER:
         if (wp == IDT_STATUS) {
             update_status();
-            update_banner();
         } else if (wp == IDT_SYSACT) {
             int sa;
             while (arcsession_sysaction_take(g_session, &sa)) {
@@ -682,7 +515,6 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 update_status();
             }
             poll_gamepads();
-            poll_needs_bios();
         }
         return 0;
 
@@ -693,16 +525,13 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (arc_pick_cart(hwnd, "Open Cartridge", path, sizeof path)) open_cart(path);
             return 0;
         }
-        case IDM_EJECT: arcsession_eject(g_session); update_status(); update_banner(); return 0;
+        case IDM_EJECT: arcsession_eject(g_session); update_status(); return 0;
         case IDM_IMPORT_SD: arc_import_carts(hwnd, g_session); return 0;
-        case IDM_IMPORT_BIOS:
-        case IDC_BANNER_IMPORT: import_bios(hwnd, 0); return 0;
-        case IDM_IMPORT_FOLDER: import_bios(hwnd, 1); return 0;
         case IDM_PAUSE: arcsession_set_paused(g_session, !arcsession_is_paused(g_session)); return 0;
         /* the console's RESET key: the session holds it for a few frames, as
          * a finger would -- the console samples it once a frame */
         case IDM_RESET: arcsession_reset(g_session); update_status(); return 0;
-        case IDM_RESET_CONFIG: run_sysaction(ARC_SYSACT_RESET_CONFIG); update_status(); update_banner(); return 0;
+        case IDM_RESET_CONFIG: run_sysaction(ARC_SYSACT_RESET_CONFIG); update_status(); return 0;
         case IDM_CONTROLLERS: arc_controllers_window_toggle(hwnd, g_session); return 0;
         case IDM_DEBUGGER: arc_debugger_toggle(hwnd, g_session); return 0;
         case IDM_FULLSCREEN: toggle_fullscreen(hwnd); return 0;
@@ -865,15 +694,6 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         int scaled[2] = { arc_scale(parts[0], arc_window_dpi(g_hwnd)), -1 };
         SendMessageA(g_statusbar, SB_SETPARTS, 2, (LPARAM)scaled);
     }
-    g_banner_text = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | SS_LEFT | SS_CENTERIMAGE | SS_NOPREFIX,
-                                    0, 0, 10, 10, g_hwnd, (HMENU)(INT_PTR)IDC_BANNER_TEXT, inst, NULL);
-    g_banner_import = CreateWindowExW(0, L"BUTTON", L"Import BIOS...", WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON,
-                                      0, 0, 10, 10, g_hwnd, (HMENU)(INT_PTR)IDC_BANNER_IMPORT, inst, NULL);
-    {
-        HFONT ui = arc_make_font(arc_window_dpi(g_hwnd), 0, FW_NORMAL, NULL);
-        SendMessageW(g_banner_text, WM_SETFONT, (WPARAM)ui, TRUE);
-        SendMessageW(g_banner_import, WM_SETFONT, (WPARAM)ui, TRUE);
-    }
     g_display = arc_display_create(g_hwnd, g_session);
     arc_display_set_options(g_aspect, g_smooth);
     layout_children();
@@ -881,9 +701,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 
     arcsession_default_opts(g_session, &opts);
     if (have_media) {
-        /* a cartridge boots in place of the remembered one; a ROM or anything
+        /* a cartridge boots in place of the remembered one; anything
          * else is routed like a dropped file once the machine is up */
-        if (!arcsession_media_is_rom(media) && arcsession_media_is_cartridge(media))
+        if (arcsession_media_is_cartridge(media))
             opts.cart_path = media;
         else
             later = media;
@@ -891,14 +711,13 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     if (arcsession_start(g_session, &opts) != 0)
         arc_message(g_hwnd, arcsession_last_error(g_session), APP_TITLE, MB_ICONWARNING | MB_OK);
     else if (opts.cart_path && !*arcsession_cart_path(g_session))
-        later = media;      /* the session booted CONFIG instead: say why, and offer the import */
+        later = media;      /* the session booted CONFIG instead: open_cart says why */
     if (later) load_media(later);
 
     g_pad_generation = arcsession_gamepad_generation(g_session);
     SetTimer(g_hwnd, IDT_STATUS, 1000, NULL);
     SetTimer(g_hwnd, IDT_SYSACT, 100, NULL);
     update_status();
-    update_banner();
 
     if (env_on("ARC_OPEN_CONTROLLERS")) arc_controllers_window_toggle(g_hwnd, g_session);
     if (env_on("ARC_OPEN_DEBUGGER")) arc_debugger_show(g_hwnd, g_session);

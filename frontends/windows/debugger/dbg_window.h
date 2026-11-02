@@ -1,6 +1,6 @@
 /*
- * The Win32 debugger window over the MCS-48 / 8244 debugger engine
- * (arcdebug.h): nine tabs -- Prompt, CPU & RAM, Disassembly, Video, EF9340,
+ * The Win32 debugger window over the 2650 / UVI debugger engine
+ * (arcdebug.h): eight tabs -- Prompt, CPU & RAM, Disassembly, Video,
  * Sound & I/O, Breakpoints, Cart, FujiNet.
  *
  * Copyright (C) 2026 Thomas Cherryhomes

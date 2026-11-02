@@ -1,10 +1,10 @@
 /*
- * The Preferences window: a tab per page -- Machine, ROMs, Display, Audio,
- * Input, FujiNet -- over the same settings keys as the other frontends'
+ * The Preferences window: a tab per page -- Machine, Display, Audio, Input,
+ * FujiNet -- over the same settings keys as the other frontends'
  * Preferences, so a machine configured in one comes up the same in another.
  *
  * The picture, the volume, the analog sticks and the gamepad assignments
- * apply at once. The machine (which BIOS runs, the Voice) and the host
+ * apply at once. The machine (which console) and the host
  * options (audio, gamepads, FujiNet) wait for the window to close, which
  * hands the main window one "dirty" flag so it power-cycles once for the lot.
  *
@@ -21,7 +21,6 @@
 #include <commctrl.h>
 #include <shellapi.h>
 
-#include "import.h"
 #include "resource.h"
 
 #ifndef EM_SETCUEBANNER
@@ -31,18 +30,17 @@
 #define PREFS_CLASS "FujiNetGoArcPrefs"
 #define PREFS_STYLE (WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN)
 #define MAX_ITEMS 160
-#define MAX_ROMS 16
 
 /* Layout, in 96-dpi units. */
 #define CW 540              /* client width */
 #define M 14                /* margin */
-#define PAGE_H 372          /* the tallest page: ROMs */
+#define PAGE_H 250          /* the tallest page: Input */
 #define ROW 22
 
-enum { PG_MACHINE, PG_ROMS, PG_DISPLAY, PG_AUDIO, PG_INPUT, PG_FUJINET, PG_COUNT };
+enum { PG_MACHINE, PG_DISPLAY, PG_AUDIO, PG_INPUT, PG_FUJINET, PG_COUNT };
 
 enum {
-    IDC_TABS = 100, IDC_MACHINE, IDC_USE_BIOS, IDC_VOICE, IDC_IMPORT, IDC_IMPORT_FOLDER,
+    IDC_TABS = 100, IDC_MACHINE,
     IDC_ASPECT, IDC_SMOOTH, IDC_AUDIO, IDC_VOLUME, IDC_GAMEPAD, IDC_ANALOG, IDC_PAD_LIST,
     IDC_PAD_PORT, IDC_FUJINET, IDC_EXTERNAL, IDC_EXT_ADDR, IDC_WEBUI, IDC_CLOSE
 };
@@ -57,7 +55,7 @@ typedef struct {
 } item;
 
 static HWND g_win, g_tabs, g_close;
-static HWND g_machine_status[3], g_rom_state[MAX_ROMS], g_pad_list, g_pad_port, g_ext_addr;
+static HWND g_machine_note, g_pad_list, g_pad_port, g_ext_addr;
 static HWND g_machine_combo;
 static item g_items[MAX_ITEMS];
 static int g_nitems;
@@ -67,9 +65,7 @@ static arcsession *g_session;
 static arc_prefs_hooks g_hooks;
 static int g_dirty;
 static int g_page;
-static int g_nroms;
 static unsigned g_pad_seen;
-static int g_machine_at_open;
 
 static int S(int v) { return arc_scale(v, g_dpi); }
 
@@ -139,12 +135,6 @@ static void set_text(HWND h, const char *utf8)
     free(w);
 }
 
-static void to_backslashes(char *p)
-{
-    for (; *p; p++)
-        if (*p == '/') *p = '\\';
-}
-
 /* ---- the machine page ---------------------------------------------------------- */
 
 static int machine_selected(void)
@@ -153,28 +143,15 @@ static int machine_selected(void)
     return sel >= 0 && sel < ARC_MACHINE_COUNT ? sel : ARC_MACHINE_ARCADIA;
 }
 
-/* What is imported for the machine the combo shows. */
+/* The PAL clone is not verified against MAME (which runs every clone at
+ * NTSC): say so under the combo. */
 static void refresh_machine(void)
 {
-    const int m = machine_selected();
-    char line[300];
-    snprintf(line, sizeof line, "BIOS: %s", arcsession_have_bios(g_session, m)
-             ? "imported" : "not imported \xe2\x80\x94 CONFIG and FujiNet apps run without it; games need it");
-    set_text(g_machine_status[0], line);
-    snprintf(line, sizeof line, "Character set: %s", arcsession_have_font(g_session, m)
-             ? "imported" : "not imported \xe2\x80\x94 text is blank until it is");
-    set_text(g_machine_status[1], line);
-    snprintf(line, sizeof line, "The Voice's speech ROMs: %s", arcsession_have_voice(g_session)
-             ? "imported" : "not imported");
-    set_text(g_machine_status[2], line);
-}
-
-static void refresh_roms(void)
-{
-    int i;
-    for (i = 0; i < g_nroms; i++)
-        set_text(g_rom_state[i], arcsession_rom_item_available(g_session, i) ? "Imported" : "Not imported");
-    if (g_machine_combo) refresh_machine();
+    set_text(g_machine_note,
+             machine_selected() == ARC_MACHINE_ARCADIA_PAL
+             ? "PAL clone (4.433 MHz / 5, 50 Hz, 312 lines): not verified against MAME, which runs every clone at NTSC."
+             : "NTSC: Signetics 2650 at 0.895 MHz, 60 Hz. There is no BIOS and no ROM to import: "
+               "games are cartridge files (Machine > Open Cartridge).");
 }
 
 static void build_machine(void)
@@ -190,59 +167,9 @@ static void build_machine(void)
         const int cur = arcsession_get_int(g_session, "machine", ARC_MACHINE_ARCADIA);
         SendMessageA(g_machine_combo, CB_SETCURSEL, (WPARAM)(cur >= 0 && cur < ARC_MACHINE_COUNT ? cur : 0), 0);
     }
-    y += 36;
-    checkbox(PG_MACHINE, IDC_USE_BIOS, "Use the imported BIOS (off: always the stand-in, which runs CONFIG and FujiNet apps only)",
-             M, y, CW - 2 * M, arcsession_get_int(g_session, "use_bios", 1));
-    y += 30;
-    checkbox(PG_MACHINE, IDC_VOICE, "The Voice in front of the cartridge", M, y, CW - 2 * M,
-             arcsession_get_int(g_session, "voice", 0));
     y += 40;
-    for (m = 0; m < 3; m++) {
-        g_machine_status[m] = label(PG_MACHINE, "", M, y, CW - 2 * M, 18);
-        y += 24;
-    }
-    y += 10;
-    button(PG_MACHINE, IDC_IMPORT, "Import BIOS...", M, y, 130);
+    g_machine_note = label(PG_MACHINE, "", M, y, CW - 2 * M, 54);
     refresh_machine();
-}
-
-/* ---- the ROMs page -------------------------------------------------------------- */
-
-static void build_roms(void)
-{
-    int y = 6, i;
-    const char *last = NULL;
-    char path[1100];
-    HWND h;
-
-    label(PG_ROMS, "The Arcadia 2001 BIOS, the video chips' character sets and The Voice's speech ROMs are "
-                   "not part of the app. Import your own dumps from files, a zip (MAME's videopac.zip and "
-                   "i8244.zip work) or a folder; they are recognised by size and checksum, whatever they "
-                   "are named. Kept in:",
-          M, y, CW - 2 * M, 66);
-    y += 70;
-    snprintf(path, sizeof path, "%s", arcsession_roms_path(g_session));
-    to_backslashes(path);
-    h = add(L"STATIC", path, SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, PG_ROMS, 0, M, y, CW - 2 * M, 18);
-    (void)h;
-    y += 26;
-    button(PG_ROMS, IDC_IMPORT, "Import BIOS...", M, y, 130);
-    button(PG_ROMS, IDC_IMPORT_FOLDER, "Import from a Folder...", M + 138, y, 180);
-    y += 38;
-    g_nroms = arcsession_rom_item_count();
-    if (g_nroms > MAX_ROMS) g_nroms = MAX_ROMS;
-    for (i = 0; i < g_nroms; i++) {
-        const arc_rom_item *it = arcsession_rom_item(i);
-        if (!last || strcmp(last, it->group) != 0) {
-            if (last) y += 6;
-            heading(PG_ROMS, it->group, y);
-            y += 20;
-            last = it->group;
-        }
-        label(PG_ROMS, it->name, M + 14, y, CW - 2 * M - 14 - 110, 18);
-        g_rom_state[i] = add(L"STATIC", "", SS_RIGHT | SS_NOPREFIX, PG_ROMS, 0, CW - M - 110, y, 110, 18);
-        y += 20;
-    }
 }
 
 /* ---- display, audio -------------------------------------------------------------- */
@@ -348,7 +275,7 @@ static void build_fujinet(void)
             ES_AUTOHSCROLL | WS_TABSTOP | WS_BORDER, PG_FUJINET, IDC_EXT_ADDR, M + 96, y, 240, 24);
     g_ext_addr = e;
     if (e) {
-        SendMessageW(e, EM_SETCUEBANNER, FALSE, (LPARAM)L"127.0.0.1:11520");
+        SendMessageW(e, EM_SETCUEBANNER, FALSE, (LPARAM)L"127.0.0.1:11522");
         EnableWindow(e, arcsession_get_int(g_session, "fujinet_external", 0) != 0);
     }
     y += 40;
@@ -432,19 +359,6 @@ static void open_web_ui(void)
     ShellExecuteA(g_win, "open", arcsession_fujinet_webui_url(g_session), NULL, NULL, SW_SHOWNORMAL);
 }
 
-static void do_import(int folder)
-{
-    const int n = arc_import_bios(g_win, g_session, folder);
-    if (n < 0) return;
-    refresh_roms();
-    if (n > 0) {
-        /* a console that can run its BIOS now boots it at the power cycle
-         * this window ends with */
-        g_dirty = 1;
-        if (g_hooks.roms_changed) g_hooks.roms_changed();
-    }
-}
-
 /* The external address is saved, and only if it is one; an invalid one with
  * the option on keeps the window open and says so when interactive. */
 static int commit_address(int interactive)
@@ -463,7 +377,7 @@ static int commit_address(int interactive)
     if (SendDlgItemMessageA(g_win, IDC_EXTERNAL, BM_GETCHECK, 0, 0) == BST_CHECKED &&
         arcsession_parse_hostport(addr, host, sizeof host, &port) != 0) {
         if (!interactive) return 1;
-        arc_message(g_win, "That is not an address:port.\n\nExample: 127.0.0.1:11520", "External FujiNet",
+        arc_message(g_win, "That is not an address:port.\n\nExample: 127.0.0.1:11522", "External FujiNet",
                    MB_ICONWARNING | MB_OK);
         TabCtrl_SetCurSel(g_tabs, PG_FUJINET);
         show_page(PG_FUJINET);
@@ -478,19 +392,6 @@ static int commit_address(int interactive)
     return 1;
 }
 
-/* The G7400 does not start without its own BIOS: closing with it chosen and
- * no BIOS in leaves the console as it was when the window opened. */
-static void keep_startable_machine(int say)
-{
-    const int m = arcsession_get_int(g_session, "machine", ARC_MACHINE_ARCADIA);
-    if (m == ARC_MACHINE_VIDEOPAC_PLUS && !arcsession_have_bios(g_session, m)) {
-        arcsession_set_int(g_session, "machine", g_machine_at_open);
-        if (say)
-            arc_message(g_win, "The Videopac+ G7400 has no BIOS imported, so the console stays as it was.",
-                       "Videopac+ G7400", MB_ICONINFORMATION | MB_OK);
-    }
-}
-
 static void on_command(int id, int code)
 {
     switch (id) {
@@ -502,16 +403,8 @@ static void on_command(int id, int code)
                 g_dirty = 1;
             }
             refresh_machine();
-            if (!arcsession_have_bios(g_session, m) && m == ARC_MACHINE_VIDEOPAC_PLUS)
-                arc_message(g_win, "The Videopac+ G7400 needs its BIOS: Machine > Import BIOS...\n\n"
-                                  "Import it here (the ROMs tab) before closing, or the console stays as it was.",
-                           "Videopac+ G7400", MB_ICONINFORMATION | MB_OK);
         }
         break;
-    case IDC_USE_BIOS: setting_from_checkbox(id, "use_bios", 1); break;
-    case IDC_VOICE: setting_from_checkbox(id, "voice", 0); refresh_machine(); break;
-    case IDC_IMPORT: do_import(0); break;
-    case IDC_IMPORT_FOLDER: do_import(1); break;
     case IDC_ASPECT:
         if (code == CBN_SELCHANGE) {
             arcsession_set_int(g_session, "aspect",
@@ -588,15 +481,14 @@ static LRESULT CALLBACK prefs_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_CLOSE:
         if (!commit_address(1)) return 0;
-        keep_startable_machine(1);
         DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY: {
         const int dirty = g_dirty;
         KillTimer(hwnd, IDT_PADS);
         g_win = NULL;
-        g_tabs = g_close = g_pad_list = g_pad_port = g_ext_addr = g_machine_combo = NULL;
-        g_nitems = g_nroms = 0;
+        g_tabs = g_close = g_pad_list = g_pad_port = g_ext_addr = g_machine_combo = g_machine_note = NULL;
+        g_nitems = 0;
         g_dirty = 0;
         if (g_font) DeleteObject(g_font);
         if (g_bold) DeleteObject(g_bold);
@@ -613,7 +505,7 @@ static LRESULT CALLBACK prefs_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 void arc_prefs_show(HWND parent, arcsession *session, const arc_prefs_hooks *hooks)
 {
     static int registered;
-    static const char *const names[PG_COUNT] = { "Machine", "ROMs", "Display", "Audio", "Input", "FujiNet" };
+    static const char *const names[PG_COUNT] = { "Machine", "Display", "Audio", "Input", "FujiNet" };
     HINSTANCE inst = GetModuleHandleA(NULL);
     INITCOMMONCONTROLSEX icc = { sizeof icc, ICC_TAB_CLASSES | ICC_BAR_CLASSES };
     int i;
@@ -640,7 +532,6 @@ void arc_prefs_show(HWND parent, arcsession *session, const arc_prefs_hooks *hoo
     g_dpi = arc_window_dpi(parent);
     g_nitems = 0;
     g_dirty = 0;
-    g_machine_at_open = arcsession_get_int(session, "machine", ARC_MACHINE_ARCADIA);
     g_win = CreateWindowExW(WS_EX_CONTROLPARENT, L"" PREFS_CLASS, L"Preferences", PREFS_STYLE,
                             CW_USEDEFAULT, CW_USEDEFAULT, 100, 100, parent, NULL, inst, NULL);
     if (!g_win) return;
@@ -657,7 +548,6 @@ void arc_prefs_show(HWND parent, arcsession *session, const arc_prefs_hooks *hoo
         free(w);
     }
     build_machine();
-    build_roms();
     build_display();
     build_audio();
     build_input();
@@ -669,7 +559,6 @@ void arc_prefs_show(HWND parent, arcsession *session, const arc_prefs_hooks *hoo
     SetWindowPos(g_tabs, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
     make_fonts();
-    refresh_roms();
     refresh_pad_list();
     TabCtrl_SetCurSel(g_tabs, PG_MACHINE);
     show_page(PG_MACHINE);
@@ -683,13 +572,7 @@ void arc_prefs_abandon(void)
     if (!g_win) return;
     g_hooks.closed = NULL;
     commit_address(0);
-    keep_startable_machine(0);
     DestroyWindow(g_win);
-}
-
-void arc_prefs_roms_changed(void)
-{
-    if (g_win) refresh_roms();
 }
 
 void arc_prefs_gamepads_changed(void)

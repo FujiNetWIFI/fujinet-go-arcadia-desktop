@@ -67,7 +67,11 @@ int main(void)
         return 77;
     }
     if (getenv("ARC_CART_SYNC"))
+#ifdef _WIN32
+        _putenv("FUJINET_ASYNC=0");
+#else
         setenv("FUJINET_ASYNC", "0", 1);
+#endif
 
     test_tmpdir(cfg, sizeof cfg, "nbcfg");
     test_tmpdir(data, sizeof data, "nbdata");

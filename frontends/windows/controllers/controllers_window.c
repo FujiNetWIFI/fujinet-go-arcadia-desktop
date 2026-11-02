@@ -1,31 +1,34 @@
 /*
- * The Win32 Controllers window: the Arcadia 2001's membrane keyboard drawn from
- * the session's layout table (so every frontend shows the same keys: the
- * Videopac+ G7400's bigger one when that machine is selected), both
- * joysticks drawn like the console's, the gamepads and which stick each one
- * drives, and Map mode. The GNOME window's behaviour, in GDI.
+ * The Win32 Controllers window: the Arcadia 2001 drawn like the console --
+ * a charcoal case with a wood strip, the two 12-key keypads and the START /
+ * OPTION / SELECT / RESET buttons from the session's layout table (so every
+ * frontend shows the same keys), a disc and a side fire button for each
+ * hand controller, the gamepads and which controller each one drives, and
+ * Map mode.
  *
- * Keys and stick controls are driven by WM_LBUTTONDOWN/WM_LBUTTONUP rather
- * than by BN_CLICKED: the console samples its keyboard and sticks once per
+ * Keys and disc controls are driven by WM_LBUTTONDOWN/WM_LBUTTONUP rather
+ * than by BN_CLICKED: the console samples its keypads and discs once per
  * frame, so a press present only for the instant of a click falls between
  * frames and a polling program never sees it. A key is HELD while the mouse
  * button is down, like the real one. The mouse is captured on press; letting
  * go anywhere, dragging off the cap or losing the capture releases it, so the
- * console is never left holding one.
+ * console is never left holding one. The disc is the exception to "dragging
+ * off lets go": it is dragged, and follows the pointer (the four digital
+ * directions, 8-way) until the button is released.
  *
  * What the console sees held -- host keyboard, gamepads and this window
- * together -- is filled with the accent, so the window doubles as an input
- * tester for a new gamepad.
+ * together -- lights up in the accent (gold), so the window doubles as an
+ * input tester for a new gamepad. A gamepad's analog stick moves the disc's
+ * knob to where the pot reads.
  *
- * FIXED SIZE: laid out for the Arcadia 2001's keyboard and three gamepad rows
- * whatever is fitted, so neither the machine, Map mode nor a gamepad resizes
- * it (the G7400's wider keyboard is drawn smaller inside the same plate).
+ * FIXED SIZE: laid out once for the keypads, the discs and three gamepad
+ * rows, so neither Map mode nor a gamepad resizes it.
  *
- * MAP MODE: Map arms a two-step rebind -- click a key cap, a stick control or
- * a session action to pick the target, then press a host key OR a gamepad
- * button (Esc cancels). While armed the caps show what drives them, typing
- * does not reach the console, and rebinding steals the key from whatever held
- * it.
+ * MAP MODE: Map arms a two-step rebind -- click a key cap, a disc direction,
+ * a fire button or a session action to pick the target, then press a host
+ * key OR a gamepad button (Esc cancels). While armed the caps show what
+ * drives them, typing does not reach the console, and rebinding steals the
+ * key from whatever held it.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -53,8 +56,9 @@
 #define PLATE_PAD   14
 #define PLATE_W     500
 #define KBD_W       (PLATE_W - 2 * PLATE_PAD)
-#define KBD_UNIT_O2 43      /* key units to pixels: the Arcadia 2001's 10.9-wide board */
-#define KBD_ROWS_U  6.5f    /* the Arcadia 2001's keyboard height, in units */
+#define KBD_UNIT_ARC 46     /* key units to pixels: the 9.4-unit-wide panel */
+#define KBD_ROWS_U  4.3f    /* the panel's height, in units */
+#define WOOD_H      16      /* the wood strip along the console's front */
 #define STICK_W     200
 #define STICK_H     150
 #define STICK_GAP   24
@@ -62,7 +66,7 @@
 #define HEAD_H      22
 #define ROW_H       26      /* one gamepad's row */
 #define PAD_ROWS     3      /* gamepad rows the window has room for */
-#define SEG_W       64      /* Automatic / Stick 1 / Stick 2 */
+#define SEG_W       64      /* Automatic / Player 1 / Player 2 */
 #define BTN_H       28
 #define MAP_W       64
 #define DEFAULTS_W  80
@@ -74,7 +78,7 @@
 
 #define MAX_CONTROLS 128
 
-enum { CT_KEY, CT_DIR, CT_FIRE, CT_ACTION };
+enum { CT_KEY, CT_DIR, CT_FIRE, CT_ACTION, CT_DISC };
 
 typedef struct {
     RECT rc;
@@ -109,9 +113,11 @@ static int g_built_machine = -1;
 static int g_unit;              /* the keyboard's key unit, in 96-dpi pixels */
 
 static pads_state g_pads_shown;
+static unsigned g_disc_mask[2];     /* directions the mouse holds on each disc */
+static int g_disc_shown[2][2];      /* the analog deflection last painted */
 
 static int g_total_w, g_total_h;
-static RECT g_silver_rc, g_plate_rc, g_stick_rc[2], g_stick_title_rc[2];
+static RECT g_silver_rc, g_plate_rc, g_wood_rc, g_stick_rc[2], g_stick_title_rc[2];
 static RECT g_gp_rc, g_gp_head_rc, g_gp_row_rc[PAD_ROWS];
 static RECT g_map_rc, g_defaults_rc, g_hint_rc;
 
@@ -146,9 +152,9 @@ static int font_has(HDC dc, HFONT f, const wchar_t *w, int n)
     return ok;
 }
 
-/* The UI fonts at this DPI, and the keys' legends sized by the key unit. The
- * G7400's arrows and the x and divide signs may not be in the UI font: the
- * first symbol face that has them draws those. */
+/* The UI fonts at this DPI, and the keys' legends sized by the key unit. A
+ * legend with a glyph the UI font lacks is drawn in the first symbol face
+ * that has it. */
 static void make_fonts(void)
 {
     static const char *const symbol_faces[] = { "Segoe UI Symbol", "DejaVu Sans", "Arial Unicode MS" };
@@ -212,6 +218,35 @@ static int control_target(const control *c)
     return c->target;
 }
 
+/* The directions the mouse holds on a disc: press and release only the ones
+ * that changed. */
+static void disc_apply(int port, unsigned mask)
+{
+    int act;
+    for (act = 0; act < 4; act++) {
+        const unsigned bit = 1u << act;
+        if ((mask ^ g_disc_mask[port]) & bit)
+            arcsession_press(g_session, ARC_TARGET_PORT(port, act), (mask & bit) != 0);
+    }
+    g_disc_mask[port] = mask;
+}
+
+/* Where the pointer is on a disc, as its four digital directions (an eighth
+ * of the width is the dead zone, so a diagonal is two of them). */
+static void disc_follow(int i, POINT p)
+{
+    const control *c = &g_ctl[i];
+    const int cx = (c->rc.left + c->rc.right) / 2, cy = (c->rc.top + c->rc.bottom) / 2;
+    const int dead = (c->rc.right - c->rc.left) / 8;
+    unsigned mask = 0;
+    if (p.y < cy - dead) mask |= 1u << ARC_ACT_UP;
+    if (p.y > cy + dead) mask |= 1u << ARC_ACT_DOWN;
+    if (p.x < cx - dead) mask |= 1u << ARC_ACT_LEFT;
+    if (p.x > cx + dead) mask |= 1u << ARC_ACT_RIGHT;
+    disc_apply(c->port, mask);
+    InvalidateRect(g_panel, &g_stick_rc[c->port], FALSE);
+}
+
 /* Lets go of what the mouse holds in this window (only that: the main
  * window releases its own keys). A session action fires on release inside
  * its button, like any button. */
@@ -223,7 +258,9 @@ static void mouse_release(int fire_action)
     g_mouse_ctl = -1;
     if (i >= g_nctl) return;
     c = &g_ctl[i];
-    if (c->kind == CT_ACTION) {
+    if (c->kind == CT_DISC) {
+        disc_apply(c->port, 0);
+    } else if (c->kind == CT_ACTION) {
         if (fire_action) arcsession_sysaction_post(g_session, c->act);
     } else {
         arcsession_press(g_session, control_target(c), 0);
@@ -236,7 +273,7 @@ static void control_press(int i)
     control *c = &g_ctl[i];
     mouse_release(0);
     g_mouse_ctl = i;
-    if (c->kind != CT_ACTION)
+    if (c->kind != CT_ACTION && c->kind != CT_DISC)
         arcsession_press(g_session, control_target(c), 1);
     InvalidateRect(g_panel, &c->rc, FALSE);
 }
@@ -256,9 +293,9 @@ static void set_map_state(int state)
         arcsession_gamepad_capture_cancel(g_session);
     }
     if (state == -2) {
-        set_hint("Click and hold to press. Map rebinds a key, a stick control or a gamepad button.");
+        set_hint("Click and hold to press; drag a disc. Map rebinds a key, a disc direction or a gamepad button.");
     } else if (state == -1) {
-        set_hint("Click a key or a stick control to remap. Esc finishes.");
+        set_hint("Click a key, a disc direction or a fire button to remap. Esc finishes.");
     } else {
         char msg[200];
         mouse_release(0);
@@ -292,20 +329,23 @@ static int machine_now(void)
     return m >= 0 && m < ARC_MACHINE_COUNT ? m : ARC_MACHINE_ARCADIA;
 }
 
-/* The silver console with its black plate, the two sticks, the gamepad rows
- * and the Map row: the window is this size for every machine. */
+/* The console's case with the keypad plate and the wood strip, the two
+ * discs, the gamepad rows and the Map row: the window is this size always. */
 static void layout_static(void)
 {
     const int left = S(MARGIN);
-    const int plate_h = (int)((KBD_ROWS_U * KBD_UNIT_O2) * (float)g_dpi / 96.0f + 0.5f) + 2 * S(PLATE_PAD);
+    const int plate_h = (int)((KBD_ROWS_U * KBD_UNIT_ARC) * (float)g_dpi / 96.0f + 0.5f) + 2 * S(PLATE_PAD);
     const int content_w = S(PLATE_W) + 2 * S(SILVER_PAD);
     const int sticks_w = 2 * S(STICK_W) + S(STICK_GAP);
     int y = S(MARGIN), i;
 
     g_total_w = 2 * left + content_w;
-    SetRect(&g_silver_rc, left, y, left + content_w, y + plate_h + 2 * S(SILVER_PAD));
+    SetRect(&g_silver_rc, left, y, left + content_w,
+            y + plate_h + S(6) + S(WOOD_H) + 2 * S(SILVER_PAD));
     SetRect(&g_plate_rc, g_silver_rc.left + S(SILVER_PAD), g_silver_rc.top + S(SILVER_PAD),
-            g_silver_rc.right - S(SILVER_PAD), g_silver_rc.bottom - S(SILVER_PAD));
+            g_silver_rc.right - S(SILVER_PAD), g_silver_rc.top + S(SILVER_PAD) + plate_h);
+    SetRect(&g_wood_rc, g_plate_rc.left, g_plate_rc.bottom + S(6), g_plate_rc.right,
+            g_plate_rc.bottom + S(6) + S(WOOD_H));
     y = g_silver_rc.bottom + S(12);
 
     for (i = 0; i < 2; i++) {
@@ -331,7 +371,7 @@ static void layout_static(void)
     g_total_h = y + S(20) + S(MARGIN);
 }
 
-/* The Automatic / Stick 1 / Stick 2 choice at the right of a gamepad row. */
+/* The Automatic / Player 1 / Player 2 choice at the right of a gamepad row. */
 static void segment_rect(int row, int seg, RECT *rc)
 {
     const RECT *r = &g_gp_row_rc[row];
@@ -372,10 +412,9 @@ static void build_keyboard(void)
     float wu = 0, hu = 0;
     const arc_keycap *caps = arcsession_keyboard_layout(machine_now(), &n, &wu, &hu);
 
-    /* the Arcadia's board at 43 px a unit; a wider board is drawn smaller so it
-     * still fits the plate */
+    /* 46 px a unit; a wider table would be drawn smaller to fit the plate */
     g_unit = (int)((float)KBD_W / wu);
-    if (g_unit > KBD_UNIT_O2) g_unit = KBD_UNIT_O2;
+    if (g_unit > KBD_UNIT_ARC) g_unit = KBD_UNIT_ARC;
     x0 = g_plate_rc.left + ((g_plate_rc.right - g_plate_rc.left) - px(wu)) / 2;
     y0 = g_plate_rc.top + ((g_plate_rc.bottom - g_plate_rc.top) - px(hu)) / 2;
     for (i = 0; i < n; i++) {
@@ -392,8 +431,8 @@ static void build_keyboard(void)
     }
 }
 
-/* Where a stick's controls sit inside its base: the fire button at the back
- * left corner as on the console, the four direction pads round the stick. */
+/* Where a controller's parts sit inside its base: the side fire button at the
+ * back left, the disc in the middle and the four direction pads round it. */
 static void stick_geometry(int port, RECT *fire, RECT dir[4], POINT *knob)
 {
     const RECT *b = &g_stick_rc[port];
@@ -415,6 +454,10 @@ static void build_sticks(void)
         POINT knob;
         control *c;
         stick_geometry(port, &fire, dir, &knob);
+        c = add_control(CT_DISC);
+        if (!c) return;
+        SetRect(&c->rc, knob.x - S(28), knob.y - S(28), knob.x + S(28) + 1, knob.y + S(28) + 1);
+        c->port = port;
         for (act = 0; act < 4; act++) {
             c = add_control(CT_DIR);
             if (!c) return;
@@ -525,22 +568,31 @@ static void binding_label(int target, char *out, int outsz)
         snprintf(out, (size_t)outsz, "%s", key[0] ? key : "\xe2\x80\x94");
 }
 
-/* A key cap: a cream face over a shadow edge on the black plate; the function
- * row's legends are red, RESET is a red cap, SPACE a plain bar. */
+/* A key cap on the plate: a brass face (the keypad's dark gold) over a shadow
+ * edge, lit in the accent gold while held; START / OPTION / SELECT are dark
+ * caps with gold legends, RESET is red. */
 static void paint_key(HDC dc, const control *c, int mapping)
 {
     const int armed = mapping && g_map_state >= 0 && c->target == g_map_state;
     const int accent = mapping ? armed : c->lit;
     const int radius = S(g_unit) / 4 + 2;
     RECT face = c->rc, shadow = c->rc, t;
-    COLORREF fill = RGB(0xEC, 0xE9, 0xE0), text = RGB(0x1e, 0x1e, 0x1e);
+    COLORREF fill = rgb_of(ARCSESSION_ACCENT_DARK_RGB), text = RGB(0xF4, 0xEC, 0xDC);
+    COLORREF edge = RGB(0x3a, 0x2e, 0x1c);
 
-    if (c->cap_kind == ARC_KEYCAP_RESET) { fill = rgb_of(ARCSESSION_ACCENT_DARK_RGB); text = RGB(255, 255, 255); }
-    if (c->cap_kind == ARC_KEYCAP_FUNCTION) text = rgb_of(ARCSESSION_ACCENT_DARK_RGB);
-    if (accent) { fill = rgb_of(ARCSESSION_ACCENT_RGB); text = RGB(255, 255, 255); }
+    if (c->cap_kind == ARC_KEYCAP_FUNCTION) {
+        fill = RGB(0x3c, 0x3c, 0x40); text = rgb_of(ARCSESSION_ACCENT_RGB); edge = RGB(0x0c, 0x0c, 0x0e);
+    }
+    if (c->cap_kind == ARC_KEYCAP_RESET) {
+        fill = RGB(0xB0, 0x30, 0x28); text = RGB(255, 255, 255); edge = RGB(0x50, 0x10, 0x0c);
+    }
+    if (accent) {
+        fill = c->cap_kind == ARC_KEYCAP_RESET ? RGB(0xFF, 0x5A, 0x4C) : rgb_of(ARCSESSION_ACCENT_RGB);
+        text = RGB(0x1e, 0x1e, 0x1e);
+    }
     OffsetRect(&shadow, 0, S(2));
     face.bottom -= S(1);
-    round_rect(dc, &shadow, radius, RGB(0x6a, 0x66, 0x60), RGB(0x6a, 0x66, 0x60));
+    round_rect(dc, &shadow, radius, edge, edge);
     round_rect(dc, &face, radius, fill, fill);
     SetTextColor(dc, text);
 
@@ -552,12 +604,12 @@ static void paint_key(HDC dc, const control *c, int mapping)
         return;
     }
     switch (c->cap_kind) {
-    case ARC_KEYCAP_INPUT: SelectObject(dc, g_cap_in); break;
+    case ARC_KEYCAP_INPUT:
+    case ARC_KEYCAP_FUNCTION:
     case ARC_KEYCAP_RESET:
     case ARC_KEYCAP_SPACE: SelectObject(dc, g_cap_in); break;
     default: SelectObject(dc, g_cap); break;
     }
-    if (c->cap_kind == ARC_KEYCAP_SPACE && !accent) SetTextColor(dc, RGB(0x70, 0x6c, 0x64));
     if (g_sym && (unsigned char)c->label[0] >= 0x80) {
         wchar_t w[16];
         const int n = MultiByteToWideChar(CP_UTF8, 0, c->label, -1, w, 16) - 1;
@@ -618,9 +670,9 @@ static void paint_fire(HDC dc, const control *c, int mapping)
 {
     const int armed = mapping && g_map_state >= 0 && c->target == g_map_state;
     const int lit = mapping ? armed : c->lit;
-    const COLORREF fill = lit ? RGB(0xff, 0x52, 0x4c) : rgb_of(ARCSESSION_ACCENT_RGB);
+    const COLORREF fill = lit ? RGB(0xff, 0x52, 0x4c) : RGB(0xB0, 0x30, 0x28);
     RECT t = c->rc;
-    round_rect(dc, &c->rc, S(6), fill, RGB(0x6a, 0x0c, 0x10));
+    round_rect(dc, &c->rc, S(6), fill, RGB(0x50, 0x10, 0x0c));
     SetTextColor(dc, RGB(255, 255, 255));
     if (mapping) {
         char legend[96];
@@ -633,29 +685,38 @@ static void paint_fire(HDC dc, const control *c, int mapping)
     }
 }
 
-/* The stick itself, in its black base: the knob leans the way it is held. */
+/* One hand controller: the disc in a charcoal base. The knob leans the way the
+ * pot reads (a gamepad's analog stick) or the way the directions are held. */
 static void paint_stick(HDC dc, int port)
 {
     RECT fire, dir[4];
     POINT knob;
-    int dx, dy;
+    int dx, dy, ax = 0, ay = 0;
     const unsigned held = arcsession_buttons_held(g_session, port);
     RECT title = g_stick_title_rc[port];
     char text[24];
 
     SelectObject(dc, g_bold);
     SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
-    snprintf(text, sizeof text, "Stick %d", port + 1);
+    snprintf(text, sizeof text, "Player %d controller", port + 1);
     text_line(dc, text, &title, DT_LEFT);
 
-    round_rect(dc, &g_stick_rc[port], S(14), RGB(0x22, 0x22, 0x22), RGB(0x0a, 0x0a, 0x0a));
+    round_rect(dc, &g_stick_rc[port], S(14), RGB(0x26, 0x26, 0x29), RGB(0x0a, 0x0a, 0x0a));
     stick_geometry(port, &fire, dir, &knob);
-    dx = (int)((held >> ARC_ACT_RIGHT) & 1) - (int)((held >> ARC_ACT_LEFT) & 1);
-    dy = (int)((held >> ARC_ACT_DOWN) & 1) - (int)((held >> ARC_ACT_UP) & 1);
-    /* the ring the stick moves in, then the stick */
-    disc(dc, knob.x, knob.y, S(25), RGB(0x16, 0x16, 0x16), RGB(0x4a, 0x4a, 0x4a));
-    disc(dc, knob.x + dx * S(5), knob.y + dy * S(5), S(15), RGB(0x30, 0x30, 0x30), RGB(0x66, 0x66, 0x66));
-    disc(dc, knob.x + dx * S(5) - S(4), knob.y + dy * S(5) - S(4), S(4), RGB(0x6a, 0x6a, 0x6a), RGB(0x6a, 0x6a, 0x6a));
+    arcsession_disc_get(g_session, port, &ax, &ay);
+    g_disc_shown[port][0] = ax;
+    g_disc_shown[port][1] = ay;
+    if (ax || ay) {
+        dx = ax * 10 / 127;
+        dy = ay * 10 / 127;
+    } else {
+        dx = (((int)(held >> ARC_ACT_RIGHT) & 1) - ((int)(held >> ARC_ACT_LEFT) & 1)) * 10;
+        dy = (((int)(held >> ARC_ACT_DOWN) & 1) - ((int)(held >> ARC_ACT_UP) & 1)) * 10;
+    }
+    /* the gold disc in its well, then its knob */
+    disc(dc, knob.x, knob.y, S(27), RGB(0x14, 0x14, 0x16), RGB(0x4a, 0x4a, 0x4a));
+    disc(dc, knob.x + S(dx), knob.y + S(dy), S(20), rgb_of(ARCSESSION_ACCENT_DARK_RGB), rgb_of(ARCSESSION_ACCENT_RGB));
+    disc(dc, knob.x + S(dx), knob.y + S(dy), S(11), rgb_of(ARCSESSION_ACCENT_RGB), rgb_of(ARCSESSION_ACCENT_DARK_RGB));
 }
 
 static void paint_control(HDC dc, const control *c)
@@ -665,6 +726,7 @@ static void paint_control(HDC dc, const control *c)
     case CT_KEY: paint_key(dc, c, mapping); break;
     case CT_DIR: paint_dir(dc, c, mapping); break;
     case CT_FIRE: paint_fire(dc, c, mapping); break;
+    case CT_DISC: break;                /* drawn with its base (paint_stick) */
     default: {
         const int armed = mapping && g_map_state >= 0 && c->target == g_map_state;
         draw_face(dc, &c->rc, c->lit, armed, 0);
@@ -675,11 +737,11 @@ static void paint_control(HDC dc, const control *c)
     }
 }
 
-/* One row per gamepad: its name, the stick it drives now, and the Automatic
- * / Stick 1 / Stick 2 choice, the current one pushed in. */
+/* One row per gamepad: its name, the controller it drives now, and the Automatic
+ * / Player 1 / Player 2 choice, the current one pushed in. */
 static void paint_gamepads(HDC dc)
 {
-    static const char *const segs[3] = { "Automatic", "Stick 1", "Stick 2" };
+    static const char *const segs[3] = { "Automatic", "Player 1", "Player 2" };
     const int n = arcsession_gamepad_count(g_session);
     int i, s;
 
@@ -710,7 +772,7 @@ static void paint_gamepads(HDC dc)
         SelectObject(dc, g_font);
         SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
         text_line(dc, name, &name_rc, DT_LEFT | DT_END_ELLIPSIS);
-        if (eff >= 0) snprintf(line, sizeof line, "drives stick %d", eff + 1);
+        if (eff >= 0) snprintf(line, sizeof line, "drives player %d", eff + 1);
         else snprintf(line, sizeof line, "drives nothing");
         SetRect(&eff_rc, name_rc.right + S(8), name_rc.top, seg0.left - S(8), name_rc.bottom);
         SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
@@ -733,9 +795,24 @@ static void paint_panel(HDC dc)
     FillRect(dc, &client, GetSysColorBrush(COLOR_BTNFACE));
     SetBkMode(dc, TRANSPARENT);
 
-    /* the console: silver body, black keyboard plate */
-    round_rect(dc, &g_silver_rc, S(16), RGB(0xC3, 0xC0, 0xBF), RGB(0x8e, 0x8b, 0x8a));
-    round_rect(dc, &g_plate_rc, S(10), RGB(0x14, 0x14, 0x14), RGB(0x05, 0x05, 0x05));
+    /* the console: charcoal case, a darker panel for the keypads, the wood
+     * strip along the front */
+    round_rect(dc, &g_silver_rc, S(16), RGB(0x34, 0x34, 0x38), RGB(0x14, 0x14, 0x16));
+    round_rect(dc, &g_plate_rc, S(10), RGB(0x1c, 0x1c, 0x1f), RGB(0x08, 0x08, 0x0a));
+    round_rect(dc, &g_wood_rc, S(5), RGB(0x8a, 0x5a, 0x32), RGB(0x4a, 0x2e, 0x18));
+    {
+        /* grain: a few darker lines */
+        HGDIOBJ oldp = SelectObject(dc, GetStockObject(DC_PEN));
+        int gx;
+        SetDCPenColor(dc, RGB(0x6e, 0x44, 0x24));
+        for (gx = g_wood_rc.left + S(20); gx < g_wood_rc.right - S(20); gx += S(37)) {
+            MoveToEx(dc, gx, g_wood_rc.top + S(4), NULL);
+            LineTo(dc, gx + S(14), g_wood_rc.top + S(4));
+            MoveToEx(dc, gx + S(10), g_wood_rc.bottom - S(5), NULL);
+            LineTo(dc, gx + S(26), g_wood_rc.bottom - S(5));
+        }
+        SelectObject(dc, oldp);
+    }
     paint_stick(dc, 0);
     paint_stick(dc, 1);
     for (i = 0; i < g_nctl; i++)
@@ -776,6 +853,12 @@ static void refresh_held(void)
             InvalidateRect(g_panel, &c->rc, FALSE);
             if (c->kind == CT_DIR) redraw_sticks |= 1 << c->port;
         }
+    }
+    /* a gamepad's analog stick moves the knob without changing any direction */
+    for (port = 0; port < 2; port++) {
+        int ax = 0, ay = 0;
+        arcsession_disc_get(g_session, port, &ax, &ay);
+        if (ax != g_disc_shown[port][0] || ay != g_disc_shown[port][1]) redraw_sticks |= 1 << port;
     }
     /* a stick's knob leans with its directions */
     for (port = 0; port < 2; port++)
@@ -980,6 +1063,7 @@ static LRESULT CALLBACK panel_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             return 0;
         }
         control_press(i);
+        if (g_ctl[i].kind == CT_DISC) disc_follow(i, p);
         SetCapture(hwnd);
         refresh_held();
         return 0;
@@ -990,6 +1074,10 @@ static LRESULT CALLBACK panel_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             POINT p;
             p.x = GET_X_LPARAM(lp);
             p.y = GET_Y_LPARAM(lp);
+            if (g_mouse_ctl < g_nctl && g_ctl[g_mouse_ctl].kind == CT_DISC) {
+                disc_follow(g_mouse_ctl, p);     /* a disc is dragged, never "dragged off" */
+                return 0;
+            }
             if (g_mouse_ctl >= g_nctl || !PtInRect(&g_ctl[g_mouse_ctl].rc, p)) {
                 mouse_release(0);
                 if (GetCapture() == hwnd) ReleaseCapture();
