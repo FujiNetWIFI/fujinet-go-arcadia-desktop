@@ -18,12 +18,9 @@ core/arc/fuji-generated/
 # FujiNet runtime build tree (tools/fujinet/build-fujinet-desktop.sh).
 tools/fujinet/work/
 
-# System ROMs. The Magnavox Arcadia 2001 BIOS is copyrighted and never committed; a
-# developer may drop it here for -DWITH_ARC_ROMS=ON builds and the
-# no_embedded_roms checks (see COMPLIANCE.md).
-tools/roms/*
-!tools/roms/embed-roms.py
-!tools/roms/README.md
+# Commercial cartridges a developer keeps here for the no_embedded_roms check
+# (see COMPLIANCE.md). Never committed.
+tools/roms/
 
 # Cartridge images that stray into the tree while testing. The only image
 # this project ships is FujiNet's own CONFIG client, staged from the

@@ -11,9 +11,8 @@
 ; staged folder that also becomes the portable zip -- so the two artifacts are
 ; the same bits, packaged twice. Ported from fujinet-go-astrocade-desktop's
 ; own installer.nsi via the ColecoVision and NES siblings, renamed for the
-; Magnavox Arcadia 2001. Nothing copyrighted is in the staged folder: CONFIG and the
-; FujiNet apps run on the app's own stand-in, and a user's own BIOS, which
-; games need, is imported at run time (COMPLIANCE.md).
+; Emerson Arcadia 2001. Nothing copyrighted is in the staged folder: the
+; console has no BIOS and games are the user's own files (COMPLIANCE.md).
 ;
 ; makensis -DVERSION=x.y.z -DSRCDIR=<staged folder> -DOUTFILE=<exe> installer.nsi
 
@@ -121,9 +120,9 @@ Section "Uninstall"
   DeleteRegKey HKCU "${REGUNINST}"
   DeleteRegKey HKCU "${REGAPP}"
 
-  ; Settings, the provisioned FujiNet tree and any imported BIOS live under
+  ; Settings, the provisioned FujiNet tree and any imported cartridges live under
   ; %APPDATA%\fujinet-go-arcadia and %LOCALAPPDATA%\fujinet-go-arcadia and are
   ; deliberately left behind: an uninstall should not throw away someone's
-  ; configuration, key bindings, the BIOS they imported or the SD folder they
+  ; configuration, key bindings or the SD folder they
   ; imported cartridges into, and a reinstall picks it straight back up.
 SectionEnd

@@ -1,46 +1,23 @@
 #!/usr/bin/env python3
-"""Assert that a WITH_ARC_ROMS=OFF binary really carries none of the Arcadia 2001
-/ Videopac ROMs.
+"""Assert that a binary carries none of the commercial Arcadia 2001 cartridges.
 
-This is the test that makes the COMPLIANCE.md claim checkable rather than
-aspirational: it takes a distinctive slice out of each ROM image in
-tools/roms and greps the built binary for it. Anything found is a ROM
-that got compiled in despite the option, which would make the artifact
-non-redistributable.
+There is no console BIOS to ship (the Arcadia has none) and the games are the
+user's own files, so nothing copyrighted may be in any artifact. This makes
+the COMPLIANCE.md claim checkable: it takes a distinctive slice out of every
+cartridge image in <rom-dir> (a developer's own dumps -- loose .bin files or
+zips, each at most 8 KB) and greps the binary for it. Anything found got
+compiled in, which would make the artifact non-redistributable.
 
-The images are found the way the importer finds them: by size and CRC-32,
-whatever the file is called, and inside zips (MAME's videopac.zip and
-friends). The list is every ROM the app imports (the console BIOS and the
-G7400's, the 8244 and EF9340 character sets, The Voice's three ROMs) plus the
-dumps of consoles it recognises and does not use, none of which may be in a
-binary either.
-
-There is no freely-redistributable class of ROM here: all of it is
-copyrighted firmware, so a WITH_ARC_ROMS=OFF binary is expected to contain none
-of it -- see COMPLIANCE.md. (The app's own no-BIOS stand-in, core/arc/stub.a48,
-is not a ROM in this sense: it is ours.)
+The cartridge firmware's own test programs and the FujiNet CONFIG are ours and
+are not in <rom-dir>. With no images there, the check SKIPs (ctest 77): true
+of every CI and release checkout.
 
 usage: no_embedded_roms.py <binary> <rom-dir>
 """
 
 import sys
 import zipfile
-import zlib
 from pathlib import Path
-
-# (size, CRC-32) of every ROM to look for, from MAME
-FINGERPRINTS = {
-    (0x400, 0x8016A315): "arcbios.rom",
-    (0x400, 0xE20A9F41): "g7400.bin",
-    (0x200, 0xB46A3F31): "charset_i8244.bin",
-    (0xA00, 0x8DE85988): "charset_ef9340_1.rom",
-    (0x800, 0x4BB43724): "sp0256b-019.bin",
-    (0x4000, 0x509367B5): "spr128-003.bin",
-    (0x4000, 0xE79DFB75): "spr128-004.bin",
-    (0x400, 0xA318E8D6): "c52.rom",
-    (0x400, 0x11647CA5): "jopac.bin",
-    (0x400, 0xE2B23324): "arcadia3.bin",
-}
 
 PROBE = 64
 
@@ -69,22 +46,19 @@ def probe_bytes(data):
 
 
 def images(romdir):
-    """(name, bytes) of every known ROM in the directory or in a zip in it."""
+    """(name, bytes) of every cartridge image in the directory or in a zip in it."""
     for f in sorted(romdir.iterdir()):
         if not f.is_file():
             continue
         if zipfile.is_zipfile(f):
             with zipfile.ZipFile(f) as z:
-                blobs = [z.read(i) for i in z.infolist()
+                blobs = [(i.filename, z.read(i)) for i in z.infolist()
                          if not i.is_dir() and i.file_size <= 0x4000]
         elif f.stat().st_size <= 0x4000:
-            blobs = [f.read_bytes()]
+            blobs = [(f.name, f.read_bytes())]
         else:
             continue
-        for data in blobs:
-            name = FINGERPRINTS.get((len(data), zlib.crc32(data) & 0xFFFFFFFF))
-            if name:
-                yield name, data
+        yield from blobs
 
 
 def main():
@@ -114,17 +88,15 @@ def main():
             leaked.append(name)
 
     if checked == 0:
-        # No real ROMs to check against -- true of every CI and release build,
-        # since the copyrighted ROMs (see COMPLIANCE.md) are gitignored
-        # and never present on a checkout that isn't a developer's own machine.
-        # SKIP (ctest exit code 77), not fail: there is nothing wrong with the
+        # No cartridges to check against -- true of every CI and release build
+        # (see COMPLIANCE.md). SKIP (ctest exit code 77), not fail: there is nothing wrong with the
         # binary, just nothing here to probe it with.
         print("no_embedded_roms: SKIP: no ROM images found in "
               f"{romdir} -- nothing to check against")
         return 77
 
     for name in leaked:
-        print(f"FAIL: {name} is embedded in a WITH_ARC_ROMS=OFF build")
+        print(f"FAIL: {name} is embedded in this build")
 
     if leaked:
         return 1

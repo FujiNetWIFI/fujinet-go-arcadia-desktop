@@ -1,76 +1,80 @@
 # FujiNet Go Arcadia 2001 Desktop
 
-A native desktop emulator of the **Magnavox Arcadia 2001 / Philips Videopac**
-with FujiNet built in: boot the FujiNet CONFIG, browse a network host with the
-joystick, load games and FujiNet apps over the network, play them. Part of the
-FujiNet Go desktop family (Linux GNOME and KDE, Windows, macOS).
+A native desktop emulator of the **Emerson Arcadia 2001** with FujiNet built
+in: boot the FujiNet CONFIG, browse a network host with the disc and keypad,
+load games and FujiNet apps over the network, play them. Part of the FujiNet
+Go desktop family (Linux GNOME and KDE, Windows, macOS).
 
 | | |
 |---|---|
-| **Emulator** | MAME's Arcadia 2001 driver, its 8048, its 8244/8245 video and sound chip, the Videopac+ G7400's EF9340/41 text chip and 8243, and The Voice's SP0256, transposed to C (the Studio II and SMS siblings' way). The core does no per-clock work: the video chip draws lazily, the sound is kept as level changes, and the 8048 runs about 85 times faster than real time on one core. |
-| **Machines** | Arcadia 2001 (NTSC, 59.83 Hz), Videopac G7000 (PAL, 49.70 Hz), Videopac+ G7400 (PAL, EF9340 text layer mixed into the 8245's picture). Two joysticks and the real membrane keyboard. |
-| **No BIOS needed for FujiNet** | CONFIG and every FujiNet app boot on this app's own stand-in BIOS (about 120 bytes of 8048 code written from the hardware). Games need the real BIOS: **Machine ▸ Import BIOS…**. |
-| **Cartridge** | The FujiNet Arcadia 2001 cartridge (`fujinet-firmware` `pico/arcadia`): the 3K program window, up to 63K of paged app image (APPBANK), the mailbox at `$E0-$E3` / `$F20`, and CONFIG baked in. Its mailbox service (`fujimail`), image planner (`arcmap`), APPBANK serving (`arcapp`) and wire codec (`fujibus`) are the cartridge firmware's own sources, staged verbatim. A game opened from disk gets its own mapper cartridge instead (standard, 4-in-1, rally, KTAA), as a real console would have it. |
-| **The Voice** | The SP0256 speech module in front of the cartridge (**Preferences ▸ Machine**); its speech ROMs are imported like the BIOS. |
+| **Emulator** | MAME's Arcadia 2001 driver, its Signetics 2650 and its 2637 UVI video and sound chip, transposed to C (the Studio II and O2 siblings' way). The 2650 runs one instruction at a time and the UVI draws lazily, so the core uses a small fraction of one CPU core. |
+| **Machines** | Arcadia 2001 (NTSC, 60 Hz, 262 lines) and a PAL clone row (50 Hz, 312 lines, 4.433619/5 MHz; **not verified against MAME**, which runs every clone at NTSC). Two hand controllers: 12-key keypad, disc and side fire each, plus the console's START, OPTION, SELECT and RESET. |
+| **No BIOS, no ROMs to import** | The Arcadia 2001 has no BIOS and the character set is part of the UVI source, so nothing but your games is needed. CONFIG and every FujiNet app run as they are. |
+| **Cartridge** | The FujiNet Arcadia 2001 cartridge (`fujinet-firmware` `pico/arcadia`): the 8K program window, up to 70K of paged app image (APPBANK), 1K of cart RAM, a 60 Hz tick, the mailbox at `$2B00-$2FFF`, and CONFIG baked in. Its mailbox service (`fujimail`), connector decode (`arcmap`), APPBANK serving (`arcapp`) and wire codec (`fujibus`) are the cartridge firmware's own sources, staged verbatim. A game opened from disk gets its own mapper cartridge instead (standard 4K/8K, Golf), as a real console would have it. |
 | **Frontends** | GNOME (GTK4/libadwaita), KDE (Qt6 Widgets), macOS (AppKit), Windows (Win32/D3D11) — each with the display, a Controllers window, Preferences, a live FujiNet console log, and a debugger. |
 | **Packages** | Linux: Flatpak (GNOME and KDE runtimes), DEB, RPM, tar.gz. Windows: ZIP and an NSIS installer. macOS: signed/notarised zips (unsigned without secrets). |
 
-The icon is the family mark in black on the console's case silver
-(`#C3C0BF`); the UI accent is the console's power-button red (`#C11218`),
-marking held keys, the Map target, the current line in the disassembly and the
-status dot.
+The icon is the family mark in the console's own colours, sampled from the
+photograph: charcoal case (`#2D2928`), keypad and disc gold (`#AA916C`) and
+the wood-grain strip's brown (`#5B3B26`) for the centre disc. The UI accent is
+the gold (dark variant `#7A6340` on light themes), marking held keys, the Map
+target, the current line in the disassembly and the status dot.
 
-## What you need to import (and why it is not shipped)
+## Your games
 
-The Arcadia 2001 / Videopac BIOS, the Videopac+ G7400 BIOS, the **character sets
-of the video chips** (mask ROMs on the 8244/8245 and the EF9340) and The
-Voice's speech ROMs are copyrighted; nothing here embeds them. **Import BIOS**
-takes a file, a zip (MAME's `videopac.zip`, `i8244.zip`, `videopacp.zip`,
-`ef9340_1.zip` all work) or a folder, identifies every dump by size and CRC-32
-whatever it is called, and stores it under MAME's name. Without the 8244's
-character set the picture is there but text is blank (the app says so);
-without the BIOS only FujiNet apps run. See `COMPLIANCE.md`.
-
-The Chess Module (an NSC800) and the Home Computer Module (a Z80) carry a CPU
-of their own and are not emulated yet.
+Open a cartridge with **File ▸ Open cartridge…** (or drop it on the window):
+a `.bin`, `.rom` or `.arc` image of up to 8 KB, or a `.zip` holding one.
+A FujiNet app (an image that claims the mailbox) runs on the FujiNet
+cartridge; any other image gets the mapper a real cartridge would have, and
+FujiNet is not reachable until the next power cycle. Nothing copyrighted is
+embedded in any build: see `COMPLIANCE.md`. The **Palladium Video-Computer-Game**
+(16 keys) is not emulated, as MAME marks it not working.
 
 ## Controllers window (F9)
 
-A fixed-size floating window drawn like the console: the **real membrane
-keyboard** (numeric row, + − × ÷ =, YES NO CLEAR ENTER, QWERTYUIOP, ASDFGHJKL,
-ZXCVBNM . ?, SPACE, the red RESET key) and the two joysticks. Click a key to
-press it; held keys light up in the accent colour whoever holds them. **Map**
-rebinds any key or stick control to a host key or a gamepad button (a key moves
-to its new target and leaves its old one), **Defaults** puts them back.
+A fixed-size floating window drawn like the console: two hand controllers with
+the **12-key keypad** (1-9, CLEAR, 0, ENTER), the **disc** and the side fire
+button, and the panel's START, OPTION, SELECT and the red RESET. Click a key to
+press it, drag the disc to steer it; held keys light up in the accent colour
+whoever holds them. **Map** rebinds any key, disc direction or fire to a host
+key or a gamepad button (a key moves to its new target and leaves its old
+one), **Defaults** puts them back. Fire is the keypad's `2` wire, as on the
+hardware.
 
 | | Default |
 |---|---|
-| Keyboard | each host key to the Arcadia key of the same label (**Enter** = ENTER, **Backspace** = CLEAR, `*` `/` `+` `-` `=` the operators) |
-| Stick 1 | arrow keys, **Right Ctrl** = fire |
-| Stick 2 | keypad **8 6 2 4**, keypad **0** = fire |
-| Gamepads | D-pad / left stick = the stick, South = fire |
+| Player 1 keypad | `1`-`9`, **Backspace** = CLEAR, `0`, **Enter** = ENTER |
+| Player 1 disc | arrow keys, **Right Ctrl** = fire |
+| Player 2 keypad | `Q W E` / `A S D` / `Z X C` / `V B N` |
+| Player 2 disc | keypad **8 4 6 2**, keypad **0** = fire |
+| START / OPTION / SELECT | F2 / F3 / F4 |
+| Gamepads | the left stick drives the disc **proportionally** (Preferences ▸ analog stick; off = eight-way switch), D-pad = directions, South = fire, Start = START, X = OPTION, Back = SELECT |
 | RESET / Reset to CONFIG | **F1** / **Escape** |
 | Controllers / Fullscreen / Debugger | F9 / F11 / F12 (debugger: F5 run/stop, F7 step, F8 step over, Shift+F8 step out) |
 
-RESET resets the 8048 only, as on the console, so a running FujiNet app
-restarts from the cartridge's current image; **Reset to CONFIG** is the power
-cycle.
+RESET holds the 2650's reset line only, as the console's button does, so a
+running FujiNet app restarts from the cartridge's current image; **Reset to
+CONFIG** is the power cycle.
 
 ## Debugger (F12)
 
-Prompt · CPU & RAM · Disassembly · **Video (the 8244)** · EF9340 · Sound & I/O ·
-Breakpoints · Cart · FujiNet. The Video tab shows the rendered display (live
-frame, re-rendered from the registers, or the frame in progress up to the
-beam) with every layer switchable and objects boxed and indexed; every sprite,
-single character and quad with its position, glyph and colour and a rendered
-bitmap; the grid; every register decoded and editable; collisions; the sound
-shift register; and the font, shape and palette sheets. The FujiNet tab
-decodes the cartridge's FujiBus traffic from the moment the app starts.
+Prompt · CPU & RAM · Disassembly · **Video (the 2637 UVI)** · Sound & I/O ·
+Breakpoints · Cart · FujiNet. The CPU tab shows R0, R1-R3 in both register
+banks, PSU and PSL decoded flag by flag, the 15-bit IAR and the 8-deep return
+stack; breakpoints are on execution, read and write, with step, step over and
+step out. The Video tab shows the rendered display (live frame, re-rendered
+from the registers, or the frame in progress up to the beam) with the
+background and the four objects switchable and boxed; every object with its
+position, size, glyph and colour and a rendered bitmap; the 16×13 / 16×26
+character screen with its colour bits; the user-defined characters; every
+register decoded and editable; collisions; and the font and palette sheets.
+The FujiNet tab decodes the cartridge's FujiBus traffic from the moment the
+app starts.
 
 ## External FujiNet
 
 A switch in Preferences makes the app connect to another FujiNet instance at a
-host:port you enter, e.g. `127.0.0.1:11520`, instead of starting the built-in
+host:port you enter, e.g. `127.0.0.1:11522`, instead of starting the built-in
 one.
 
 ## Building
@@ -83,41 +87,37 @@ ctest --test-dir build --output-on-failure
 
 fujinet-firmware is fetched at its pinned commit by the configure step — a
 plain `git clone` with no `--recurse-submodules` is enough. To develop against
-a working checkout of the cartridge firmware:
+a working checkout of the cartridge firmware (use an absolute path):
 
 ```sh
-cmake -B build -DFUJINET_SRC=~/Workspace/fujinet-firmware
+cmake -B build -DFUJINET_SRC=$HOME/Workspace/fujinet-firmware
 ```
 
-`-DFRONTEND=none` builds just the core and its tests; `-DWITH_FUJINET=OFF`
-skips the firmware build (the machine boots CONFIG reporting the link down).
-`-DWITH_ARC_ROMS=ON` embeds whatever recognised ROMs are in `tools/roms/` for
-local development; it is off by default and in every published build.
+`-DFRONTEND=none` builds just the core, the session and the tests;
+`-DARC_CORE_ONLY=ON` builds only the core and its tests (no SDL3);
+`-DWITH_FUJINET=OFF` skips the firmware build (the machine boots CONFIG
+reporting the link down).
 
 The core is C11. Qt >= 6.7 and GTK >= 4.16 are needed for the Linux
 frontends (an older toolkit makes CMake skip that frontend). The macOS bundle
-needs macOS 13.3 or later.
-
-The tests' own 8048 program (`core/tests/roms/*.a48`, assembled into
-`core/tests/test_rom.h` by `core/tests/roms/build-roms.sh`) and the stand-in
-(`core/arc/stub.a48`, `tools/stub/build-stub.sh`) are committed assembled, so
-building needs no assembler.
+needs macOS 13.3 or later. Nothing needs an assembler.
 
 ### Against MAME
 
-`tools/ab/` runs the core against MAME's own Arcadia 2001 (the MAME build with the
-firmware's FujiNet graft, `pico/arcadia/emu/apply-mame.sh`, for CONFIG):
+`tools/ab/` runs the core against MAME's own Arcadia driver (the MAME build with
+the firmware's FujiNet graft, `pico/arcadia/emu/apply.sh`, for CONFIG):
 
-- `cart_ab.py` — whole carts, frame for frame, on the arc, g7000 and g7400
-  machines, with your own BIOS and charset from MAME's rompath.
+- `cart_ab.py` / `all_carts.sh` — whole cartridges, frame for frame, with a
+  scripted input session (panel, both keypads, both discs, fire), using your
+  own dumps.
+- `uvi_probes.py` — generated stress carts for the UVI (objects at every edge,
+  zoom, collisions, both screen modes).
 - `config_golden.py` — regenerates `core/tests/config_golden.h`, MAME's frame
-  hashes of CONFIG on the stand-in with a generated font (no ROM needed to run
-  the test that holds the core to them: `config_frames`).
-- `mcs48_ab.py` — the 8048 against MAME's, instruction by instruction on 15
-  probe programs; `gen_goldens.py` / `real_carts.py` — the 8244 against MAME's
-  register traffic and on real carts.
-- `arc_headless` (`core/tests/`) — the machine with no host thread, writing
-  frames, hashes, audio and a time-stamped VDC access log for comparing.
+  hashes of CONFIG (no ROM needed to run the test that holds the core to them:
+  `config_frames`).
+- `s2650_ab.py` — the 2650 against MAME's, instruction by instruction on 12
+  generated probe carts; `gen_dasm2650_golden.sh` — the disassembler's text for
+  all 256 opcodes.
 
 ### Cross-building Windows on Linux
 
@@ -138,7 +138,7 @@ build is native MSYS2/UCRT64, which builds it.
 
 ## Ports
 
-FujiNet's BoIP listener is on **11520** and its web admin UI on **11521** —
+FujiNet's BoIP listener is on **11522** and its web admin UI on **11523** —
 high ports of this app's own, continuing the family's table, so a standalone
 `fujinet-pc` or a sibling app never collides:
 
@@ -159,7 +159,8 @@ high ports of this app's own, continuing the family's table, so a standalone
 | Atari 800 | 11514 | 11515 |
 | MS-DOS | 11516 | 11517 |
 | Studio II | 11518 | 11519 |
-| **Arcadia 2001** | **11520** | **11521** |
+| Odyssey 2 | 11520 | 11521 |
+| **Arcadia 2001** | **11522** | **11523** |
 
 FujiNet listens and the cartridge dials in, so the session starts FujiNet
 first and waits for its listener before powering on. The cartridge's mailbox
@@ -168,33 +169,28 @@ slow network transaction never stalls the picture.
 
 ## How this was verified
 
-- **The core against MAME** (all run on this machine, locally, with MAME's own
-  ROMs; none of them are in the repo):
-  - the 8048: 15 probe programs, 147,053 instructions, traces identical, and
-    the disassembler's text for all 256 opcodes;
-  - the 8244/8245: 94 recorded MAME scenes (static, beam registers, raster
-    effects, sound) replayed into the C chip, every read value and frame
-    pixel-identical, and 157 real cartridges' register traffic replayed;
-  - the EF9340/8243 against MAME's G7400 on 12 scenarios, pixel for pixel;
-  - the SP0256 sample for sample against MAME's, also run against MAME's
-    Intellivision with a real Intellivoice ROM;
-  - the whole machine: CONFIG on the stand-in matches MAME's frames
-    (`config_frames`, no ROM needed), and with the real BIOS two carts
-    (Baseball, Alpine Skiing) match all but the first two power-on frames on
-    all three machines. **Known gap:** Atlantis' sprite multiplexing differs
-    from MAME in about 0.3% of its pixels; not explained. CONFIG itself runs
-    one frame ahead of MAME after boot (its splash ends a frame early, the
-    transition frames identical); `config_frames` samples steady pictures
-    only.
-- **The stand-in BIOS** runs CONFIG's own MAME scenarios (hosts, edit, boot,
-  browse) with the same results as the real BIOS, and `stub_boot` presses
-  every key of the matrix and every stick direction through it.
-- **`ctest`** (26 tests): the core alone with no SDL, the chips above, the
-  stand-in, the cartridge against a loopback FujiNet (a pushed image staged,
-  swapped in at the next fetch of `$400`, the trace tap byte for byte with the
-  wire), the paced host (59.83 Hz measured), the session, ROM import (CRC-forged
-  fillers, our own zip reader, folders), bindings, the keyboard layout, media
-  routing, gamepads, and the debugger contract.
+- **The core against MAME** (all run on this machine, with MAME's own driver and
+  the author's own cartridge dumps; none of them are in the repo):
+  - the 2650: 12 generated probe programs, 358,415 instructions, traces
+    (PC, PSU/PSL, R0-R3, exact cycles) identical; 245 of 256 opcodes executed
+    (the rest are HALT and the illegal ones); the disassembler's text, length
+    and flags for all 256 opcodes. Interrupts and HALT could not be compared
+    (MAME's Arcadia never raises an IRQ) and rest on hand-written tests;
+  - the whole machine: all 48 cartridges identical to MAME for 900 of 900
+    frames under a scripted input session, and 13 generated UVI stress
+    carts, frame for frame from frame 0; CONFIG's frames match from frame 0
+    (`config_frames`, no ROM needed). A MAME quirk — a doubled object near the
+    bottom reads past its background buffer — is reproduced on purpose;
+  - **Not verified:** the PAL row against MAME (MAME runs every clone at NTSC)
+    and the beeper against a recording.
+- **Live FujiNet:** CONFIG reaches the hosts page, browses and boots a game
+  from a real in-process FujiNet; a FujiNet app that claims the mailbox keeps
+  it and runs.
+- **`ctest`**: the core alone with no SDL, the 2650 and UVI, the machine and
+  cartridges, the cartridge against a loopback FujiNet (a pushed image staged,
+  swapped in at the next `$2DFE` read, the trace tap byte for byte with the
+  wire), the paced host (60.00 Hz measured), the session, bindings, the
+  keypad layout, media routing, gamepads, and the debugger contract.
 - **GNOME, KDE, Windows, macOS** — see `TODO` for each frontend's state.
 
 ## Cutting a release
@@ -227,6 +223,6 @@ set, and check the bundle for leaked Homebrew dylibs.
 
 ## Licence
 
-GPL-3.0-or-later. See `COMPLIANCE.md` for per-component provenance. "Magnavox",
-"Arcadia" and "Philips Videopac" are trademarks of their owners, used to name
-the machine emulated; this project is not affiliated with them.
+GPL-3.0-or-later. See `COMPLIANCE.md` for per-component provenance. "Emerson"
+and "Arcadia 2001" are trademarks of their owners, used to name the machine
+emulated; this project is not affiliated with them.
