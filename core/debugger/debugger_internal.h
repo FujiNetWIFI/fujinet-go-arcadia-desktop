@@ -1,6 +1,6 @@
 /*
  * debugger_internal -- the engine's side of the session glue, the prompt's
- * view of the engine, and what debugger.c shares with vdcview.c. Not
+ * view of the engine, and what debugger.c shares with uviview.c. Not
  * installed.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
@@ -47,12 +47,13 @@ extern const char *const arcdebug_reg_names[];
 /* The running machine, or NULL when the host is not running. Every use is
  * under arc_host_lock (or on the machine thread). */
 arc_machine_t *arcdebug_machine(void);
+/* Where the beam is: the UVI's line and the pixel in it. */
+void arcdebug_beam(arc_machine_t *m, int *vpos, int *hpos);
 
-/* vdcview.c: the prompt's views of the chips. Each takes the host lock. */
-int arcdebug_text_vdc(char *dst, int dstsz);
+/* uviview.c: the prompt's views of the chip. Each takes the host lock. */
+int arcdebug_text_uvi(char *dst, int dstsz);
 int arcdebug_text_objects(char *dst, int dstsz);
-int arcdebug_text_ef(char *dst, int dstsz);
-int arcdebug_text_voice(char *dst, int dstsz);
+int arcdebug_text_screen(char *dst, int dstsz);
 
 #ifdef __cplusplus
 }

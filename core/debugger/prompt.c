@@ -37,45 +37,38 @@ static void out(outbuf *o, const char *fmt, ...)
 
 static const char *const commands[] = {
     "help", "step", "over", "out", "run", "stop", "runto", "scanline", "frame",
-    "break", "bpr", "bpw", "bpxr", "bpxw", "bpir", "bpiw", "bpvr", "bpvw", "bpin", "bpout", "delete",
-    "enable", "disable", "clear", "breaks", "print", "regs", "set", "mem", "poke", "vdc",
-    "objects", "ef", "voice", "io", "keys", "cart", "mailbox", "label", "labels",
-    "disasm", "trace", "save", NULL,
+    "break", "bpr", "bpw", "delete", "enable", "disable", "clear", "breaks", "print",
+    "regs", "set", "mem", "poke", "uvi", "objects", "screen", "io", "keys", "cart",
+    "mailbox", "label", "labels", "disasm", "trace", "save", NULL,
 };
 
 static const char *help_text =
     "step [n]               run n instructions (F7)\n"
-    "over                   step over a CALL (or a DJNZ loop) (F8)\n"
-    "out                    run to the routine's RET / RETR (Shift+F8)\n"
+    "over                   step over a branch to subroutine (F8)\n"
+    "out                    run to the routine's RETC / RETE (Shift+F8)\n"
     "run | stop             go / break\n"
     "runto <addr>           run until PC = addr\n"
     "scanline [n] | frame [n]   run until the beam has moved n lines / n frames\n"
     "break <addr>[-<end>] [cond]            execute breakpoint\n"
-    "bpr | bpw <addr>[-<end>] [cond]        program-data read / write\n"
-    "bpxr | bpxw <addr>[-<end>] [cond]      external data (MOVX) read / write\n"
-    "bpir | bpiw <addr>[-<end>] [cond]      internal RAM read / write\n"
-    "bpvr | bpvw <addr>[-<end>] [cond]      VDC register read / write (VDC selected)\n"
-    "bpin | bpout <p1|p2|bus> [cond]        IN / OUT on a port\n"
+    "bpr | bpw <addr>[-<end>] [cond]        PROG-space read / write (the UVI is $1800-$1AFF)\n"
     "delete <id|addr> | enable <id> | disable <id> | clear | breaks\n"
-    "print <expr>           e.g. print r3, print x[$E3], print v[$A1] & 8\n"
-    "regs                   CPU registers\n"
-    "set <reg> <expr>       e.g. set pc $0412, set r2 $09, set mb 1, set f1 1\n"
+    "print <expr>           e.g. print r3, print u[$FC], print p[$1900] & 8\n"
+    "regs                   CPU registers, status, return stack\n"
+    "set <reg> <expr>       e.g. set pc $0412, set r2 $09, set rs 1, set psl 0x0a\n"
     "mem [space] <addr> [len]    dump memory (side-effect free); space is\n"
-    "                       prog (default), xdata, iram or vdc\n"
-    "poke [space] <addr> <v...>  write memory (prog is read-only)\n"
-    "vdc | objects          the 8244/8245: registers; sprites, characters, quads\n"
-    "ef | voice             the G7400's EF9340; The Voice's SP0256\n"
-    "io | keys              ports decoded; the keyboard matrix and the sticks\n"
+    "                       prog (default), uvi or cart\n"
+    "poke [space] <addr> <v...>  write memory (prog takes the UVI window and cart RAM)\n"
+    "uvi | objects | screen the 2637: registers; the four objects; the character screen\n"
+    "io | keys              the console's inputs; the keypads and sticks\n"
     "cart | mailbox         the cartridge; the FujiNet mailbox page\n"
     "label <addr> [name] | labels [file]\n"
     "disasm [addr] [n]\n"
     "trace [on|off|clear|n] record / show the last n instructions\n"
-    "save <dis|ram|mailbox|vdc|font|screen|regs> <file>\n"
-    "Expressions: $0400 0x400 400h 1024 %1010; registers a pc psw sp r0-r7 (the\n"
-    "bank in use) r0'-r7' (bank 1) t (timer) cnt (prescaler) p1 p2 bus c ac f0 f1\n"
-    "bs mb; [addr] a program byte; x[addr] external data, i[addr] internal RAM,\n"
-    "v[addr] the VDC (v[$A1] is its status); labels; vpos hpos frame cycles; in a\n"
-    "condition, value and addr; C operators.\n";
+    "save <dis|mailbox|uvi|font|cart|screen|regs> <file>\n"
+    "Expressions: $0400 0x400 400h 1024 %1010; registers r0 r1-r3 (the set in use)\n"
+    "r1'-r3' (set 1) pc iar psu psl sp cc c com wc rs idc ovf f ii s; [addr] a PROG\n"
+    "byte; p[addr] u[off] c[off] PROG / UVI / CART bytes; labels; vpos hpos frame\n"
+    "cycles; in a condition, value and addr; C operators.\n";
 
 static char *next_tok(char **p)
 {
@@ -131,14 +124,13 @@ static int range(arcdebug *d, outbuf *o, char *tok, long *a, long *b)
     return 0;
 }
 
-/* prog, xdata, iram, vdc (and the short forms), else -1 */
+/* prog, uvi, cart (and the short forms), else -1 */
 static int space_by_name(const char *n)
 {
     static const struct { const char *name; int space; } map[] = {
         {"prog", ARC_SPACE_PROG}, {"p", ARC_SPACE_PROG}, {"program", ARC_SPACE_PROG},
-        {"xdata", ARC_SPACE_XDATA}, {"x", ARC_SPACE_XDATA}, {"ext", ARC_SPACE_XDATA},
-        {"iram", ARC_SPACE_IRAM}, {"i", ARC_SPACE_IRAM}, {"ram", ARC_SPACE_IRAM},
-        {"vdc", ARC_SPACE_VDC}, {"v", ARC_SPACE_VDC},
+        {"uvi", ARC_SPACE_UVI}, {"u", ARC_SPACE_UVI}, {"vdc", ARC_SPACE_UVI},
+        {"cart", ARC_SPACE_CART}, {"c", ARC_SPACE_CART}, {"rom", ARC_SPACE_CART},
     };
     for (unsigned i = 0; i < sizeof map / sizeof map[0]; i++)
         if (!strcasecmp(map[i].name, n))
@@ -146,39 +138,40 @@ static int space_by_name(const char *n)
     return -1;
 }
 
-static const char *const space_label[4] = { "prog", "xdata", "iram", "vdc" };
+static const char *const space_label[3] = { "prog", "uvi", "cart" };
 
 static void show_regs(arcdebug *d, outbuf *o)
 {
     arcdebug_cpu c;
+    static const char *const ccs[] = { "zero", "positive", "negative", "11" };
     arcdebug_cpu_get(d, &c);
-    out(o, "A=%02X  PC=%03X  MB=%d  PSW=%02X [C=%d AC=%d F0=%d F1=%d BS=%d SP=%d]\n", c.a, c.pc,
-        c.mb, c.psw, c.cy, c.ac, c.f0, c.f1, c.bs, c.sp);
+    out(o, "PC=%04X (page %04X iar %04X)  PSU=%02X [S=%d F=%d II=%d SP=%d]  PSL=%02X [CC=%s IDC=%d "
+           "RS=%d WC=%d OVF=%d COM=%d C=%d]\n",
+        c.pc, c.page, c.iar, c.psu, c.sense, c.flag, c.ii, c.sp, c.psl, ccs[c.cc & 3], c.idc, c.rs,
+        c.wc, c.ovf, c.com, c.c);
+    out(o, "R0=%02X", c.r0);
     for (int b = 0; b < 2; b++)
     {
-        out(o, "bank %d%s:", b, b == c.bs ? " (in use)" : "");
-        for (int i = 0; i < 8; i++)
-            out(o, " R%d=%02X", i, c.r[b][i]);
-        out(o, "\n");
+        out(o, "   bank %d%s:", b, b == c.rs ? " (in use)" : "");
+        for (int i = 1; i < 4; i++)
+            out(o, " R%d%s=%02X", i, b ? "'" : "", c.r[b][i]);
     }
-    out(o, "T=%02X (%s)  prescaler=%02X  TF=%d  TCNTI=%d  EN I=%d  in ISR=%d%s%s\n", c.timer,
-        c.timer_mode == 1 ? "timer" : c.timer_mode == 2 ? "event counter" : "stopped", c.prescaler,
-        c.tf, c.tcnti_en, c.ext_int_en, c.in_interrupt, c.irq_pending ? "  INT pending" : "",
-        c.timer_irq_pending ? "  timer IRQ pending" : "");
-    out(o, "P1=%02X P2=%02X BUS=%02X   T0=%d T1=%d INT=%d\n", c.p1, c.p2, c.bus, c.t0, c.t1,
-        c.int_line);
-    out(o, "line %d dot %d  frame %u  cycles %llu  instructions %llu\n", c.vpos, c.hpos, c.frame,
+    out(o, "\nreturn stack (SP %d):", c.sp);
+    for (int i = 0; i < 8; i++)
+        out(o, "%s%04X%s", i == c.sp ? " [" : " ", c.ras[i], i == c.sp ? "]" : "");
+    out(o, "\n%s%s\n", c.halted ? "halted  " : "", c.illegal_count ? "illegal opcodes seen" : "");
+    out(o, "line %d pixel %d  frame %u  cycles %llu  instructions %llu\n", c.vpos, c.hpos, c.frame,
         (unsigned long long)c.cycles, (unsigned long long)c.instructions);
 }
 
-static void dump(outbuf *o, int space, uint16_t addr, const uint8_t *b, int n)
+static void dump(outbuf *o, int space, uint32_t addr, const uint8_t *b, int n)
 {
-    const int w = space == ARC_SPACE_PROG ? 3 : 2;
-    const unsigned mask = space == ARC_SPACE_PROG ? 0xfff : space == ARC_SPACE_IRAM ? 0x3f : 0xff;
+    const int w = space == ARC_SPACE_PROG ? 4 : space == ARC_SPACE_UVI ? 3 : 5;
+    const unsigned mask = space == ARC_SPACE_PROG ? 0x7fff : space == ARC_SPACE_UVI ? 0xfff : 0xfffff;
 
     for (int i = 0; i < n; i += 16)
     {
-        out(o, "%0*X ", w, (addr + i) & mask);
+        out(o, "%0*X ", w, (addr + (uint32_t)i) & mask);
         for (int j = 0; j < 16; j++)
             out(o, j < n - i ? " %02X" : "   ", b[i + j]);
         out(o, "  ");
@@ -188,38 +181,27 @@ static void dump(outbuf *o, int space, uint16_t addr, const uint8_t *b, int n)
     }
 }
 
-/* the registers the chips and the cartridge decode in a dumped range */
-static void dump_names(arcdebug *d, outbuf *o, int space, uint16_t addr, int n)
+/* the registers the UVI and the cartridge decode in a dumped range */
+static void dump_names(arcdebug *d, outbuf *o, int space, uint32_t addr, int n)
 {
-    if (space == ARC_SPACE_XDATA)
+    for (int i = 0; i < n; i++)
     {
-        for (int i = 0; i < n; i++)
-        {
-            const char *nm = arc_xdata_name((uint8_t)(addr + i));
-            if (nm)
-                out(o, "  %02X %s\n", (addr + i) & 0xff, nm);
-        }
-    }
-    else if (space == ARC_SPACE_VDC)
-    {
-        for (int i = 0; i < n; i++)
-        {
-            char name[48], text[160];
-            const unsigned a = (addr + (unsigned)i) & 0xff;
-            /* the control and status registers, where the byte means something
-             * the hex does not say */
-            if (a >= 0xa0 && a <= 0xaa)
-            {
-                arcdebug_vdc_describe(d, a, name, sizeof name, text, sizeof text);
-                out(o, "  %02X %-10s %s\n", a, name, text);
-            }
-        }
-    }
-}
+        char name[48], text[160];
+        const uint32_t a = addr + (uint32_t)i;
 
-static const char *space_name(int space)
-{
-    return space >= 0 && space < 4 ? space_label[space] : "?";
+        if (space == ARC_SPACE_UVI && a >= 0xf0 && a < 0x300 && !(a >= 0x180 && a < 0x1c0))
+        {
+            arcdebug_uvi_describe(d, a, name, sizeof name, text, sizeof text);
+            if (text[0])
+                out(o, "  %03X %-10s %s\n", a, name, text);
+        }
+        else if (space == ARC_SPACE_PROG)
+        {
+            const char *nm = arc_mailbox_name((uint16_t)a);
+            if (nm)
+                out(o, "  %04X %s\n", a, nm);
+        }
+    }
 }
 
 static void list_breaks(arcdebug *d, outbuf *o)
@@ -237,27 +219,18 @@ static void list_breaks(arcdebug *d, outbuf *o)
         if (bp[i].type & ARCDEBUG_BP_EXEC)  strcat(kinds, "x");
         if (bp[i].type & ARCDEBUG_BP_READ)  strcat(kinds, "r");
         if (bp[i].type & ARCDEBUG_BP_WRITE) strcat(kinds, "w");
-        if (bp[i].type & ARCDEBUG_BP_IN)    strcat(kinds, "i");
-        if (bp[i].type & ARCDEBUG_BP_OUT)   strcat(kinds, "o");
         out(o, "#%d %-3s ", bp[i].id, kinds);
-        if (bp[i].type & (ARCDEBUG_BP_IN | ARCDEBUG_BP_OUT))
-            out(o, "%s", bp[i].space == 1 ? "P1" : bp[i].space == 2 ? "P2" : "BUS");
+        if (bp[i].start == bp[i].end)
+            out(o, "$%04X", bp[i].start);
         else
-        {
-            if (bp[i].type & (ARCDEBUG_BP_READ | ARCDEBUG_BP_WRITE))
-                out(o, "%s ", space_name(bp[i].space));
-            if (bp[i].start == bp[i].end)
-                out(o, "$%03X", bp[i].start);
-            else
-                out(o, "$%03X-$%03X", bp[i].start, bp[i].end);
-        }
+            out(o, "$%04X-$%04X", bp[i].start, bp[i].end);
         out(o, "%s%s%s  hits %u\n", bp[i].enabled ? "" : " (disabled)",
             bp[i].condition[0] ? " if " : "", bp[i].condition, bp[i].hits);
     }
 }
 
-/* break / bpr / bpw ... : "<addr>[-<end>] [condition]" in `space` */
-static void add_bp(arcdebug *d, outbuf *o, int type, int space, char *args)
+/* break / bpr / bpw : "<addr>[-<end>] [condition]" in PROG space */
+static void add_bp(arcdebug *d, outbuf *o, int type, char *args)
 {
     char *t = next_tok(&args);
     long a, b;
@@ -270,65 +243,34 @@ static void add_bp(arcdebug *d, outbuf *o, int type, int space, char *args)
     }
     if (range(d, o, t, &a, &b))
         return;
-    if (a < 0 || b < 0 || a > 0xfff || b > 0xfff)
+    if (a < 0 || b < 0 || a > 0x7fff || b > 0x7fff)
     {
         out(o, "error: address out of range\n");
         return;
     }
-    id = arcdebug_breakpoint_add(d, type, space, (uint16_t)a, (uint16_t)b, rest_of(args));
+    id = arcdebug_breakpoint_add(d, type, ARC_SPACE_PROG, (uint16_t)a, (uint16_t)b, rest_of(args));
     if (id < 0)
-        out(o, "error: the condition does not parse, or the address is outside %s space\n",
-            space_name(space));
+        out(o, "error: the condition does not parse, or the address is outside PROG space\n");
     else
     {
         out(o, "breakpoint #%d\n", id);
-        if (space == ARC_SPACE_PROG && (type & ARCDEBUG_BP_WRITE))
-            out(o, "(nothing writes program space; this one will not fire)\n");
+        if ((type & ARCDEBUG_BP_WRITE) && !(a <= 0x1aff && b >= 0x1800))
+            out(o, "(only the UVI at $1800-$1AFF takes writes; this one will not fire)\n");
     }
 }
 
-/* bpin / bpout <p1|p2|bus> [condition] */
-static void add_io_bp(arcdebug *d, outbuf *o, int type, char *args)
-{
-    char *t = next_tok(&args);
-    int port = -1, id;
-
-    if (t)
-    {
-        if (!strcasecmp(t, "p1") || !strcmp(t, "1")) port = 1;
-        else if (!strcasecmp(t, "p2") || !strcmp(t, "2")) port = 2;
-        else if (!strcasecmp(t, "bus") || !strcmp(t, "0")) port = 0;
-    }
-    if (port < 0)
-    {
-        out(o, "usage: %s <p1|p2|bus> [condition]\n", type == ARCDEBUG_BP_IN ? "bpin" : "bpout");
-        return;
-    }
-    id = arcdebug_breakpoint_add(d, type, port, 0, 0, rest_of(args));
-    if (id < 0)
-        out(o, "error: the condition does not parse\n");
-    else
-        out(o, "breakpoint #%d\n", id);
-}
-
-/* a register for `set`; -1 if unknown */
-static int reg_by_name(const char *n, int bs, int *iram_addr)
+static int reg_by_name(const char *n)
 {
     static const struct { const char *name; int reg; } map[] = {
-        {"a", ARC_REG_A}, {"pc", ARC_REG_PC}, {"psw", ARC_REG_PSW}, {"sp", ARC_REG_SP},
-        {"t", ARC_REG_T}, {"cnt", ARC_REG_CNT}, {"p1", ARC_REG_P1}, {"p2", ARC_REG_P2},
-        {"bus", ARC_REG_BUS}, {"c", ARC_REG_C}, {"ac", ARC_REG_AC}, {"f0", ARC_REG_F0},
-        {"f1", ARC_REG_F1}, {"bs", ARC_REG_BS}, {"mb", ARC_REG_MB},
+        {"r0", ARC_REG_R0}, {"r1", ARC_REG_R1}, {"r2", ARC_REG_R2}, {"r3", ARC_REG_R3},
+        {"r1'", ARC_REG_R1B}, {"r2'", ARC_REG_R2B}, {"r3'", ARC_REG_R3B},
+        {"pc", ARC_REG_PC}, {"iar", ARC_REG_IAR}, {"psu", ARC_REG_PSU}, {"psl", ARC_REG_PSL},
+        {"sp", ARC_REG_SP}, {"f", ARC_REG_F}, {"ii", ARC_REG_II}, {"cc", ARC_REG_CC},
+        {"idc", ARC_REG_IDC}, {"rs", ARC_REG_RS}, {"wc", ARC_REG_WC}, {"ovf", ARC_REG_OVF},
+        {"com", ARC_REG_COM}, {"c", ARC_REG_C},
     };
-    (void)bs;
-    *iram_addr = -1;
-    if (n[0] == 'r' && n[1] >= '0' && n[1] <= '7')
-    {
-        if (n[2] == '\0')
-            return ARC_REG_R0 + (n[1] - '0');
-        if (n[2] == '\'' && n[3] == '\0')
-            return ARC_REG_R0_B1 + (n[1] - '0');
-    }
+    if (!strncasecmp(n, "ras", 3) && n[3] >= '0' && n[3] <= '7' && !n[4])
+        return ARC_REG_RAS0 + (n[3] - '0');
     for (unsigned i = 0; i < sizeof map / sizeof map[0]; i++)
         if (!strcasecmp(map[i].name, n))
             return map[i].reg;
@@ -339,41 +281,42 @@ static void show_io(arcdebug *d, outbuf *o)
 {
     arcdebug_io io;
     arcdebug_io_get(d, &io);
-    out(o, "BIOS: %s%s   character set: %s\n", io.have_bios ? "imported" : "the stand-in",
-        io.missing & ARC_MISSING_BIOS ? " (parked: a game needs the BIOS)" : "",
-        io.have_font ? "imported" : "not imported");
-    out(o, "P1=%02X: bank P10/P11=%d  keyboard %s  VDC %s  RAM/cart %s  EF9340 %s  copy mode %s"
-           "  LUM %s\n",
-        io.p1, io.cart_bank, io.kbd_enable ? "on" : "off", io.vdc_select ? "selected" : "off",
-        io.ram_select ? "selected" : "off", io.ef_select ? "selected" : "off",
-        io.copy_mode ? "on" : "off", io.lum ? "on" : "off");
-    out(o, "P2=%02X: keyboard row %d   T0 %d\n", io.p2, io.kbd_row, io.t0);
-    out(o, "RESET %s   audio samples %llu   Voice %s\n", io.reset_held ? "held" : "up",
-        (unsigned long long)io.audio_samples, io.voice_present ? "present" : "absent");
+    out(o, "%s, cartridge: %s\n", io.is_pal ? "Arcadia 2001 (PAL)" : "Arcadia 2001 (NTSC)",
+        io.cart_type == 3 ? "FujiNet" : io.cart_type == 2 ? "Golf" : io.cart_type == 1 ? "standard" : "none");
+    out(o, "SENSE (vblank) %d   FLAG %d   RESET %s   audio samples %llu\n", io.sense, io.flag,
+        io.reset_held ? "held" : "up", (unsigned long long)io.audio_samples);
+    out(o, "keypad columns $1900-$1907:");
+    for (int i = 0; i < 8; i++)
+        out(o, " %02X", io.pad[i]);
+    out(o, "   panel $1908: %02X\n", io.panel);
+    out(o, "pots: stick 1 x %02X y %02X, stick 2 x %02X y %02X\n", io.pot[0][0], io.pot[0][1],
+        io.pot[1][0], io.pot[1][1]);
 }
 
 static void show_keys(arcdebug *d, outbuf *o)
 {
+    static const char *const names[12] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "CLEAR", "0", "ENTER" };
     arcdebug_io io;
     arcdebug_io_get(d, &io);
-    for (int r = 0; r < 8; r++)
+    for (int p = 0; p < 2; p++)
     {
-        const unsigned row = (unsigned)(io.keys >> (r * 8)) & 0xff;
-        if (r >= 6 && !row)
-            continue;
-        out(o, "row %d:", r);
-        for (int c = 0; c < 8; c++)
-            if (row & (1u << c))
-                out(o, " %d", r * 8 + c);
-        out(o, "%s\n", row ? "" : " (none)");
+        out(o, "keypad %d:", p + 1);
+        for (int k = 0; k < 12; k++)
+            if (io.keys & (1ull << (p * 12 + k)))
+                out(o, " %s", names[k]);
+        out(o, "%s\n", (io.keys >> (p * 12)) & 0xfff ? "" : " (none)");
     }
+    out(o, "panel:%s%s%s%s\n", io.keys & (1ull << 24) ? " START" : "", io.keys & (1ull << 25) ? " OPTION" : "",
+        io.keys & (1ull << 26) ? " SELECT" : "", (io.keys >> 24) & 7 ? "" : " (none)");
     for (int s = 0; s < 2; s++)
     {
         const uint8_t j = io.sticks[s];
-        out(o, "stick %d:%s%s%s%s%s%s\n", s + 1, j & 1 ? " UP" : "", j & 2 ? " RIGHT" : "",
-            j & 4 ? " DOWN" : "", j & 8 ? " LEFT" : "", j & 16 ? " BUTTON" : "", j ? "" : " (centred)");
+        out(o, "stick %d:%s%s%s%s%s%s", s + 1, j & 1 ? " UP" : "", j & 2 ? " RIGHT" : "",
+            j & 4 ? " DOWN" : "", j & 8 ? " LEFT" : "", j & 16 ? " FIRE" : "", j ? "" : " (centred)");
+        if (io.disc[s][0] || io.disc[s][1])
+            out(o, "  disc %d,%d", io.disc[s][0], io.disc[s][1]);
+        out(o, "\n");
     }
-    out(o, "keyboard decoder %s, row %d\n", io.kbd_enable ? "on" : "off", io.kbd_row);
 }
 
 int arcdebug_command(arcdebug *d, const char *command, char *dst, int dstsz)
@@ -433,27 +376,11 @@ int arcdebug_command(arcdebug *d, const char *command, char *dst, int dstsz)
             arcdebug_scanline(d, (int)v);
     }
     else if (!strcmp(cmd, "break") || !strcmp(cmd, "bp"))
-        add_bp(d, &o, ARCDEBUG_BP_EXEC, ARC_SPACE_PROG, p);
+        add_bp(d, &o, ARCDEBUG_BP_EXEC, p);
     else if (!strcmp(cmd, "bpr"))
-        add_bp(d, &o, ARCDEBUG_BP_READ, ARC_SPACE_PROG, p);
+        add_bp(d, &o, ARCDEBUG_BP_READ, p);
     else if (!strcmp(cmd, "bpw"))
-        add_bp(d, &o, ARCDEBUG_BP_WRITE, ARC_SPACE_PROG, p);
-    else if (!strcmp(cmd, "bpxr"))
-        add_bp(d, &o, ARCDEBUG_BP_READ, ARC_SPACE_XDATA, p);
-    else if (!strcmp(cmd, "bpxw"))
-        add_bp(d, &o, ARCDEBUG_BP_WRITE, ARC_SPACE_XDATA, p);
-    else if (!strcmp(cmd, "bpir"))
-        add_bp(d, &o, ARCDEBUG_BP_READ, ARC_SPACE_IRAM, p);
-    else if (!strcmp(cmd, "bpiw"))
-        add_bp(d, &o, ARCDEBUG_BP_WRITE, ARC_SPACE_IRAM, p);
-    else if (!strcmp(cmd, "bpvr"))
-        add_bp(d, &o, ARCDEBUG_BP_READ, ARC_SPACE_VDC, p);
-    else if (!strcmp(cmd, "bpvw"))
-        add_bp(d, &o, ARCDEBUG_BP_WRITE, ARC_SPACE_VDC, p);
-    else if (!strcmp(cmd, "bpin"))
-        add_io_bp(d, &o, ARCDEBUG_BP_IN, p);
-    else if (!strcmp(cmd, "bpout"))
-        add_io_bp(d, &o, ARCDEBUG_BP_OUT, p);
+        add_bp(d, &o, ARCDEBUG_BP_WRITE, p);
     else if (!strcmp(cmd, "delete") || !strcmp(cmd, "enable") || !strcmp(cmd, "disable"))
     {
         char *t = next_tok(&p);
@@ -481,7 +408,7 @@ int arcdebug_command(arcdebug *d, const char *command, char *dst, int dstsz)
                         found = 1;
                     }
                 if (!found)
-                    out(&o, "no breakpoint #%ld or at $%03lX\n", id, v & 0xfff);
+                    out(&o, "no breakpoint #%ld or at $%04lX\n", id, v & 0x7fff);
             }
             else if (!found)
                 out(&o, "no breakpoint #%ld\n", id);
@@ -513,10 +440,10 @@ int arcdebug_command(arcdebug *d, const char *command, char *dst, int dstsz)
     else if (!strcmp(cmd, "set"))
     {
         char *r = next_tok(&p);
-        int ia, reg = r ? reg_by_name(r, 0, &ia) : -1;
+        int reg = r ? reg_by_name(r) : -1;
         if (reg < 0)
-            out(&o, "usage: set <reg> <expr>   (a pc psw sp r0-r7 r0'-r7' t cnt p1 p2 bus c ac f0 f1 "
-                    "bs mb)\n");
+            out(&o, "usage: set <reg> <expr>   (r0 r1-r3 r1'-r3' pc iar psu psl sp f ii cc idc rs wc "
+                    "ovf com c ras0-ras7)\n");
         else if (eval(d, &o, rest_of(p), &v) == 0)
         {
             if (!arcdebug_is_stopped(d))
@@ -543,17 +470,17 @@ int arcdebug_command(arcdebug *d, const char *command, char *dst, int dstsz)
         if (!t || eval(d, &o, t, &v) || (l && eval(d, &o, l, &w)))
         {
             if (!t)
-                out(&o, "usage: mem [prog|xdata|iram|vdc] <addr> [len]\n");
+                out(&o, "usage: mem [prog|uvi|cart] <addr> [len]\n");
             return o.len;
         }
         if (w > 256)
             w = 256;
         if (w < 1)
             w = 1;
-        arcdebug_read(d, space, (uint16_t)v, buf, (int)w);
+        arcdebug_read(d, space, (uint32_t)v, buf, (int)w);
         out(&o, "%s space\n", space_label[space]);
-        dump(&o, space, (uint16_t)v, buf, (int)w);
-        dump_names(d, &o, space, (uint16_t)v, (int)w);
+        dump(&o, space, (uint32_t)v, buf, (int)w);
+        dump_names(d, &o, space, (uint32_t)v, (int)w);
     }
     else if (!strcmp(cmd, "poke"))
     {
@@ -567,36 +494,25 @@ int arcdebug_command(arcdebug *d, const char *command, char *dst, int dstsz)
         if (!t || eval(d, &o, t, &v))
         {
             if (!t)
-                out(&o, "usage: poke [xdata|iram|vdc] <addr> <v...>\n");
-            return o.len;
-        }
-        if (space == ARC_SPACE_PROG)
-        {
-            out(&o, "program space is read-only: the BIOS and the cartridge's image cannot be "
-                    "edited from here\n");
+                out(&o, "usage: poke [prog|uvi|cart] <addr> <v...>\n");
             return o.len;
         }
         while ((b = next_tok(&p)) != NULL)
         {
             if (eval(d, &o, b, &w))
                 return o.len;
-            if (space == ARC_SPACE_VDC)
-                arcdebug_vdc_write(d, (unsigned)(v + n), (uint8_t)w);
-            else
-                arcdebug_write(d, space, (uint16_t)(v + n), (uint8_t)w);
+            arcdebug_write(d, space, (uint32_t)(v + n), (uint8_t)w);
             n++;
         }
-        out(&o, "%d byte%s at %s $%02lX\n", n, n == 1 ? "" : "s", space_label[space],
-            (unsigned long)v & 0xff);
+        out(&o, "%d byte%s at %s $%lX\n", n, n == 1 ? "" : "s", space_label[space],
+            (unsigned long)v);
     }
-    else if (!strcmp(cmd, "vdc"))
-        o.len += arcdebug_text_vdc(dst + o.len, dstsz - o.len);
+    else if (!strcmp(cmd, "uvi") || !strcmp(cmd, "vdc"))
+        o.len += arcdebug_text_uvi(dst + o.len, dstsz - o.len);
     else if (!strcmp(cmd, "objects"))
         o.len += arcdebug_text_objects(dst + o.len, dstsz - o.len);
-    else if (!strcmp(cmd, "ef"))
-        o.len += arcdebug_text_ef(dst + o.len, dstsz - o.len);
-    else if (!strcmp(cmd, "voice"))
-        o.len += arcdebug_text_voice(dst + o.len, dstsz - o.len);
+    else if (!strcmp(cmd, "screen"))
+        o.len += arcdebug_text_screen(dst + o.len, dstsz - o.len);
     else if (!strcmp(cmd, "io"))
         show_io(d, &o);
     else if (!strcmp(cmd, "keys"))
@@ -610,17 +526,16 @@ int arcdebug_command(arcdebug *d, const char *command, char *dst, int dstsz)
         out(&o, "%s\n", info);
         if (!strcmp(cmd, "cart"))
         {
-            out(&o, "type %s%s, image %u bytes", c.type_name ? c.type_name : "?",
-                c.voice_in_front ? " behind The Voice" : "", c.rom_size);
+            out(&o, "type %s, image %u bytes", c.type_name ? c.type_name : "?", c.rom_size);
             if (c.type == ARC_CART_FUJINET)
                 out(&o, ", CRC %08X%s\n", c.live_crc,
                     c.mailbox ? ", claims the mailbox" : ", no mailbox");
             else
-                out(&o, ", bank %d, control $%02X\n", c.bank, c.control);
+                out(&o, "\n");
             if (c.type == ARC_CART_FUJINET)
             {
-                out(&o, "%s: %d %s, %d in\n", c.app_live ? "APPBANK pages" : "banks", c.nbanks,
-                    c.app_live ? "pages" : "legacy banks", c.fbank);
+                out(&o, "%s: %d, page %d in the $0800 window\n", c.app_live ? "APPBANK pages" : "banks",
+                    c.nbanks, c.fbank);
                 out(&o, "staged: %s%s  swaps %d\n",
                     c.staged_size ? (c.staged_mailbox ? "an app" : "a game") : "nothing",
                     c.armed ? " (armed)" : "", c.swaps);
@@ -634,8 +549,8 @@ int arcdebug_command(arcdebug *d, const char *command, char *dst, int dstsz)
         }
         if (!strcmp(cmd, "mailbox"))
         {
-            out(&o, "$F20-$FFF as the console reads it:\n");
-            dump(&o, ARC_SPACE_PROG, 0xf20, c.mailbox_page, 0x50);
+            out(&o, "$2B00-$2FFF as the console reads it (reply slice, status page, hotspots):\n");
+            dump(&o, ARC_SPACE_PROG, 0x2b00, c.mailbox_page, 0x120);
         }
     }
     else if (!strcmp(cmd, "label"))
@@ -643,7 +558,7 @@ int arcdebug_command(arcdebug *d, const char *command, char *dst, int dstsz)
         char *t = next_tok(&p), *n = next_tok(&p);
         if (!t || eval(d, &o, t, &v))
             return o.len;
-        arcdebug_set_label(d, (uint16_t)(v & 0xfff), n);
+        arcdebug_set_label(d, (uint16_t)(v & 0x7fff), n);
     }
     else if (!strcmp(cmd, "labels"))
     {
@@ -672,7 +587,7 @@ int arcdebug_command(arcdebug *d, const char *command, char *dst, int dstsz)
         {
             if (lines[i].label[0])
                 out(&o, "%s:\n", lines[i].label);
-            out(&o, "%c%c%03X  %-6s %-20s%s%s\n", lines[i].is_pc ? '>' : ' ',
+            out(&o, "%c%c%04X  %-9s %-22s%s%s\n", lines[i].is_pc ? '>' : ' ',
                 lines[i].has_breakpoint ? '*' : ' ', lines[i].address, lines[i].bytes,
                 lines[i].disasm, lines[i].comment[0] ? "; " : "", lines[i].comment);
         }
@@ -705,9 +620,9 @@ int arcdebug_command(arcdebug *d, const char *command, char *dst, int dstsz)
                 arcdebug_line l;
                 int pcl;
                 arcdebug_disassemble(d, tr[i].pc, &l, 1, &pcl);
-                out(&o, "%10llu %3d:%3d  %03X  %-18s A=%02X PSW=%02X SP=%d R0=%02X R1=%02X\n",
+                out(&o, "%10llu %3d:%3d  %04X  %-22s R0=%02X R1=%02X R2=%02X R3=%02X PSU=%02X PSL=%02X\n",
                     (unsigned long long)tr[i].cycles, tr[i].vpos, tr[i].hpos, tr[i].pc, l.disasm,
-                    tr[i].a, tr[i].psw, tr[i].sp, tr[i].r0, tr[i].r1);
+                    tr[i].r0, tr[i].r1, tr[i].r2, tr[i].r3, tr[i].psu, tr[i].psl);
             }
         }
     }
@@ -717,7 +632,7 @@ int arcdebug_command(arcdebug *d, const char *command, char *dst, int dstsz)
         char *f = rest_of(p);
         char msg[300];
         if (!k || !*f)
-            out(&o, "usage: save <dis|ram|mailbox|vdc|font|screen|regs> <file>\n");
+            out(&o, "usage: save <dis|mailbox|uvi|font|cart|screen|regs> <file>\n");
         else
         {
             arcdebug_save(d, k, f, msg, sizeof msg);
@@ -759,7 +674,7 @@ int arcdebug_completions(arcdebug *d, const char *prefix, char *dst, int dstsz)
     }
     if (!strncmp(prefix, "save ", 5) && !strchr(prefix + 5, ' '))
     {
-        static const char *const kinds[] = { "dis", "ram", "mailbox", "vdc", "font", "screen", "regs", NULL };
+        static const char *const kinds[] = { "dis", "mailbox", "uvi", "font", "cart", "screen", "regs", NULL };
         for (int i = 0; kinds[i]; i++)
             if (!strncmp(kinds[i], word, n))
             {
@@ -771,23 +686,11 @@ int arcdebug_completions(arcdebug *d, const char *prefix, char *dst, int dstsz)
     if ((!strncmp(prefix, "mem ", 4) && !strchr(prefix + 4, ' ')) ||
         (!strncmp(prefix, "poke ", 5) && !strchr(prefix + 5, ' ')))
     {
-        static const char *const spaces[] = { "prog", "xdata", "iram", "vdc", NULL };
+        static const char *const spaces[] = { "prog", "uvi", "cart", NULL };
         for (int i = 0; spaces[i]; i++)
             if (!strncmp(spaces[i], word, n))
             {
                 out(&o, "%s\n", spaces[i]);
-                count++;
-            }
-        return count;
-    }
-    if ((!strncmp(prefix, "bpin ", 5) && !strchr(prefix + 5, ' ')) ||
-        (!strncmp(prefix, "bpout ", 6) && !strchr(prefix + 6, ' ')))
-    {
-        static const char *const ports[] = { "p1", "p2", "bus", NULL };
-        for (int i = 0; ports[i]; i++)
-            if (!strncmp(ports[i], word, n))
-            {
-                out(&o, "%s\n", ports[i]);
                 count++;
             }
         return count;

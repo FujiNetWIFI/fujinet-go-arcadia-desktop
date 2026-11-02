@@ -23,6 +23,10 @@ add_test(NAME no_sdl_link COMMAND no_sdl_link_test)
 # here so a module can land with its tests without touching this file.
 file(GLOB _arc_test_fragments "${CMAKE_CURRENT_SOURCE_DIR}/*.test.cmake")
 list(SORT _arc_test_fragments)
+if(ARC_CORE_ONLY)
+  # the debugger's tests need the debugger, which this build leaves out
+  list(FILTER _arc_test_fragments EXCLUDE REGEX "debugger\\.test\\.cmake$")
+endif()
 foreach(_frag IN LISTS _arc_test_fragments)
   include("${_frag}")
 endforeach()

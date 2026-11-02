@@ -114,10 +114,8 @@ static void shot(arcsession *s, const char *name)
 
 int main(int argc, char **argv)
 {
-    char cfg[512], data[512], st[160], dest[1200], msg[256];
+    char cfg[512], data[512], st[160], dest[1200];
     const char *cart = NULL;
-    const char *roms[16];
-    int nroms = 0;
     arcsession_paths p;
     arcsession *s;
     arcsession_start_opts o;
@@ -145,19 +143,11 @@ int main(int argc, char **argv)
     {
         if (!strcmp(argv[i], "--cart"))
             cart = argv[++i];
-        else if (!strcmp(argv[i], "--rom") && nroms < 16)
-            roms[nroms++] = argv[++i];
         else if (!strcmp(argv[i], "--import-sd"))
             i++;   /* after start: the SD tree exists once FujiNet is up */
         else
             break;
     }
-    for (int r = 0; r < nroms; r++)
-    {
-        int n = arcsession_rom_import(s, roms[r], msg, sizeof msg);
-        fprintf(out, "rom %s: %d imported (%s)\n", roms[r], n, msg);
-    }
-
     arcsession_default_opts(s, &o);
     o.enable_audio = 0;
     o.enable_gamepad = 0;
@@ -210,8 +200,8 @@ int main(int argc, char **argv)
             else if (!strcmp(w, "status"))
             {
                 arcsession_cart_status(s, st, sizeof st);
-                fprintf(out, "status: %s (booted %d, missing %u)\n", st,
-                        arcsession_cart_booted_game(s), arcsession_missing(s));
+                fprintf(out, "status: %s (booted %d)\n", st,
+                        arcsession_cart_booted_game(s));
             }
             else if (!strncmp(w, "until:", 6))
             {

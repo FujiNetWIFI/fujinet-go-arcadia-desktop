@@ -1,20 +1,25 @@
 /*
- * cart_test -- the FujiNet cartridge device and its transport against a
- * stand-in FujiNet on loopback, with no FujiNet runtime: the case the Linux
- * CI build (WITH_FUJINET=OFF) would otherwise never exercise.
+ * cart_test -- the cartridge slot's mappers, and the FujiNet cartridge device
+ * and its transport against a stand-in FujiNet on loopback, with no FujiNet
+ * runtime: the case the Linux CI build (WITH_FUJINET=OFF) would otherwise
+ * never exercise.
  *
- * The console side is the bus itself: MOVX writes to the mailbox registers
- * ($E0 REGSEL, $E1 REGDATA, $E3 SEQ, with P14 low) and reads of the cartridge
- * window ($400-$FFF, the status page at $F20), through the slot interface
- * (carts.h) with no CPU in the way. The firmware's host tests cover the
- * protocol against a stub port; this covers the port: the transposed device,
- * the portable transport, the staging and the swap at the next fetch of $400,
- * and the debugger's trace tap held to the bytes actually on the wire.
+ * The console side is the bus itself: reads of the cartridge window through
+ * the slot interface (carts.h) with no CPU in the way -- the console's $0000-
+ * $0FFF as read_rom and $2000-$7FFF as extra_rom, exactly how MAME's driver
+ * installs them. The mailbox is a set of read hotspots ($2D00 + register to
+ * arm one, $2E00 + value to write it, $2F00 + byte to append to the TX
+ * stream), the status page a window of repainted ROM ($2C00), the swap a read of
+ * $2DFE. The firmware's host tests cover the protocol against a stub port; this
+ * covers the port: the transposed device, the connector decode ($3000/$5000/
+ * $7000 open bus, $4000/$6000 aliasing the two blocks), the portable
+ * transport, the staging and the swap, and the trace tap held to the bytes
+ * actually on the wire.
  *
  * The stand-in answers one MOUNT_IMAGE the way fujinet-pc's ROM media does:
  * a pushed stream (OPEN, WRITE x N, CLOSE, each waiting for its ACK) of the
  * baked CONFIG image, and then the reply. POSIX only (the loopback listener);
- * SKIPs (77) elsewhere.
+ * SKIPs (77) elsewhere. The mapper checks run everywhere.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -31,11 +36,12 @@
 #include <unistd.h>
 #endif
 
+#include "arcmap.h"
+#include "carts.h"
 #include "fuji_mailbox.h"
 #include "fujinet_cart.h"
 #include "fujitcp_host.h"
 #include "fujiconfigrom.h"
-#include "fujitrace.h"
 
 static int failures;
 static void check(int ok, const char *what)
@@ -44,9 +50,50 @@ static void check(int ok, const char *what)
     if (!ok) failures++;
 }
 
+/* ---- the plain mappers (MAME's slot.cpp / rom.cpp) ---- */
+
+static void mapper_tests(void)
+{
+    static uint8_t img[8192], small[4096], golf[6144];
+    arc_cart_t c;
+    const char *err = NULL;
+
+    for (unsigned i = 0; i < sizeof img; i++)
+        img[i] = (uint8_t)(i * 7 + (i >> 8));
+    memcpy(small, img, sizeof small);
+    memcpy(golf, img, sizeof golf);
+
+    check(arc_crc32((const uint8_t *)"123456789", 9) == 0xcbf43926u, "CRC-32 is the zip polynomial");
+    check(arc_cart_identify(img, sizeof img) == ARC_CART_STD, "a plain image is a standard cart");
+    check(arc_cart_init(&c, ARC_CART_STD, img, sizeof img, &err) == 0, "a standard cart sets up");
+    check(c.extra_lo == 0x2000 && c.extra_hi == 0x7fff, "its second block is installed over $2000-$7FFF");
+    check(arc_cart_read_rom(&c, 0, 0) == img[0] && arc_cart_read_rom(&c, 0xfff, 0) == img[0xfff],
+          "read_rom is the first 4K");
+    check(arc_cart_extra_rom(&c, 0, 0) == img[0x1000] && arc_cart_extra_rom(&c, 0xfff, 0) == img[0x1fff],
+          "extra_rom($2000) is the second 4K");
+    check(arc_cart_extra_rom(&c, 0x1000, 0) == 0xff && arc_cart_extra_rom(&c, 0x5fff, 0) == 0xff,
+          "and past the image it reads $FF");
+    arc_cart_init(&c, ARC_CART_STD, small, sizeof small, &err);
+    check(arc_cart_read_rom(&c, 0x123, 0) == small[0x123] && arc_cart_extra_rom(&c, 0, 0) == 0xff,
+          "a 4K cart has nothing at $2000");
+
+    check(arc_cart_init(&c, ARC_CART_GOLF, golf, sizeof golf, &err) == 0, "a Golf cart sets up");
+    check(c.extra_lo == 0x4000 && c.extra_hi == 0x4fff, "its extra block is installed over $4000-$4FFF only");
+    check(arc_cart_extra_rom(&c, 0x100, 0) == golf[0x1100] && arc_cart_extra_rom(&c, 0x7ff, 0) == golf[0x17ff],
+          "extra_rom($4000) is the image from $1000");
+    check(arc_cart_extra_rom(&c, 0x800, 0) == 0xff, "past the 6K image it is $FF");
+    check(arc_cart_init(&c, ARC_CART_STD, NULL, 0, &err) != 0 && err, "an empty image is refused with a reason");
+    check(arc_cart_init(&c, 77, img, sizeof img, &err) != 0, "an unknown type is refused");
+    check(!strcmp(arc_cart_type_name(ARC_CART_GOLF), "Golf"), "the type has a name");
+}
+
 #ifdef _WIN32
 int main(void)
 {
+    mapper_tests();
+    printf("%d failure(s)\n", failures);
+    if (failures)
+        return 1;
     printf("SKIP: the loopback stand-in is POSIX only\n");
     return 77;
 }
@@ -60,7 +107,6 @@ typedef struct {
 } wire;
 
 static wire traced_wire[2];     /* by the trace's dir: 0 read, 1 sent */
-static fujitrace traced_ft;
 
 static void keep_trace(void *user, int dir, const uint8_t *buf, size_t len)
 {
@@ -70,7 +116,6 @@ static void keep_trace(void *user, int dir, const uint8_t *buf, size_t len)
         memcpy(w->b + w->n, buf, len);
         w->n += len;
     }
-    fujitrace_feed(&traced_ft, dir, buf, len);
 }
 
 /* A FujiBus packet with no params, SLIP-framed, as FujiNet sends one. */
@@ -134,8 +179,8 @@ static void fake_send(fake_fujinet *f, uint8_t dev, uint8_t cmd,
     send(f->fd, frame, n, 0);
 }
 
-/* the image the stand-in pushes: the baked CONFIG itself (a 12-page APPBANK
- * FujiNet app), so the swap is to something that claims the mailbox */
+/* the image the stand-in pushes: the baked CONFIG itself (a flat 8K FujiNet
+ * app), so the swap is to something that claims the mailbox */
 static const uint8_t *pushed = _configrom;
 #define PUSH_LEN FUJI_CONFIGROM_SIZE
 
@@ -161,14 +206,44 @@ static void *fake_main(void *arg)
     return NULL;
 }
 
-/* ---- the console's side ---- */
+/* ---- the console's side: reads of the cartridge window ---- */
+
+/* image offsets from $1000 up are console $2000 and up */
+#define CON(img) ((uint16_t)((img) + 0x1000))
 
 static arc_cart_t *cart;
 
+/* a console read at CPU address a, as the machine's memory map does it */
+static uint8_t cpu_read(uint16_t a, int peek)
+{
+    if (a < 0x1000)
+        return arc_cart_read_rom(cart, a, peek);
+    if (a >= cart->extra_lo && a <= cart->extra_hi)
+        return arc_cart_extra_rom(cart, (uint16_t)(a - cart->extra_lo), peek);
+    return 0;
+}
+
+/* the mailbox register write: a REGSEL read, then a REGDATA read */
 static void reg_write(uint8_t reg, uint8_t val)
 {
-    arc_cart_io_write(cart, FN_W_REGSEL, reg);
-    arc_cart_io_write(cart, FN_W_REGDATA, val);
+    (void)cpu_read(CON(FN_H_REGSEL + reg), 0);
+    (void)cpu_read(CON(FN_H_REGDATA + val), 0);
+}
+
+static void connector_tests(arc_fujinet_t *fj)
+{
+    check(cpu_read(0x0000, 1) == _configrom[0] && cpu_read(0x0fff, 1) == _configrom[0xfff],
+          "console $0000-$0FFF is the first 4K block");
+    check(cpu_read(0x2000, 1) == _configrom[0x1000] && cpu_read(0x2aff, 1) == _configrom[0x1aff],
+          "console $2000-$2FFF is the second block");
+    check(cpu_read(0x3000, 1) == 0xff && cpu_read(0x3abc, 1) == 0xff &&
+          cpu_read(0x5000, 1) == 0xff && cpu_read(0x7fff, 1) == 0xff,
+          "$3000, $5000 and $7000 are open bus (A12 high deselects the cart)");
+    check(cpu_read(0x4000, 1) == _configrom[0] && cpu_read(0x4abc, 1) == _configrom[0xabc],
+          "$4000 aliases block 1 (A14 is not on the connector)");
+    check(cpu_read(0x6000, 1) == _configrom[0x1000] && cpu_read(0x6abc, 1) == _configrom[0x1abc],
+          "$6000 aliases block 2");
+    (void)fj;
 }
 
 int main(void)
@@ -180,7 +255,10 @@ int main(void)
     char boip[64], why[200];
     arc_cart_status_t st;
     arc_fujinet_t *fj;
+    uint64_t cycles = 0;
     int one = 1;
+
+    mapper_tests();
 
     memset(&f, 0, sizeof f);
     f.listen_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -192,67 +270,91 @@ int main(void)
     if (f.listen_fd < 0 || bind(f.listen_fd, (struct sockaddr *)&a, sizeof a) != 0 ||
         listen(f.listen_fd, 1) != 0 || getsockname(f.listen_fd, (struct sockaddr *)&a, &al) != 0) {
         printf("SKIP: no loopback listener here\n");
-        return 77;
+        return failures ? 1 : 77;
     }
     snprintf(boip, sizeof boip, "127.0.0.1:%d", ntohs(a.sin_port));
     pthread_create(&th, NULL, fake_main, &f);
 
-    fujitrace_init(&traced_ft);
     fujitcp_set_trace(keep_trace, NULL);
 
     fj = arc_fujinet_create();
     check(fj != NULL, "the cart creates");
     cart = arc_fujinet_cart(fj);
+    arc_fujinet_set_clock(fj, &cycles, 895000.0);
     check(arc_fujinet_power_on(fj, NULL, 0, boip, true, why, sizeof why) == 0,
           "it powers on with CONFIG, the mailbox inline");
     arc_fujinet_status(fj, &st);
-    check(st.mailbox && st.link_up && st.app_live, "and dials the stand-in");
-    arc_cart_write_p1(cart, 0x03);       /* P14 low: the cartridge and RAM are selected */
-    check(arc_cart_read(cart, FN_R_MAGIC0, 1) == 'F' && arc_cart_read(cart, FN_R_MAGIC1, 1) == 'N',
+    check(st.mailbox && st.link_up && !st.app_live, "and dials the stand-in (a flat image)");
+    connector_tests(fj);
+    check(cpu_read(CON(FN_R_MAGIC0), 1) == 'F' && cpu_read(CON(FN_R_MAGIC1), 1) == 'N',
           "the status page carries the cart's magic");
-    check(arc_cart_read(cart, FN_R_PROTO_VER, 1) == FN_PROTO_VER, "and protocol 2");
+    check(cpu_read(CON(FN_R_PROTO_VER), 1) == FN_PROTO_VER, "and protocol 2");
+
+    cycles = 895000ull * 2;
+    check(cpu_read(0x2C0E, 1) == 120 && cpu_read(0x2C0F, 1) == 0, "the 60 Hz tick follows the CPU clock");
+    cycles = 895000ull * 2000;
+    check(cpu_read(0x2C0E, 1) == (120000 & 0xff) && cpu_read(0x2C0F, 1) == ((120000 >> 8) & 0xff),
+          "and wraps as a 16-bit count");
+    check(cpu_read(0x6C0E, 1) == (120000 & 0xff), "also through the $6000 alias");
 
     /* MOUNT_IMAGE: device $70, command $F8, no parameters, then SEQ */
     reg_write(FN_REG_DEVICE, 0x70);
     reg_write(FN_REG_CMD, 0xF8);
     reg_write(FN_REG_NPARAM, 0);
     reg_write(FN_REG_DATA_RST, 0);
-    arc_cart_io_write(cart, FN_W_SEQ, 1);
+    reg_write(FN_REG_SEQ, 1);
     pthread_join(th, NULL);
     check(f.ok, "the stand-in saw the request, pushed the image, and replied");
     arc_fujinet_frame(fj);
     arc_fujinet_status(fj, &st);
     check(st.ackseq == 1 && st.reply_cmd == 0x06, "ACKSEQ answers SEQ, with an ACK");
     check(st.boot_state == FN_BOOT_READY, "the push is staged: READY");
-    check(st.armed && st.staged_app && st.staged_mailbox && st.staged_size == PUSH_LEN,
-          "a FujiNet app of the pushed size, staged and armed for the next $400 fetch");
-    check(st.swaps == 0, "nothing has taken over yet");
+    check(st.staged_mailbox && !st.staged_app && st.staged_size == PUSH_LEN,
+          "a FujiNet app of the pushed size, staged");
+    check(!st.armed && st.swaps == 0, "not armed, and nothing has taken over yet");
 
-    /* a peek of $400 is the debugger's: it must not swap; the console's fetch does */
-    (void)arc_cart_read(cart, 0x400, 1);
+    /* the swap hotspot before the client armed it does nothing */
+    (void)cpu_read(CON(FN_H_REGSEL + FN_HOT_SWAP), 0);
     arc_fujinet_status(fj, &st);
-    check(st.swaps == 0 && st.armed, "a debugger's peek of $400 does not swap");
-    (void)arc_cart_read(cart, 0x400, 0);
+    check(st.swaps == 0, "a stray read of the swap hotspot, unarmed, changes nothing");
+    reg_write(FN_REG_BOOTLOCK, FN_BOOTLOCK_MAGIC);
     arc_fujinet_status(fj, &st);
-    check(st.swaps == 1 && !st.armed && st.mailbox && st.app_live,
-          "the console's fetch of $400 swaps it in, keeping the mailbox");
-    check(arc_cart_read(cart, 0x400, 1) == _configrom[0] && arc_cart_read(cart, 0x7ff, 1) == _configrom[0x3ff] &&
-          arc_cart_read(cart, 0x800, 1) == _configrom[0x400] &&
-          arc_cart_read(cart, 0xf1f, 1) == _configrom[0x400 + 0x71f],
-          "and the cart serves it: the fixed 1K and page 0 of the image");
-    check(arc_cart_read(cart, FN_R_ACKSEQ, 1) == 1, "the status page was carried across the swap");
+    check(st.armed, "writing BOOTLOCK arms the swap");
+    (void)cpu_read(CON(FN_H_REGSEL + FN_HOT_SWAP), 1);
+    arc_fujinet_status(fj, &st);
+    check(st.swaps == 0 && st.armed, "a debugger's peek of the hotspot does not swap");
+    (void)cpu_read(0x4000 + CON(FN_H_REGSEL + FN_HOT_SWAP), 0);
+    arc_fujinet_status(fj, &st);
+    check(st.swaps == 1 && !st.armed && st.mailbox,
+          "the console's read at $6DFE (the alias of $2DFE) swaps it in, keeping the mailbox");
+    check(cpu_read(0x0000, 1) == _configrom[0] && cpu_read(0x0fff, 1) == _configrom[0xfff] &&
+          cpu_read(0x2000, 1) == _configrom[0x1000],
+          "and the cart serves the new image");
+    check(cpu_read(CON(FN_R_ACKSEQ), 1) == 1, "the status page was carried across the swap");
 
     /* the trace, held to the wire */
     check(traced_wire[1].n == f.got.n && memcmp(traced_wire[1].b, f.got.b, f.got.n) == 0,
           "the trace's sent bytes are exactly what the stand-in received");
     check(traced_wire[0].n == f.sent.n && memcmp(traced_wire[0].b, f.sent.b, f.sent.n) == 0,
           "the trace's read bytes are exactly what the stand-in sent");
+
+    /* power cycling the cart with a game: no claim, no mailbox, plain ROM */
     {
-        static arcdebug_fuji_packet p[128];
-        int n = fujitrace_read(&traced_ft, p, 128);
-        check(n >= 6, "the decoder made packets of it");
-        check(n > 0 && !p[0].to_host && p[0].device == 0x70 && p[0].command == 0xF8,
-              "the first is the console's MOUNT_IMAGE");
+        static uint8_t game[4096];
+        uint8_t *probe = NULL;
+
+        (void)probe;
+        for (unsigned i = 0; i < sizeof game; i++)
+            game[i] = (uint8_t)(i ^ 0x5a);
+        check(arc_fujinet_power_on(fj, game, sizeof game, "", true, why, sizeof why) == 0,
+              "a plain game image powers on in the FujiNet slot");
+        arc_fujinet_status(fj, &st);
+        check(!st.mailbox && st.booted_game, "with the mailbox dead");
+        check(cpu_read(0x0010, 1) == game[0x10] && cpu_read(0x2000, 1) == 0xff,
+              "it is served as a 4K ROM padded with $FF");
+        check(cpu_read(0x2C0E, 1) == 0xff, "and no tick is painted");
+        check(arc_fujinet_power_on(fj, game, 9000, "", true, why, sizeof why) != 0 && why[0],
+              "an image that is not 8K + k x 2K is refused with a reason");
     }
 
     fujitcp_set_trace(NULL, NULL);

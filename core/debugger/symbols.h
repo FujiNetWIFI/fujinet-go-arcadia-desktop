@@ -1,13 +1,11 @@
 /*
- * symbols -- the debugger's label tables: built-in names for the console's
- * BIOS entry points and interrupt vectors, the cartridge's entry vectors and
- * the FujiNet cartridge's mailbox status page, plus whatever symbol files the
- * user loads.
+ * symbols -- the debugger's label tables: built-in names for the 2650's
+ * reset vector, the UVI's registers and the FujiNet cartridge's mailbox,
+ * plus whatever symbol files the user loads.
  *
- * Labels name program addresses (12 bits). The MCS-48's MB latch makes the
- * 2K halves look like banks to a static listing, but a label belongs to an
- * address, not to a bank: every label matches any bank. The bank field stays
- * (the family's table format, and a WLA-DX "BB:AAAA" file still reads).
+ * Labels name PROG addresses (15 bits). A label belongs to an address, not to
+ * a bank: every label matches any bank. The bank field stays (the family's
+ * table format, and a WLA-DX "BB:AAAA" file still reads).
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -61,10 +59,11 @@ int  symtab_load(symtab *t, const char *path, char *msg, int msgsz);
 /* For completion: the i-th label name, NULL past the end. */
 const char *symtab_name_at(symtab *t, int i);
 
-/* The name of an external-data (MOVX) address the FujiNet cartridge decodes:
- * $E0 "FN_W_REGSEL" ... $E3 "FN_W_SEQ", or NULL. The VDC's registers are named
- * by the chip itself (arcdebug_vdc_describe). */
-const char *arc_xdata_name(uint8_t addr);
+/* The name of a console address inside the FujiNet cartridge's mailbox
+ * ($2B00-$2FFF) that the plain labels do not cover -- the hotspot ranges
+ * ("FN_H_REGSEL+05", "FN_HOT_BANK+03") -- or NULL. The returned text is in a
+ * static buffer, valid until the next call. */
+const char *arc_mailbox_name(uint16_t addr);
 
 /* symbols_builtin.c */
 void symtab_add_builtins(symtab *t);

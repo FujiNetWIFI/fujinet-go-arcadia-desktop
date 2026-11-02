@@ -39,14 +39,14 @@ static void refuses(const char *text)
 
 int main(void)
 {
-    accepts("", "127.0.0.1", 11520);
-    accepts("   ", "127.0.0.1", 11520);
-    accepts(NULL, "127.0.0.1", 11520);
+    accepts("", "127.0.0.1", 11522);
+    accepts("   ", "127.0.0.1", 11522);
+    accepts(NULL, "127.0.0.1", 11522);
     accepts("65300", "127.0.0.1", 65300);
     accepts("192.168.1.20:9985", "192.168.1.20", 9985);
     accepts("  127.0.0.1:1  ", "127.0.0.1", 1);
     accepts("localhost:65535", "localhost", 65535);
-    accepts("fujinet.local:11520", "fujinet.local", 11520);
+    accepts("fujinet.local:11522", "fujinet.local", 11522);
     accepts("my-box_2:80", "my-box_2", 80);
 
     refuses("0");
@@ -54,15 +54,15 @@ int main(void)
     refuses("-5");
     refuses("abc");
     refuses("127.0.0.1:");
-    refuses(":11520");
+    refuses(":11522");
     refuses("127.0.0.1:abc");
-    refuses("256.1.1.1:11520");
-    refuses("1.2.3:11520");
-    refuses("1.2.3.4.5:11520");
-    refuses("1.2.3.4:11520x");
-    refuses("bad host:11520");
-    refuses("a..b:11520");
-    refuses(".local:11520");
-    refuses("::1:11520");
+    refuses("256.1.1.1:11522");
+    refuses("1.2.3:11522");
+    refuses("1.2.3.4.5:11522");
+    refuses("1.2.3.4:11522x");
+    refuses("bad host:11522");
+    refuses("a..b:11522");
+    refuses(".local:11522");
+    refuses("::1:11522");
     return failures ? 1 : 0;
 }

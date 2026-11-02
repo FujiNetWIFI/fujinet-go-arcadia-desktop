@@ -72,10 +72,13 @@ def main():
 
     # MAME has no fire button: it is the keypad-2 wire, so a fire event is that
     # key, which is exactly what the machine ORs in
+    # MAME applies a value set from its frame notifier one frame late (the
+    # ioport layer polls at the next frame), so its events go one frame earlier
+    # than ours, which latch at the start of the frame they name
     press = []
     for f, b, d in keys:
         tag, mask = arcab.key_port(b)
-        press.append((f, "%s:%d:%d" % (tag, mask, d)))
+        press.append((max(f - 1, 0), "%s:%d:%d" % (tag, mask, d)))
     jstate = {}
     for f, st, b in sorted(joys):
         old = jstate.get(st, 0)
@@ -85,7 +88,7 @@ def main():
                     tag, mask = arcab.key_port(1 + 12 * st)
                 else:
                     tag, mask = arcab.stick_port(st, bit)
-                press.append((f, "%s:%d:%d" % (tag, mask, (b >> bit) & 1)))
+                press.append((max(f - 1, 0), "%s:%d:%d" % (tag, mask, (b >> bit) & 1)))
         jstate[st] = b
     press.sort(key=lambda x: x[0])
     ours_keys = list(keys)

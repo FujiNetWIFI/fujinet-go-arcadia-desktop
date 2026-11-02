@@ -61,7 +61,7 @@ int main(void)
         return 77;
     }
     check(1, "libfujinet started in-process");
-    check(strcmp(arcsession_fujinet_webui_url(s), "http://127.0.0.1:11521/") == 0, "web UI URL is this app's own port");
+    check(strcmp(arcsession_fujinet_webui_url(s), "http://127.0.0.1:11523/") == 0, "web UI URL is this app's own port");
 
     /* the cartridge dials in from its worker thread once the console runs */
     while (waited < 10000) {

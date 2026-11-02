@@ -53,12 +53,12 @@ foreach(_f s2650 dasm2650 uvi sound carts machine fujinet_cart fujitcp_host host
 endforeach()
 
 # The debugger drives the machine, so it joins once the machine and the
-# debugger's own Arcadia port (vdcview.c is its marker) exist.
+# debugger's own Arcadia port (uviview.c is its marker) exist.
 option(ARC_CORE_ONLY "Build only the emulator and its machine-level tests (no debugger, no session)" OFF)
 set(ARC_DEBUGGER_SOURCES)
 if(NOT ARC_CORE_ONLY AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/arc/machine.c"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/debugger/vdcview.c")
-  foreach(_f debugger.c expr.c fujitrace.c prompt.c symbols.c symbols_builtin.c vdcview.c)
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/debugger/uviview.c")
+  foreach(_f debugger.c expr.c fujitrace.c prompt.c symbols.c symbols_builtin.c uviview.c)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/debugger/${_f}")
       list(APPEND ARC_DEBUGGER_SOURCES debugger/${_f})
     endif()

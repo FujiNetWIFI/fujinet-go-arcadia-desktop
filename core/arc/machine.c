@@ -265,6 +265,9 @@ static int step_inner(arc_machine_t *m)
     int cycles;
 
     fire_ticks(m);
+    /* run_frame stops at the tick that completes the frame, not an instruction later */
+    if (m->frame_stop && m->frames_done >= m->frame_stop)
+        return 0;
     /* a reset key held: the CPU does not run, time still passes */
     if (m->reset_held) {
         m->cpu.cycles += 6;
@@ -282,6 +285,8 @@ int arc_machine_step_quiet(arc_machine_t *m)
 int arc_machine_step(arc_machine_t *m)
 {
     fire_ticks(m);
+    if (m->frame_stop && m->frames_done >= m->frame_stop)
+        return 0;
     if (m->instr_hook)
         m->instr_hook(m, m->instr_hook_user);
     return step_inner(m);
@@ -319,8 +324,10 @@ void arc_machine_run_frame(arc_machine_t *m)
     const uint64_t target = m->frames_done + 1;
 
     arc_machine_latch_inputs(m);
+    m->frame_stop = target;
     while (m->frames_done < target)
         arc_machine_step(m);
+    m->frame_stop = 0;
     arc_fujinet_frame(m->fujinet);
     m->frame_count++;
     mix_audio(m, m->cpu.cycles);

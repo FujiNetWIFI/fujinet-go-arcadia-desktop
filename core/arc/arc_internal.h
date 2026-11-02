@@ -105,6 +105,7 @@ struct arc_machine {
     uint64_t line_k;              /* ticks fired */
     uint64_t next_limit;          /* the CPU cycle count the next tick waits for */
     uint64_t frames_done;         /* frames the tick has completed */
+    uint64_t frame_stop;          /* run_frame: stop when frames_done reaches this (0: off) */
 
     /* the slot: the cartridge in it (a mapper, or the FujiNet cart), and the
      * FujiNet cart itself when it is the one (NULL for a game) */

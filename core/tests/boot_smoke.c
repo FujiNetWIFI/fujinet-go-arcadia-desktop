@@ -1,10 +1,9 @@
 /*
  * boot_smoke -- the paced host boots CONFIG and keeps real time.
  *
- * Starts the host thread (core/arc/host.h) on the stand-in with a generated
- * character set, waits for frames, and checks that CONFIG painted (MAME's
- * visible area, 360x243, with lit pixels on it) and that the frame rate is
- * the machine's own -- 59.83 Hz within 2%. The siblings' hardest-won lesson: verify the throttle (one once
+ * Starts the host thread (core/arc/host.h) on the baked CONFIG, waits for frames, and checks that CONFIG painted (MAME's
+ * visible area, 192x262, with lit pixels on it) and that the frame rate is
+ * the machine's own -- 60 Hz within 2%. The siblings' hardest-won lesson: verify the throttle (one once
  * free-ran at >33000%).
  *
  * The rate is only held to 2% where the OS can sleep for a frame without
@@ -46,19 +45,12 @@ static void sleep_ms(int ms)
     nanosleep(&ts, NULL);
 }
 
-/* the generated test font: tools/ab/arcab.py test_font() */
-static void make_font(uint8_t font[512])
-{
-    for (uint32_t i = 0; i < 512; i++)
-        font[i] = (uint8_t)((i * 2654435761u) >> 24);
-}
-
-static const double k_want_hz = I8244_NTSC_PIXEL_HZ / (double)(I8244_NTSC_HTOTAL * I8244_NTSC_VTOTAL);
+/* MAME's line timer: attotime::from_hz(262 * 60) a line, 262 lines a frame */
+static const double k_want_hz = 60.0;
 
 static void run(void)
 {
     static uint32_t fb[ARC_FB_WIDTH * ARC_FB_HEIGHT];
-    static uint8_t font[512];
     const double want_hz = k_want_hz;
     arc_host_opts_t o;
     uint64_t serial = 0, f0, f1;
@@ -67,10 +59,7 @@ static void run(void)
     char what[160];
 
     memset(&o, 0, sizeof o);
-    make_font(font);
     o.machine = ARC_MACHINE_ARCADIA;
-    o.font = font;
-    o.font_size = sizeof font;
     o.boip_hostport = "127.0.0.1:1";   /* no FujiNet: CONFIG runs link-down */
     if (arc_host_start(&o) != 0)
     {

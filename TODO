@@ -1,29 +1,35 @@
 FujiNet Go Arcadia 2001 desktop -- milestone log and what is left
 
-Status at v0.1.1 (see README.md "How this was verified" for the evidence).
+Status: v0.1.0 in progress. The core (core/arc/) is done and verified against
+MAME; the session, debugger and frontends are other work packages (see below).
 
-DONE
-  [x] M0  skeleton cloned from the Studio II desktop (v0.4.0); firmware pin =
-          PR #2237's head (CONFIG 1154960, FujiNet logo) + the BoIP idle-wait
-          fix (PR #2247, merged), fork branch tschak909/fujinet-firmware
-          boip-idle-wait-on-arc-config (77d7dd3f3);
-          runtime build script (anchors audited against the pin, libnfs
-          strncpy patch, -Werror guard, Windows log-capture fix)
-  [x] M1  8048 (mcs48.c) + disassembler (dasm48.c), traces identical to MAME on
-          15 probes (147k instructions); all 256 opcodes' text identical
-  [x] M2  8244/8245 (i8244.c): MAME scenes, beam, raster and sound replayed;
-          157 real carts' register traffic replayed; debug snapshot/renderers
-  [x] M3  FujiNet cartridge device (fujinet_cart.c) with reconnect; no-BIOS
-          stand-in (stub.a48: vectors, readkey, getjoystick); cart mappers
-          (standard, 4-in-1, rally, KTAA) by CRC
-  [x] M4  session: machines, ROM import (file / zip / folder, own inflate),
-          bindings, the 64-key matrix and two sticks, gamepads, media routing
-  [x] M5  The Voice (SP0256, sample-exact vs MAME) and the Videopac+ G7400
-          (EF9340/41, 8243, colour mixer; pixel-exact vs MAME on 12 scenarios)
-  [x] M6  debugger engine (8048 + VDC + EF9340 + Voice views, breakpoints of
-          every class, trace ring, FujiNet trace)
-  [x] M7-M10  frontends: GNOME, KDE, Windows (D3D11), macOS -- see below
-  [x] icons (case silver, inverted mark), accent (Arcadia red), COMPLIANCE.md
+DONE (core)
+  [x] M0  skeleton cloned from the Odyssey 2 desktop (v0.1.1); firmware pin =
+          PR #2259's head c38e8b446 (the real CONFIG baked into
+          pico/arcadia/firmware/baked/fujiconfigrom.h), fork branch
+          tschak909/fujinet-firmware arcadia-bake-config; runtime build script
+          (tools/fujinet/: the patch anchors audited against the pin -- all
+          found; BoIP 11522, web UI 11523)
+  [x] M1  Signetics 2650 (s2650.c) + disassembler (dasm2650.c): traces
+          identical to MAME on generated probes (tools/ab/s2650_ab.py)
+  [x] M2  2637 UVI (uvi.c): per-line drawing from MAME's arcadia_v.cpp, the glyph
+          table, UDCs, objects, collisions, pots, keypad/panel registers, the
+          debugger's snapshot and renderers; beeper (sound.c)
+  [x] M3  machine (machine.c): memory map, SENSE = vblank, the 262 * 60 Hz line
+          timer with MAME's scheduler arithmetic, keypads/panel/fire wire, pots
+          (digital ends or analog disc), RESET, PAL row (312 lines, 50 Hz; not
+          verifiable against MAME, which runs every clone at NTSC)
+  [x] M4  cart slot (carts.c: standard 4K/8K, Golf by CRC) and the FujiNet
+          cartridge device (fujinet_cart.c: arcmap_decode connector decode,
+          APPBANK window + $2D80+n select, cart RAM, 60 Hz tick $2C0E/F, swap
+          at $2DFE, reconnect, trace tap) over the firmware's own fujimail /
+          fujibus / arcmap / arcapp staged verbatim; host.c (paced thread)
+  [x] M5  whole-machine A/B against MAME, frame for frame from frame 0:
+          all 48 cartridges, 900 frames with a scripted input session; 13
+          UVI stress probes (tools/ab/uvi_probes.py); CONFIG hashes
+          (config_frames, no ROM needed); CONFIG on a live fujinet-pc over BoIP
+          boots a game (swap at $2DFE with the mailbox on its worker thread)
+  [ ] M6  session, debugger, frontends, icons, docs: other work packages
 
 FRONTEND STATE
   KDE      built and run offscreen; QRhi GPU path and real-display behaviour
@@ -34,28 +40,23 @@ FRONTEND STATE
   macOS    written against a Cocoa stub; first compile is on the GitHub runners
 
 KNOWN GAPS / NEXT
-  [ ] Atlantis' sprite multiplexing differs from MAME in ~0.3% of its pixels
-      (CONFIG and most carts match; cause not found). First two power-on
-      frames of every cart differ from MAME's.
-  [ ] CONFIG on the FujiNet cart runs ONE FRAME AHEAD of MAME from frame ~9 on
-      (our frames 3-9 differ, then the same pictures come a frame early). Seen
-      at the splash -> hosts transition: our frames 159-165 are MAME's 160-166,
-      pixel for pixel, six distinct frames. MAME is deterministic there (3
-      runs). Not found: both cart models are synchronous, so look at the
-      power-on beam phase. config_frames therefore samples steady pictures
-      only (40/100/130 splash, 220+ hosts), never 159-165.
-  [ ] config_boot and netboot tests (the real in-process FujiNet driving CONFIG
-      and the firmware's fujiboot/fujitest clients) are parked: the sources
-      still carry the Studio II calls (core/tests/config_boot_test.c,
-      netboot_test.c); port them and re-enable in core/tests/CMakeLists.txt
-  [ ] the Voice with real speech ROMs: the SP0256 core is sample-exact against
-      MAME with the Intellivoice ROM, but the Arcadia Voice ROM layout ($4000 speech,
-      $8000 a game's own) has never run against real data
-  [ ] Chess (NSC800) and Home Computer (Z80) modules; C52 / Jopac / Arcadia 3
-      machine rows
-  [ ] the G7400's on-screen keyboard geometry is approximate (no photo)
-  [ ] a public "this refusal is fixed by importing a ROM" accessor (the
-      frontends match "Import BIOS" in the error text)
+  [ ] Palladium (16-key keypads, $1903/$1907 extra column) is not supported:
+      MAME marks it not working. Golf's second 2K at $4000 (the Palladium
+      layout) is mapped, as MAME's softlist does, but nothing runs it.
+  [ ] MAME's pots are digital and are not gated to the vertical blank; real
+      hardware reads $FF outside it. We follow MAME.
+  [ ] The PAL machine row is MAME-unverifiable (MAME runs every clone at NTSC
+      timing); its 312 lines / 50 Hz / 4.433619 MHz / 5 follow the driver's
+      comment.
+  [ ] The beeper is MAME's at 15625 Hz box-averaged to 48 kHz; no recording
+      comparison was made.
+  [ ] config_boot and netboot (tests/): the in-process FujiNet driving CONFIG
+      and the firmware's fujiboot/fujitest clients are written against the
+      session API and need the session/debugger packages to build; run them once
+      those land (netboot needs ARC_TESTROM_DIR, see its header)
+  [ ] MAME's input ports take a value set from a Lua frame notifier one frame
+      late; tools/ab/cart_ab.py shifts its events to match, so a key pressed at
+      "frame f" is held from our frame f
   [ ] fujinet-ads family banner (16 systems) and sibling README port tables
-  [ ] when firmware PRs #2237 and #2247 merge: re-pin master, flatpak manifests
-      back to `type: git`; the fork branch must not be deleted before that
+  [ ] when firmware PR #2259 merges: re-pin master, flatpak manifests back to
+      `type: git`; the fork branch must not be deleted before that

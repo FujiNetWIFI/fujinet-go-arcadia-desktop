@@ -696,7 +696,11 @@ int arc_host_start(const arc_host_opts_t *opts)
     }
     else
     {
-        if (arc_cart_init(&s_mapper, opts->cart_type, s_cart_image, s_cart_size, &err) != 0)
+        const int type = opts->cart_type != ARC_CART_NONE
+                             ? opts->cart_type
+                             : arc_cart_identify(s_cart_image, s_cart_size);
+
+        if (arc_cart_init(&s_mapper, type, s_cart_image, s_cart_size, &err) != 0)
         {
             snprintf(s_error, sizeof s_error, "%s", err ? err : "the cartridge cannot be mapped");
             return -1;

@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "symbols.h"
+#include "arcmap.h"
 #include "fuji_mailbox.h"
 
 void symtab_init(symtab *t)
@@ -382,16 +383,36 @@ int symtab_load(symtab *t, const char *path, char *msg, int msgsz)
     return count;
 }
 
-/* ---- external data ---- */
+/* ---- the mailbox hotspots ---- */
 
-const char *arc_xdata_name(uint8_t addr)
+const char *arc_mailbox_name(uint16_t addr)
 {
-    switch (addr)
-    {
-    case FN_W_REGSEL:  return "FN_W_REGSEL";
-    case FN_W_REGDATA: return "FN_W_REGDATA";
-    case FN_W_DATA:    return "FN_W_DATA";
-    case FN_W_SEQ:     return "FN_W_SEQ";
-    default:           return NULL;
-    }
+    static char buf[32];
+    /* the cartridge sees the address through arcmap: $2D00 is image $1D00 */
+    int img;
+    unsigned off;
+
+    if (addr < 0x2b00 || addr > 0x2fff)
+        return NULL;
+    img = arcmap_decode(addr & 0x3fff);
+    if (img < 0)
+        return NULL;
+    off = (unsigned)img;
+    if (off >= FN_R_DATA && off < FN_R_DATA + FN_R_SLICE_LEN)
+        snprintf(buf, sizeof buf, "FN_R_DATA+%02X", off - FN_R_DATA);
+    else if (off >= FN_H_REGSEL && off < FN_H_REGSEL + 0x80)
+        snprintf(buf, sizeof buf, "FN_H_REGSEL+%02X", off - FN_H_REGSEL);
+    else if (off >= FN_H_REGSEL + FN_HOT_BANK && off <= FN_H_REGSEL + FN_HOT_BANK_LAST)
+        snprintf(buf, sizeof buf, "FN_HOT_BANK+%02X", off - FN_H_REGSEL - FN_HOT_BANK);
+    else if (off == FN_H_REGSEL + FN_HOT_SWAP)
+        return "FN_HOT_SWAP";
+    else if (off >= FN_H_REGSEL && off < FN_H_REGSEL + 0x100)
+        snprintf(buf, sizeof buf, "FN_H_REGSEL+%02X", off - FN_H_REGSEL);
+    else if (off >= FN_H_REGDATA && off < FN_H_REGDATA + 0x100)
+        snprintf(buf, sizeof buf, "FN_H_REGDATA+%02X", off - FN_H_REGDATA);
+    else if (off >= FN_H_DATA && off < FN_H_DATA + 0x100)
+        snprintf(buf, sizeof buf, "FN_H_DATA+%02X", off - FN_H_DATA);
+    else
+        return NULL;
+    return buf;
 }

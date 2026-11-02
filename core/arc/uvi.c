@@ -263,6 +263,25 @@ static void draw_row(uvi_t *u, int y, const uint8_t *chars1)
     }
 }
 
+/* m_bg[y][col] as MAME reads it. A doubled object near the bottom reaches rows
+ * past the 262 the array has: MAME (undefined behaviour) reads on into the
+ * members declared after it, m_rectangle and then m_chars, and so do we, because
+ * those reads decide $19FC. */
+static int bg_byte(const uvi_t *u, int y, int col)
+{
+    size_t flat;
+
+    if (y < UVI_HEIGHT)
+        return u->bg[y][col];
+    flat = (size_t)(y - UVI_HEIGHT) * UVI_BG_BYTES + (size_t)col;
+    if (flat < sizeof u->rectangle)
+        return ((const uint8_t *)u->rectangle)[flat];
+    flat -= sizeof u->rectangle;
+    if (flat < sizeof u->chars)
+        return ((const uint8_t *)u->chars)[flat];
+    return 0;
+}
+
 static int sprite_collision(const uvi_t *u, int n1, int n2)
 {
     int k, b1, b2, x;
@@ -331,8 +350,8 @@ static void draw_sprites(uvi_t *u)
                     }
                 }
             }
-            if ((u->reg[UVI_COLL_BG] & (1 << i)) && y < UVI_HEIGHT) {
-                if ((b << (8 - (x & 7))) & ((u->bg[y][x >> 3] << 8) | u->bg[y][(x >> 3) + 1]))
+            if (u->reg[UVI_COLL_BG] & (1 << i)) {
+                if ((b << (8 - (x & 7))) & ((bg_byte(u, y, x >> 3) << 8) | bg_byte(u, y, (x >> 3) + 1)))
                     u->reg[UVI_COLL_BG] &= (uint8_t)~(1 << i);
             }
         }

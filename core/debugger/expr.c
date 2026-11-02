@@ -112,7 +112,7 @@ static long mem_read(parser *ps, int space)
 
     if (!accept(ps, "]"))
         fail(ps, "missing ]");
-    return ps->ctx && ps->ctx->read8 ? ps->ctx->read8(ps->ctx->user, space, (uint16_t)a) : 0;
+    return ps->ctx && ps->ctx->read8 ? ps->ctx->read8(ps->ctx->user, space, (uint32_t)a) : 0;
 }
 
 static long primary(parser *ps)
@@ -138,15 +138,14 @@ static long primary(parser *ps)
         while (is_name_char(*ps->p) && n + 1 < (int)sizeof name)
             name[n++] = *ps->p++;
         name[n] = '\0';
-        /* x[..], i[..], v[..], p[..]: a byte of that address space */
-        if (*ps->p == '[' && n == 1 && strchr("xivpXIVP", name[0]))
+        /* p[..], u[..], c[..]: a byte of PROG, UVI or CART space */
+        if (*ps->p == '[' && n == 1 && strchr("pucPUC", name[0]))
         {
             int space = 0;
             switch (name[0] | 0x20)
             {
-            case 'x': space = 1; break;
-            case 'i': space = 2; break;
-            case 'v': space = 3; break;
+            case 'u': space = 1; break;
+            case 'c': space = 2; break;
             default:  break;
             }
             ps->p++;

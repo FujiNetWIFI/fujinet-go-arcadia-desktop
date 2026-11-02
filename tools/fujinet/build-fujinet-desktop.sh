@@ -25,7 +25,7 @@
 #   * pc_rtos worker threads are named after their FreeRTOS task for
 #     debuggable core dumps (optional patch).
 #
-# fnconfig.ini is forced to [BOIP] enabled=1 host=127.0.0.1 port=11520
+# fnconfig.ini is forced to [BOIP] enabled=1 host=127.0.0.1 port=11522
 # (ARCSESSION_BOIP_PORT). Note what that means for THIS target: the RS232
 # bus's BoIPChannel defaults to listening=true (see
 # lib/hardware/BoIPChannel.cpp in the firmware tree -- rs232.cpp's own
@@ -720,7 +720,7 @@ text = ""
 if ini.exists():
     with open(ini, "r", **IO) as f:
         text = f.read()
-section = "[BOIP]\nenabled=1\nhost=127.0.0.1\nport=11520\n"
+section = "[BOIP]\nenabled=1\nhost=127.0.0.1\nport=11522\n"
 if re.search(r'(?im)^\[BOIP\]', text):
     text = re.sub(r'(?ims)^\[BOIP\].*?(?=^\[|\Z)', section, text)
 else:

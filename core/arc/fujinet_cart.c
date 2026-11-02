@@ -71,6 +71,7 @@ struct arc_fujinet {
     uint16_t hq[QUEUE_SIZE];
     unsigned qhead, qtail;
     atomic_bool stop;
+    atomic_bool busy;           /* the worker is inside fujimail_read_hotspot() */
     pthread_mutex_t pklock;
     uint16_t pk_addr[MAX_POKES];
     uint8_t pk_data[MAX_POKES];
@@ -98,6 +99,12 @@ static _Thread_local bool t_on_worker = false;
 static void sleep_ms(unsigned ms)
 {
     struct timespec ts = { (time_t)(ms / 1000), (long)(ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+}
+
+static void sleep_us(unsigned us)
+{
+    struct timespec ts = { 0, (long)us * 1000L };
     nanosleep(&ts, NULL);
 }
 
@@ -420,6 +427,24 @@ static void queue_hotspot(arc_fujinet_t *c, unsigned img)
     pthread_mutex_unlock(&c->qlock);
 }
 
+/* Wait (at most `limit_ms`) until the worker has handled every hotspot read
+ * queued so far. */
+static void wait_worker_idle(arc_fujinet_t *c, unsigned limit_ms)
+{
+    const uint64_t deadline = now_ms() + limit_ms;
+
+    for (;;) {
+        bool empty;
+
+        pthread_mutex_lock(&c->qlock);
+        empty = c->qhead == c->qtail;
+        pthread_mutex_unlock(&c->qlock);
+        if ((empty && !atomic_load(&c->busy)) || atomic_load(&c->stop) || now_ms() >= deadline)
+            return;
+        sleep_us(20);
+    }
+}
+
 /* One cartridge access, in connector terms: a14 = console address & $3FFF.
  * Both read_rom and extra_rom funnel here so the alias behaviour ($4000,
  * $6000) and the open-bus holes ($3000, $5000, $7000) fall out of
@@ -450,6 +475,11 @@ static uint8_t serve(arc_fujinet_t *c, unsigned a14, int peek)
      * serves the bus (core1 does the same). */
     if (!peek && img >= FN_H_REGSEL) {
         if (img == FN_H_REGSEL + FN_HOT_SWAP) {
+            /* The client wrote BOOTLOCK a few cycles ago; on the cartridge core0
+             * has long since seen it. Here the worker may not have yet, so give
+             * it the moment it needs rather than let the swap be missed. */
+            if (!atomic_load(&c->swap_armed) && c->async)
+                wait_worker_idle(c, 50);
             if (atomic_load(&c->swap_armed))
                 do_swap(c);
         } else if (atomic_load(&c->mailbox_live) && !arcapp_hotspot(&c->app, (unsigned)img)) {
@@ -494,11 +524,13 @@ static void *worker_main(void *arg)
         }
         img = c->hq[c->qtail];
         c->qtail = (c->qtail + 1) % QUEUE_SIZE;
+        atomic_store(&c->busy, true);
         pthread_mutex_unlock(&c->qlock);
 
         /* reads queued before a swap are the old image's */
         if (atomic_load(&c->mailbox_live))
             fujimail_read_hotspot(img);
+        atomic_store(&c->busy, false);
     }
     return NULL;
 }
@@ -571,6 +603,7 @@ arc_fujinet_t *arc_fujinet_create(void)
     atomic_init(&c->swap_armed, false);
     atomic_init(&c->stop, false);
     atomic_init(&c->poked, false);
+    atomic_init(&c->busy, false);
     pthread_mutex_init(&c->loadlock, NULL);
     pthread_mutex_init(&c->qlock, NULL);
     pthread_cond_init(&c->qcv, NULL);

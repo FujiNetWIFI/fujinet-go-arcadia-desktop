@@ -664,7 +664,7 @@ FUJINET_ENTRY bool fujinet_desktop_start_runtime(
      * transposed from carries 64003 here, which is the Intellivision port,
      * and would collide with that app rather than fail visibly. */
     const std::string webui_bind(webui_env && *webui_env ? webui_env
-                                                         : "127.0.0.1:11521");
+                                                         : "127.0.0.1:11523");
     g_setup_complete = false;
     g_setup_failed = false;
 
