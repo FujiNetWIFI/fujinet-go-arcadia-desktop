@@ -113,7 +113,7 @@ modules:
       # Pinned exactly as cmake/Dependencies.cmake (FUJINET_COMMIT, PR #2259's
       # head -- the real CONFIG baked in -- on the tschak909 fork; temporary). A git source can't take a commit on no branch, so this
       # is GitHub's archive of it (the FujiNet version then reads 0000000);
-      # back to `type: git` on master once #2237 and #2247 merge.
+      # back to `type: git` on master once #2259 merges.
       # arc_provide_dependency() skips its own fetch once it finds
       # build.sh (the SENTINEL) already here.
       - type: archive
