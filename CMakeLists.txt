@@ -13,7 +13,7 @@ endif()
 # The version lives here and nowhere else: the About boxes, the macOS bundle
 # and the release workflow all take it from PROJECT_VERSION, and cutting a tag
 # checks that the tag agrees with it (see "Cutting a release" in the README).
-project(fujinet-go-arcadia-desktop VERSION 0.1.1 LANGUAGES C CXX)
+project(fujinet-go-arcadia-desktop VERSION 0.1.0 LANGUAGES C CXX)
 
 add_compile_definitions(ARC_VERSION_STRING="${PROJECT_VERSION}")
 
@@ -34,22 +34,11 @@ endif()
 set(FRONTEND "all" CACHE STRING
     "Frontend to build: gnome, kde, macos, windows, all, none")
 
-# The Magnavox Arcadia 2001 BIOS is copyrighted RCA firmware and is NOT freely
-# licensed, so this repository does not redistribute it -- and only games need
-# it: CONFIG and every FujiNet app boot on the app's own stand-in
-# (core/arc/stub.asm), and a game asks for Import BIOS.
-#
-#   OFF (default) -- the app reads any BIOS the user imported ("Import
-#                    BIOS...") from the ROM directory at run time. Every
-#                    artifact this repository publishes is built this way,
-#                    and core/tests/no_embedded_roms.py checks that claim
-#                    against the shipped binaries.
-#   ON            -- embed whatever recognised images are in tools/roms/ so a
-#                    development build has them from the first start. NOT for
-#                    redistribution.
-#
-# See COMPLIANCE.md.
-option(WITH_ARC_ROMS "Embed the Magnavox Arcadia 2001 BIOS found in tools/roms (see COMPLIANCE.md)" OFF)
+# There is no console BIOS to ship or import (the Arcadia 2001 has none), and
+# the games are the user's own cartridge files, opened from disk. Nothing
+# copyrighted is embedded in any build; core/tests/no_embedded_roms.py checks
+# the shipped binaries against the games a developer keeps in tools/roms/ (it
+# SKIPs when there are none, as in CI). See COMPLIANCE.md.
 
 # Included here, at the top of the tree, so every subdirectory sees the
 # *variables* it defines: GNUInstallDirs caches CMAKE_INSTALL_DATADIR as an
@@ -104,13 +93,12 @@ if(FRONTEND STREQUAL "windows" OR (FRONTEND STREQUAL "all" AND WIN32))
   add_frontend(windows)
 endif()
 
-# The ROM-less claim, checked on every binary built with this option off --
-# which is the default here, and what every published artifact is built with.
+# The ROM-less claim, checked on every binary we build.
 #
 # Registered at the top level rather than in core/ so it can be pointed at the
 # frontend executables: those are the artifacts a user actually downloads, and
 # they link differently from the test binaries.
-if(NOT WITH_ARC_ROMS)
+if(TRUE)
   find_package(Python3 COMPONENTS Interpreter)
   set(ARC_ROM_CHECK_TARGETS "")
   if(TARGET boot_smoke)
@@ -180,7 +168,7 @@ set(CPACK_PACKAGE_VENDOR "FujiNet")
 set(CPACK_PACKAGE_CONTACT "https://github.com/FujiNetWIFI/fujinet-go-arcadia-desktop/issues")
 set(CPACK_PACKAGE_HOMEPAGE_URL "https://fujinet.online/")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
-    "Self-contained Magnavox Arcadia 2001 with built-in FujiNet")
+    "Self-contained Emerson Arcadia 2001 with built-in FujiNet")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
 set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
 set(CPACK_STRIP_FILES ON)

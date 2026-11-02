@@ -12,7 +12,7 @@ name: Windows
 # Windows system DLLs, and the tests pass under Wine. THIS workflow is the
 # real native build.
 #
-# -DWITH_ARC_ROMS=OFF, as every published build. WITH_FUJINET is left at
+# WITH_FUJINET is left at
 # its default ON to prove the MSYS2 runtime build works here -- the build
 # script has the cygpath/UTF-8/venv handling for it.
 
@@ -52,7 +52,7 @@ jobs:
         run: pacman -Q mingw-w64-ucrt-x86_64-sdl3 | grep -qE ' 3\.[0-9]+\.[0-9]+-'
 
       - name: Configure
-        run: cmake -B build -G Ninja -DWITH_ARC_ROMS=OFF
+        run: cmake -B build -G Ninja
 
       - name: Build
         run: cmake --build build

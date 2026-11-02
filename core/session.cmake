@@ -6,7 +6,6 @@ set(ARC_SESSION_SOURCES
   src/settings.c
   src/paths.c
   src/media.c
-  src/roms.c
   src/zipread.c
   src/keyboard.c
   src/fujinet_runtime.c
@@ -16,32 +15,7 @@ set(ARC_SESSION_SOURCES
   src/gamepad_sdl.c
   src/debug.c)
 
-# The embedded ROM table: empty unless WITH_ARC_ROMS (see COMPLIANCE.md). With
-# it ON the developer's own images in tools/roms/ (the console BIOS, the
-# character sets, The Voice's speech ROMs, loose or in MAME's zips) are
-# compiled in for local development only; the shipping builds are OFF and
-# core/tests/no_embedded_roms.py checks the binaries.
-set(ARC_ROMS_C "${CMAKE_CURRENT_BINARY_DIR}/roms_embedded.c")
-find_package(Python3 COMPONENTS Interpreter REQUIRED)
-if(WITH_ARC_ROMS)
-  file(GLOB ARC_ROM_INPUTS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tools/roms/*")
-  add_custom_command(
-    OUTPUT "${ARC_ROMS_C}"
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/roms/embed-roms.py"
-            "${ARC_ROMS_C}" "${CMAKE_SOURCE_DIR}/tools/roms"
-    DEPENDS "${CMAKE_SOURCE_DIR}/tools/roms/embed-roms.py" ${ARC_ROM_INPUTS}
-    COMMENT "Embedding the ROM images in tools/roms (WITH_ARC_ROMS=ON: NOT redistributable)"
-    VERBATIM)
-else()
-  add_custom_command(
-    OUTPUT "${ARC_ROMS_C}"
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/roms/embed-roms.py"
-            --none "${ARC_ROMS_C}"
-    DEPENDS "${CMAKE_SOURCE_DIR}/tools/roms/embed-roms.py"
-    VERBATIM)
-endif()
-
-add_library(arc_session STATIC ${ARC_SESSION_SOURCES} "${ARC_ROMS_C}")
+add_library(arc_session STATIC ${ARC_SESSION_SOURCES})
 set_target_properties(arc_session PROPERTIES
   C_STANDARD 11
   POSITION_INDEPENDENT_CODE ON)

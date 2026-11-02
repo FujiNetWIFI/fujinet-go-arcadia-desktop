@@ -5,29 +5,27 @@
 #
 # These are the cartridge firmware's OWN sources, from two roots:
 #
-#   pico/arcadia/firmware   fujimail.c / fujimail.h (the mailbox service: the
+#   pico/arcadia/firmware   arcmap.c / arcmap.h (the image planner and the
+#                      connector decode: flat 8K images and APPBANK ones, the
+#                      FUJI claim), arcapp.h (APPBANK serving: the fixed
+#                      half, the paged 2K window, cart RAM), fuji_mailbox.h
+#                      (the register and status-page layout) and
+#                      baked/fujiconfigrom.h (the baked CONFIG)
+#   pico/common        fujimail.c / fujimail.h (the mailbox service: the
 #                      REGSEL/REGDATA interlock, ACKSEQ published last, the
-#                      DBC push receiver), arcmap.c / arcmap.h (the image
-#                      planner: legacy 3K banks and APPBANK images, the FUJI
-#                      claim), arcapp.h (APPBANK serving: the fixed 1K, the
-#                      paged 2K window, the status page and the reply
-#                      window), fuji_mailbox.h (the register and status-page
-#                      layout) and fujiconfigrom.h (the baked APPBANK CONFIG)
-#   pico/common        fujibus.c / fujibus.h (SLIP + FujiBus wire codec) and
+#                      DBC push receiver), fujibus.c / fujibus.h (SLIP +
+#                      FujiBus wire codec), fuji_mailbox_proto.h /
+#                      fuji_mailbox_check.h (the layout every cart shares) and
 #                      the emulator-side SLIP-over-TCP transport (fujitcp.h)
 #
-# The firmware's pico/arcadia/emu/apply-mame.sh grafts the identical set into a
+# The firmware's pico/arcadia/emu/apply.sh grafts the identical set into a
 # MAME tree; this file is that graft for this repository. Emulator and
 # cartridge stay identical by construction, not by discipline: nothing here
 # is patched, only copied. The one port-specific file, the cart device
 # itself, is this repository's own core/arc/fujinet_cart.c (transposed from
 # the firmware's MAME device, pico/arcadia/emu/fujinet.cpp).
 #
-# NOTE: pico/common also has a fujimail.c/.h of its own (a different design,
-# used by the other carts). The Arcadia's is the one in pico/arcadia/firmware; staging
-# flattens into one directory, so only that one is copied.
-#
-# apply-mame.sh additionally generates a fujins.h that prefixes every shared
+# apply.sh additionally generates a fujins.h that prefixes every shared
 # symbol, because several FujiNet carts share one MAME binary; it also renames
 # every .c to .cpp for MAME's precompiled header. Only one FujiNet cart is
 # ever linked here and the sources are C, so neither is reproduced. Do not
@@ -60,24 +58,27 @@ arc_provide_dependency(
 
 set(FUJI_PROTO_DIR "${FUJINET_DIR}/pico")
 if(NOT EXISTS "${FUJI_PROTO_DIR}/arcadia/firmware/include/fuji_mailbox.h"
-   OR NOT EXISTS "${FUJI_PROTO_DIR}/arcadia/firmware/include/arcapp.h")
+   OR NOT EXISTS "${FUJI_PROTO_DIR}/arcadia/firmware/include/arcapp.h"
+   OR NOT EXISTS "${FUJI_PROTO_DIR}/arcadia/firmware/baked/fujiconfigrom.h")
   message(FATAL_ERROR
-    "${FUJINET_DIR} has no pico/arcadia/firmware/include/fuji_mailbox.h or arcapp.h "
-    "-- the pin must have the Arcadia 2001 cart's protocol 2 (APPBANK, #2177) "
-    "and its baked CONFIG (#2237); see cmake/Dependencies.cmake.")
+    "${FUJINET_DIR} has no pico/arcadia/firmware/{include/fuji_mailbox.h, "
+    "include/arcapp.h, baked/fujiconfigrom.h} -- the pin must have the Arcadia "
+    "2001 cart's protocol 2 (APPBANK, #2180) and its baked CONFIG (#2259); see "
+    "cmake/Dependencies.cmake.")
 endif()
 
-# The exact file list apply-mame.sh grafts into MAME, relative to pico/, plus
-# the baked CONFIG (apply-mame.sh's -cart image; build-cart.sh bakes the same
-# bytes into the cartridge firmware).
+# The exact file list apply.sh grafts into MAME, relative to pico/, plus the
+# baked CONFIG (the cartridge firmware bakes the same bytes in).
 set(FUJI_STAGE_FILES
-  arcadia/firmware/src/fujimail.c
+  common/src/fujimail.c
   arcadia/firmware/src/arcmap.c
-  arcadia/firmware/include/fujimail.h
+  common/include/fujimail.h
   arcadia/firmware/include/arcmap.h
   arcadia/firmware/include/arcapp.h
   arcadia/firmware/include/fuji_mailbox.h
-  arcadia/firmware/include/fujiconfigrom.h
+  common/include/fuji_mailbox_proto.h
+  common/include/fuji_mailbox_check.h
+  arcadia/firmware/baked/fujiconfigrom.h
   common/src/fujibus.c
   common/include/fujibus.h
   common/emu/fujitcp.c

@@ -34,6 +34,27 @@ int main(void)
     check(arc_dir_from_stick(0.6f, 0.05f, 0, 0.35f, 0.15f) == ARC_DIR_RIGHT,
           "a pure horizontal picks up no vertical noise");
 
+    /* the analog disc */
+    {
+        int dx = 99, dy = 99;
+        arc_disc_from_stick(0.f, 0.f, &dx, &dy);
+        check(dx == 0 && dy == 0, "a centred stick is a centred disc");
+        arc_disc_from_stick(0.08f, -0.08f, &dx, &dy);
+        check(dx == 0 && dy == 0, "a tremor inside the dead zone is nothing");
+        arc_disc_from_stick(1.f, 0.f, &dx, &dy);
+        check(dx == 127 && dy == 0, "full right is +127");
+        arc_disc_from_stick(-1.f, 0.f, &dx, &dy);
+        check(dx == -127 && dy == 0, "full left is -127");
+        arc_disc_from_stick(0.f, 1.f, &dx, &dy);
+        check(dx == 0 && dy == 127, "full down is +127 (SDL's y)");
+        arc_disc_from_stick(1.f, 1.f, &dx, &dy);
+        check(dx > 80 && dx < 127 && dx == dy, "a corner is clamped to the circle");
+        arc_disc_from_stick(0.5f, 0.f, &dx, &dy);
+        check(dx > 40 && dx < 90 && dy == 0, "half deflection is part way (past the dead zone)");
+        arc_disc_from_stick(0.13f, 0.f, &dx, &dy);
+        check(dx >= 0 && dx < 5, "just past the dead zone starts from zero, not a jump");
+    }
+
     /* directions as the stick's switches */
 #define ACT(a) (1u << (a))
     check(arc_acts_from_dir(ARC_DIR_UP) == ACT(ARC_ACT_UP) &&
@@ -53,8 +74,8 @@ int main(void)
     /* port assignment */
     assign[0] = -1; assign[1] = -1; assign[2] = -1;
     check(arc_pad_for_port(assign, 2, 0) == 0 && arc_pad_for_port(assign, 2, 1) == 1,
-          "connection order: first pad stick 1, second pad stick 2");
-    check(arc_pad_for_port(assign, 1, 1) == -1, "one pad leaves stick 2 to the keyboard");
+          "connection order: first pad disc 1, second pad disc 2");
+    check(arc_pad_for_port(assign, 1, 1) == -1, "one pad leaves disc 2 to the keyboard");
     assign[0] = 1; assign[1] = -1;
     check(arc_pad_for_port(assign, 2, 1) == 0 && arc_pad_for_port(assign, 2, 0) == 1,
           "an explicit assignment wins and the other pad fills the gap");

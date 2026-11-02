@@ -17,34 +17,30 @@
 #                     cmake/StageFujiProto.cmake, so the emulated cartridge
 #                     and the hardware cannot disagree. Everything else is
 #                     the RS232 PC runtime, built in-process as libfujinet by
-#                     cmake/FujiNetRuntime.cmake. Pinned to PR #2237 plus the
-#                     BoIP idle-wait fix (see FUJINET_COMMIT below); the pin
-#                     already maps .bin/.rom to a ROM image to push.
+#                     cmake/FujiNetRuntime.cmake. Pinned to PR #2259 (see
+#                     FUJINET_COMMIT below); the pin already maps .bin/.rom to
+#                     a ROM image to push.
 #
 # Resolution order:
 #   1. FUJINET_SRC (cache variable or environment) -- an out-of-tree working
 #      checkout, which is how the cartridge and this app are developed in
 #      tandem, e.g.
-#          cmake -B build -DFUJINET_SRC=~/Workspace/fujinet-firmware
+#          cmake -B build -DFUJINET_SRC=~/Workspace/fn-arcadia-bake
 #   2. third_party/<name>, initialising the submodule when this tree is a git
 #      checkout and the path is a registered submodule.
 #   3. Otherwise a direct clone of the pinned commit.
 
 find_package(Git QUIET)
 
-# fujinet-firmware PR #2237's head (d1921ac95, branch arc-config: the baked
-# APPBANK CONFIG -- fujinet-config 1154960, with the FujiNet logo -- the
-# status page kept until the $400 swap, the async MAME push) plus the BoIP
-# idle-wait fix (PR #2247, since merged to master as 0c9f00c16; the pin
-# carries its cherry-pick b59117665) as 77d7dd3f3, branch
-# boip-idle-wait-on-arc-config on the tschak909 fork: the Magnavox Arcadia 2001
-# cartridge (pico/arcadia) with protocol 2 (APPBANK images up to 63K, #2177).
-# The fix cuts an idle FujiNet-PC from ~1000 wakeups/s to ~100/s. TEMPORARY:
-# it is on no FujiNetWIFI branch, so the URL is the fork and the flatpak
-# manifests take it as an archive. The fork branch must not be deleted while
-# this pin points at it; back to master once #2237 merges. Recorded in three
-# places -- here and in both flatpak manifests (build-aux/flatpak/*.yml).
-set(FUJINET_COMMIT "77d7dd3f3066b8d046dc18306e7e8a8f32b92392")
+# fujinet-firmware PR #2259's head (c38e8b446, branch arcadia-bake-config on the
+# tschak909 fork): the Emerson Arcadia 2001 cartridge (pico/arcadia) with
+# protocol 2 (APPBANK images up to 70K, #2180) and the real CONFIG baked into
+# pico/arcadia/firmware/baked/fujiconfigrom.h. TEMPORARY: it is on no
+# FujiNetWIFI branch, so the URL is the fork and the flatpak manifests take it
+# as an archive. The fork branch must not be deleted while this pin points at
+# it; back to master once #2259 merges. Recorded in three places -- here and in
+# both flatpak manifests (build-aux/flatpak/*.yml).
+set(FUJINET_COMMIT "c38e8b446b28024811d494de81353734fb84777b")
 set(FUJINET_URL "https://github.com/tschak909/fujinet-firmware")
 
 # arc_provide_dependency(NAME <n> PATH <p> SENTINEL <file> OVERRIDE <VAR>

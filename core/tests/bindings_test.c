@@ -1,6 +1,6 @@
 /*
  * bindings_test -- the remappable table and the keyboard translator, pure:
- * the defaults (MAME's key map, two sticks, F1 for RESET), that no two
+ * the defaults (two keypads, two discs, F1 for RESET), that no two
  * targets share a default, steal-and-describe, persistence through the
  * settings store, and names. No machine is started.
  *
@@ -42,49 +42,44 @@ int main(void)
     if (!s) return 1;
 
     /* the table's shape */
-    check(ARC_TARGET_COUNT == 10 + 64 + 1 + 2, "ten stick targets, 64 matrix keys, RESET, two actions");
-    check(ARC_TARGET_KEY(0) == 10 && ARC_TARGET_SWITCH(ARC_SW_RESET) == 74
-          && ARC_TARGET_SYSACT(0) == 75, "the flat target indices");
+    check(ARC_TARGET_COUNT == 10 + 27 + 1 + 2, "ten disc targets, 27 console keys, RESET, two actions");
+    check(ARC_TARGET_KEY(0) == 10 && ARC_TARGET_SWITCH(ARC_SW_RESET) == 37
+          && ARC_TARGET_SYSACT(0) == 38, "the flat target indices");
 
-    /* defaults: MAME's keys, by legend */
-    check(key_target(s, '0') == ARC_TARGET_KEY(0) && key_target(s, '7') == ARC_TARGET_KEY(7)
-          && key_target(s, '9') == ARC_TARGET_KEY(9), "the digits are the digit keys");
-    check(key_target(s, 'q') == ARC_TARGET_KEY(24) && key_target(s, 'w') == ARC_TARGET_KEY(17)
-          && key_target(s, 'p') == ARC_TARGET_KEY(15) && key_target(s, 'k') == ARC_TARGET_KEY(31)
-          && key_target(s, 'a') == ARC_TARGET_KEY(32) && key_target(s, 'm') == ARC_TARGET_KEY(38)
-          && key_target(s, 'l') == ARC_TARGET_KEY(14),
-          "letters press the key of that legend (MAME's matrix)");
-    check(key_target(s, 'Q') == ARC_TARGET_KEY(24), "lookup folds case");
-    check(key_target(s, 'y') == ARC_TARGET_KEY(44) && key_target(s, 'n') == ARC_TARGET_KEY(45),
-          "Y and N are the Y/YES and N/NO switches");
-    check(key_target(s, ARC_KEYSYM_SPACE) == ARC_TARGET_KEY(12), "Space is SPACE");
-    check(key_target(s, '.') == ARC_TARGET_KEY(39), ". is .");
-    check(key_target(s, '/') == ARC_TARGET_KEY(13), "/ is ? (KEYCODE_SLASH)");
-    check(key_target(s, ARC_KEYSYM_KP_DIVIDE) == ARC_TARGET_KEY(42), "the keypad's / is the division sign");
-    check(key_target(s, ARC_KEYSYM_KP_MULTIPLY) == ARC_TARGET_KEY(41), "the keypad's * is the multiplication sign");
-    check(key_target(s, 0xffab) == ARC_TARGET_KEY(16), "the keypad's + is +");
-    check(key_target(s, '-') == ARC_TARGET_KEY(40) && key_target(s, '=') == ARC_TARGET_KEY(43),
-          "- and = are - and =");
-    check(key_target(s, ARC_KEYSYM_RETURN) == ARC_TARGET_KEY(47), "Enter is ENTER");
-    check(key_target(s, ARC_KEYSYM_KP_ENTER) == ARC_TARGET_KEY(47), "so is the keypad's Enter");
-    check(key_target(s, ARC_KEYSYM_BACKSPACE) == ARC_TARGET_KEY(46), "Backspace is CLEAR");
-    check(key_target(s, ';') == ARC_TARGET_KEY(50) && key_target(s, ',') == ARC_TARGET_KEY(54)
-          && key_target(s, ARC_KEYSYM_LSHIFT) == ARC_TARGET_KEY(56) && key_target(s, 0xff57) == ARC_TARGET_KEY(57),
-          "the Videopac+'s extra rows take the punctuation and the modifiers");
+    /* defaults: player 1's keypad on the digits */
+    check(key_target(s, '1') == ARC_TARGET_KEY(0) && key_target(s, '5') == ARC_TARGET_KEY(4)
+          && key_target(s, '9') == ARC_TARGET_KEY(8) && key_target(s, '0') == ARC_TARGET_KEY(10),
+          "player 1's keypad is the top-row digits (1-9, then 0)");
+    check(key_target(s, ARC_KEYSYM_BACKSPACE) == ARC_TARGET_KEY(9), "Backspace is player 1's CLEAR");
+    check(key_target(s, ARC_KEYSYM_RETURN) == ARC_TARGET_KEY(11), "Enter is player 1's ENTER");
+    check(key_target(s, ARC_KEYSYM_KP_ENTER) == ARC_TARGET_KEY(11), "so is the keypad's Enter");
+    /* player 2's keypad is the Q block */
+    check(key_target(s, 'q') == ARC_TARGET_KEY(12) && key_target(s, 'w') == ARC_TARGET_KEY(13)
+          && key_target(s, 'e') == ARC_TARGET_KEY(14) && key_target(s, 'a') == ARC_TARGET_KEY(15)
+          && key_target(s, 's') == ARC_TARGET_KEY(16) && key_target(s, 'd') == ARC_TARGET_KEY(17)
+          && key_target(s, 'z') == ARC_TARGET_KEY(18) && key_target(s, 'x') == ARC_TARGET_KEY(19)
+          && key_target(s, 'c') == ARC_TARGET_KEY(20) && key_target(s, 'v') == ARC_TARGET_KEY(21)
+          && key_target(s, 'b') == ARC_TARGET_KEY(22) && key_target(s, 'n') == ARC_TARGET_KEY(23),
+          "player 2's keypad is Q W E / A S D / Z X C / V B N");
+    check(key_target(s, 'Q') == ARC_TARGET_KEY(12), "lookup folds case");
+    check(key_target(s, ARC_KEYSYM_F2) == ARC_TARGET_KEY(ARC_KEY_START)
+          && key_target(s, ARC_KEYSYM_F3) == ARC_TARGET_KEY(ARC_KEY_OPTION)
+          && key_target(s, ARC_KEYSYM_F4) == ARC_TARGET_KEY(ARC_KEY_SELECT),
+          "START, OPTION and SELECT are F2, F3 and F4");
 
-    /* the sticks */
+    /* the discs */
     check(key_target(s, ARC_KEYSYM_UP) == ARC_TARGET_PORT(0, ARC_ACT_UP)
           && key_target(s, ARC_KEYSYM_RIGHT) == ARC_TARGET_PORT(0, ARC_ACT_RIGHT)
           && key_target(s, ARC_KEYSYM_DOWN) == ARC_TARGET_PORT(0, ARC_ACT_DOWN)
           && key_target(s, ARC_KEYSYM_LEFT) == ARC_TARGET_PORT(0, ARC_ACT_LEFT)
           && key_target(s, ARC_KEYSYM_RCTRL) == ARC_TARGET_PORT(0, ARC_ACT_FIRE),
-          "stick 1 is the arrow keys and Right Ctrl");
+          "disc 1 is the arrow keys and Right Ctrl");
     check(key_target(s, ARC_KEYSYM_KP_8) == ARC_TARGET_PORT(1, ARC_ACT_UP)
           && key_target(s, ARC_KEYSYM_KP_6) == ARC_TARGET_PORT(1, ARC_ACT_RIGHT)
           && key_target(s, ARC_KEYSYM_KP_2) == ARC_TARGET_PORT(1, ARC_ACT_DOWN)
           && key_target(s, ARC_KEYSYM_KP_4) == ARC_TARGET_PORT(1, ARC_ACT_LEFT)
           && key_target(s, ARC_KEYSYM_KP_0) == ARC_TARGET_PORT(1, ARC_ACT_FIRE),
-          "stick 2 is the keypad's 8 6 2 4 and 0");
+          "disc 2 is the keypad's 8 6 2 4 and 0");
     check(key_target(s, ARC_KEYSYM_KP_5) == -1 && key_target(s, ARC_KEYSYM_KP_7) == -1,
           "the keypad's other digits are left alone");
     b = arcsession_binding_get(s, ARC_TARGET_SWITCH(ARC_SW_RESET));
@@ -106,7 +101,7 @@ int main(void)
     }
     check(clash == 0, "no two default keys clash");
 
-    /* gamepad defaults, the same on both sticks */
+    /* gamepad defaults, the same on both discs */
     for (t = 0; t < 2; t++) {
         check(arcsession_binding_get(s, ARC_TARGET_PORT(t, ARC_ACT_UP)).button == ARC_PAD_BTN_DPAD_UP
               && arcsession_binding_get(s, ARC_TARGET_PORT(t, ARC_ACT_RIGHT)).button == ARC_PAD_BTN_DPAD_RIGHT
@@ -115,29 +110,35 @@ int main(void)
               && arcsession_binding_get(s, ARC_TARGET_PORT(t, ARC_ACT_FIRE)).button == ARC_PAD_BTN_SOUTH,
               t ? "the second pad: D-pad and South" : "the first pad: D-pad and South");
         check(arcsession_target_for_button(s, t, ARC_PAD_BTN_SOUTH) == ARC_TARGET_PORT(t, ARC_ACT_FIRE),
-              "button lookup is scoped to the stick");
+              "button lookup is scoped to the disc");
+        check(arcsession_target_for_button(s, t, ARC_PAD_BTN_START) == ARC_TARGET_KEY(ARC_KEY_START)
+              && arcsession_target_for_button(s, t, ARC_PAD_BTN_WEST) == ARC_TARGET_KEY(ARC_KEY_OPTION)
+              && arcsession_target_for_button(s, t, ARC_PAD_BTN_BACK) == ARC_TARGET_KEY(ARC_KEY_SELECT),
+              "Start, X and Back are START, OPTION and SELECT on either pad");
     }
-    check(arcsession_target_for_button(s, 0, ARC_PAD_BTN_START) == -1, "Start is nothing");
+    check(arcsession_target_for_button(s, 0, ARC_PAD_BTN_NORTH) == -1, "North is nothing");
 
     /* steal: one key, one target */
-    arcsession_binding_set_key(s, ARC_TARGET_KEY(17), ARC_KEYSYM_LEFT, stolen, sizeof stolen);
-    check(strstr(stolen, "Stick 1: Left") != NULL, "rebinding Left reports the holder it displaced");
+    arcsession_binding_set_key(s, ARC_TARGET_KEY(13), ARC_KEYSYM_LEFT, stolen, sizeof stolen);
+    check(strstr(stolen, "Disc 1: Left") != NULL, "rebinding Left reports the holder it displaced");
     check(arcsession_binding_get(s, ARC_TARGET_PORT(0, ARC_ACT_LEFT)).keysym == 0, "the old holder lost the key");
-    check(key_target(s, ARC_KEYSYM_LEFT) == ARC_TARGET_KEY(17), "the new holder has it");
-    arcsession_binding_set_key(s, ARC_TARGET_KEY(17), 'w', stolen, sizeof stolen);
-    check(stolen[0] == '\0' && key_target(s, 'w') == ARC_TARGET_KEY(17),
+    check(key_target(s, ARC_KEYSYM_LEFT) == ARC_TARGET_KEY(13), "the new holder has it");
+    arcsession_binding_set_key(s, ARC_TARGET_KEY(13), 'w', stolen, sizeof stolen);
+    check(stolen[0] == '\0' && key_target(s, 'w') == ARC_TARGET_KEY(13),
           "putting W back takes nothing from anyone");
     arcsession_binding_set_key(s, ARC_TARGET_PORT(0, ARC_ACT_LEFT), ARC_KEYSYM_LEFT, NULL, 0);
 
-    arcsession_binding_set_button(s, ARC_TARGET_KEY(24), ARC_PAD_BTN_WEST, NULL, 0);
-    check(arcsession_target_for_button(s, 0, ARC_PAD_BTN_WEST) == ARC_TARGET_KEY(24)
-          && arcsession_target_for_button(s, 1, ARC_PAD_BTN_WEST) == ARC_TARGET_KEY(24),
-          "a pad button bound to a matrix key works on either pad");
+    arcsession_binding_set_button(s, ARC_TARGET_KEY(15), ARC_PAD_BTN_WEST, NULL, 0);
+    check(arcsession_target_for_button(s, 0, ARC_PAD_BTN_WEST) == ARC_TARGET_KEY(15)
+          && arcsession_target_for_button(s, 1, ARC_PAD_BTN_WEST) == ARC_TARGET_KEY(15),
+          "a pad button bound to a console key works on either pad");
+    check(arcsession_binding_get(s, ARC_TARGET_KEY(ARC_KEY_OPTION)).button == ARC_PAD_BTN_NONE,
+          "and took it from OPTION");
     arcsession_binding_set_button(s, ARC_TARGET_PORT(1, ARC_ACT_FIRE), ARC_PAD_BTN_WEST, stolen, sizeof stolen);
-    check(strstr(stolen, "Key: Q") != NULL, "stealing a pad button names the key that had it");
-    check(arcsession_binding_get(s, ARC_TARGET_KEY(24)).button == ARC_PAD_BTN_NONE, "which lost it");
-    arcsession_binding_set_key(s, ARC_TARGET_KEY(24), 0, NULL, 0);
-    check(arcsession_binding_get(s, ARC_TARGET_KEY(24)).keysym == 0, "a key can be unbound");
+    check(strstr(stolen, "Key: P2 keypad 4") != NULL, "stealing a pad button names the key that had it");
+    check(arcsession_binding_get(s, ARC_TARGET_KEY(15)).button == ARC_PAD_BTN_NONE, "which lost it");
+    arcsession_binding_set_key(s, ARC_TARGET_KEY(15), 0, NULL, 0);
+    check(arcsession_binding_get(s, ARC_TARGET_KEY(15)).keysym == 0, "a key can be unbound");
 
     /* names */
     arcsession_keysym_name(ARC_KEYSYM_F12, name, sizeof name);
@@ -151,15 +152,15 @@ int main(void)
     check(strcmp(arc_pad_button_name(ARC_PAD_BTN_DPAD_LEFT), "D-pad Left") == 0, "pad button names");
     check(strcmp(arc_target_name(ARC_TARGET_SYSACT(ARC_SYSACT_RESET_CONFIG)), "Reset to CONFIG") == 0,
           "system action names");
-    check(strcmp(arc_target_name(ARC_TARGET_PORT(1, ARC_ACT_FIRE)), "Stick 2: Fire") == 0, "stick target names");
-    check(strcmp(arc_target_name(ARC_TARGET_PORT(0, ARC_ACT_UP)), "Stick 1: Up") == 0, "and the first stick's");
-    check(strcmp(arc_target_name(ARC_TARGET_KEY(24)), "Key: Q") == 0, "key names");
-    check(strcmp(arc_target_name(ARC_TARGET_KEY(44)), "Key: Y / YES") == 0, "a shared key says so");
-    check(strcmp(arc_target_name(ARC_TARGET_KEY(49)), "Key: Lock") == 0, "the G7400's own keys");
+    check(strcmp(arc_target_name(ARC_TARGET_PORT(1, ARC_ACT_FIRE)), "Disc 2: Fire") == 0, "disc target names");
+    check(strcmp(arc_target_name(ARC_TARGET_PORT(0, ARC_ACT_UP)), "Disc 1: Up") == 0, "and the first disc's");
+    check(strcmp(arc_target_name(ARC_TARGET_KEY(4)), "Key: P1 keypad 5") == 0, "keypad key names");
+    check(strcmp(arc_target_name(ARC_TARGET_KEY(21)), "Key: P2 keypad CLEAR") == 0, "player 2's CLEAR");
+    check(strcmp(arc_target_name(ARC_TARGET_KEY(ARC_KEY_START)), "Key: START") == 0, "the panel's buttons");
     check(strcmp(arc_target_short_name(ARC_TARGET_PORT(0, ARC_ACT_RIGHT)), "Right") == 0, "short names");
-    check(strcmp(arc_target_short_name(ARC_TARGET_KEY(47)), "ENTER") == 0, "short key names");
+    check(strcmp(arc_target_short_name(ARC_TARGET_KEY(11)), "P1 keypad ENTER") == 0, "short key names");
+    check(strcmp(arc_target_short_name(ARC_TARGET_KEY(ARC_KEY_SELECT)), "SELECT") == 0, "short panel names");
     check(strcmp(arc_target_short_name(ARC_TARGET_SWITCH(ARC_SW_RESET)), "RESET") == 0, "the console's button");
-    check(strcmp(arc_target_name(ARC_TARGET_KEY(10)), "Key: 10") == 0, "a position with no key has a number");
     tkey = 0;
     for (t = 0; t < ARC_TARGET_COUNT; t++)
         if (arc_target_name(t)[0] == '\0') tkey++;
@@ -177,13 +178,13 @@ int main(void)
 
     /* persistence */
     arcsession_binding_set_key(s, ARC_TARGET_PORT(1, ARC_ACT_UP), 'w', stolen, sizeof stolen);
-    check(strstr(stolen, "Key: W") != NULL, "rebinding W names the key it took it from");
+    check(strstr(stolen, "Key: P2 keypad 2") != NULL, "rebinding W names the key it took it from");
     arcsession_free(s);
     s = arcsession_new(&p);
     check(s && key_target(s, 'w') == ARC_TARGET_PORT(1, ARC_ACT_UP), "the rebinding persisted");
     check(s && key_target(s, ARC_KEYSYM_KP_8) == -1, "and what it displaced stayed displaced");
     arcsession_bindings_reset(s);
-    check(key_target(s, 'w') == ARC_TARGET_KEY(17), "reset restores the defaults");
+    check(key_target(s, 'w') == ARC_TARGET_KEY(13), "reset restores the defaults");
     check(key_target(s, ARC_KEYSYM_KP_8) == ARC_TARGET_PORT(1, ARC_ACT_UP), "all of them");
     check(strcmp(arcsession_get_str(s, "bindings", "x"), "") == 0, "and persists nothing");
     arcsession_free(s);

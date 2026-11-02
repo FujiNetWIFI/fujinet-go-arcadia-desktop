@@ -1,7 +1,7 @@
 /*
  * arcsession's private state. Not installed; only the core/src sources
  * include it. One struct shared by the session's C modules (settings,
- * paths, media, roms, audio, gamepads, bindings).
+ * paths, media, audio, gamepads, bindings).
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -31,7 +31,6 @@ struct arcsession {
     char config_dir[ARC_PATH_MAX];
     char data_dir[ARC_PATH_MAX];
     char carts_dir[ARC_PATH_MAX];
-    char roms_dir[ARC_PATH_MAX];       /* <data>/roms: the imported ROMs */
     char settings_file[ARC_PATH_MAX];
 
     setting_kv *settings;
@@ -48,7 +47,7 @@ struct arcsession {
     char fujinet_lib[ARC_PATH_MAX];     /* resolved libfujinet path, "" until then */
     int  fujinet_disabled;              /* the caller passed fujinet_lib "" */
     char fujinet_runtime_src[ARC_PATH_MAX]; /* caller-given pristine tree, or "" */
-    char webui_url[64];                 /* http://127.0.0.1:11521/ */
+    char webui_url[64];                 /* http://127.0.0.1:11523/ */
     int  fujinet_running;
     int  fujinet_external;              /* dialing a FujiNet that isn't ours */
     char boip_endpoint[80];             /* "host:port" the cartridge dials */
@@ -64,14 +63,6 @@ struct arcsession {
     int run_machine;                   /* arc_machine the host was started with */
     int run_game;                      /* the slot holds a game's own cartridge
                                         * (a mapper), not the FujiNet cart */
-    unsigned run_missing;              /* ARC_MISSING_FONT / _VOICE of what was
-                                        * handed to the host at power-up */
-    int refusal_recoverable;           /* the last refused power-up lacked a ROM
-                                        * an import would supply */
-    /* the ROM images handed to the host: the 8244 keeps a pointer to its
-     * character set, so they live until the host stops (see roms.c) */
-    uint8_t *host_roms[6];
-
     /* keys the keyboard currently holds, by target, so a release clears
      * exactly what its press asserted even if the binding changed meanwhile */
     uint32_t held_keysym[ARC_TARGET_COUNT];
@@ -84,6 +75,9 @@ struct arcsession {
     uint32_t pad_src[2][ARC_ACT_PER_PORT];
     uint32_t key_src[ARC_KEY_COUNT];
     uint32_t sw_src[ARC_SW_COUNT];
+    /* each pad's analog disc deflection per port, -128..127 (0 = centre) */
+    int disc_x[8][2];
+    int disc_y[8][2];
 
     void *audio;              /* audio_sdl.c state, NULL until started */
     void *gamepad;            /* gamepad_sdl.c state, NULL until started */
@@ -113,6 +107,9 @@ const char *paths_resolve(const char *path, char *buf, size_t bufsz);
 int paths_provision_fujinet(struct arcsession *s);
 
 void session_set_error(struct arcsession *s, const char *fmt, ...);
+/* A cartridge image from a file or a zip of one: malloc'd (caller frees),
+ * or NULL with why. */
+uint8_t *session_read_cart(const char *path, uint32_t *len, char *why, int whysz);
 /* 1 if the FujiNet cartridge can serve the image (plans it), else 0 and why. */
 int  session_cart_plan_check(const char *path, char *why, int whysz);
 
@@ -136,18 +133,6 @@ int  fujinet_wait_for_boip(struct arcsession *s, int timeout_ms);
 /* paths.c: mkdir -p. */
 int paths_mkdir_p(const char *path);
 
-/* roms.c */
-/* Write any images compiled in with WITH_ARC_ROMS into the ROM directory
- * (once; an existing file is left alone). */
-void roms_provision_embedded(struct arcsession *s);
-/* ROM item `id` (an arc_rom_id) from the ROM directory or the embedded table,
- * at its exact size; a malloc'd buffer (caller frees) and its size, or NULL
- * when it is not there. */
-uint8_t *roms_load(struct arcsession *s, int id, uint32_t *size);
-/* arcsession_rom_import, plus the first file it wrote (for import_media). */
-int roms_import_ex(struct arcsession *s, const char *path, char *msg, int msgsz,
-                   char *first_dest, int destsz);
-
 /* audio_sdl.c */
 int  audio_start(struct arcsession *s);
 void audio_stop(struct arcsession *s);
@@ -156,10 +141,12 @@ void audio_stop(struct arcsession *s);
 int  gamepad_start(struct arcsession *s);
 void gamepad_stop(struct arcsession *s);
 /* Called by the gamepad thread for the pad that owns `owner`. press: a pad
- * button drives a target (a stick direction or button, a matrix key, RESET)
+ * button drives a target (a disc direction or fire, a console key, RESET)
  * -- the pad's SRC_PAD source. stick: the analog stick or hat drives a stick
  * direction -- its SRC_STICK source. */
 void session_gamepad_press(struct arcsession *s, int owner, int target, int down);
+/* The analog disc of a pad (left stick): x/y -128..127, 0 = centre. */
+void session_gamepad_disc(struct arcsession *s, int owner, int port, int x, int y);
 void session_gamepad_stick(struct arcsession *s, int owner, int port, int act, int down);
 /* Called by the gamepad thread on a connect/disconnect. */
 void session_gamepad_event(struct arcsession *s, const char *text);

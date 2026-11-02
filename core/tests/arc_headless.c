@@ -2,21 +2,22 @@
  * writes what it made. Side B of the MAME A/B runs (tools/ab/), and the way to
  * look at the core without a window. Built, not registered.
  *
- *   arc_headless [-machine arc|g7000|g7400] [-bios F] [-font F] [-font-ef F]
+ *   arc_headless [-machine ntsc|pal]
  *               [-cart F]      an app/CONFIG image on the FujiNet cartridge
  *               [-game F]      a game: its own mapper cartridge, no FujiNet
  *               [-boip HOST:PORT]  dial a FujiNet (default: none, link down)
-               [-voice ROM2K -voice-speech ROM16K [-voice-game ROM16K]]
-               [-frames N] [-hash] [-ppm N FILE] [-raw FILE] [-vdclog FILE]
-               [-wav FILE] [-gain G]
- *               [-key FRAME:ROW:COL:DOWN] [-joy FRAME:STICK:BITS]
+ *               [-frames N] [-hash] [-ppm N FILE] [-raw FILE] [-buslog FILE]
+ *               [-wav FILE] [-gain G]
+ *               [-key FRAME:BIT:DOWN] [-joy FRAME:STICK:BITS]
+ *               [-disc FRAME:STICK:X:Y] [-reset FRAME:DOWN]
  *
  * -hash prints "frame fnv64" for every frame (the A/B compares these with a
  * MAME run's); -ppm writes frame N as a PPM; -raw writes every frame as
- * 360x243 32-bit little-endian ARGB, in order (tools/ab/cart_ab.py compares it
- * with the same dump from MAME); -wav records the sound as mono
- * 16-bit at 48 kHz. With no -bios the stand-in runs. With no -cart/-game
- * CONFIG, the baked image, boots; its link is down (nothing is dialled).
+ * 192x262 32-bit little-endian ARGB, in order (tools/ab/cart_ab.py compares it
+ * with the same dump from MAME); -wav records the sound as mono 16-bit at
+ * 48 kHz; -buslog lists every UVI write ($1800-$1AFF) with the CPU cycle it
+ * happened at. With no -cart/-game CONFIG, the baked image, boots; its link is
+ * down (nothing is dialled) unless -boip is given.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -53,7 +54,7 @@ static uint8_t *slurp(const char *path, uint32_t *size)
 
 static uint64_t fnv64(const uint32_t *px, size_t n)
 {
-    uint64_t h = 1469598103934665603ull;
+    uint64_t h = 14695981039346656037ull;
     size_t i;
 
     for (i = 0; i < n; i++) {
@@ -78,19 +79,20 @@ static void write_ppm(const char *path, const uint32_t *px)
     fclose(f);
 }
 
-/* -vdclog: every external-space access with its time in pixel clocks, in the
- * format of tools/ab/vdc_log.lua, to diff against MAME's. */
-static FILE *s_vdclog;
+static FILE *s_buslog;
 
 static void log_access(arc_machine_t *m, void *user, int kind, uint16_t addr, uint8_t data)
 {
     (void)user;
-    fprintf(s_vdclog, "%c %llu %u %u %u\n", kind == ARC_BUS_XW ? 'W' : 'R',
-            (unsigned long long)arc_machine_now(m), (unsigned)addr, (unsigned)data, (unsigned)m->p1);
+    if (addr >= 0x1800 && addr <= 0x1aff)
+        fprintf(s_buslog, "%c %llu %04x %02x %d\n", kind == ARC_BUS_MEMW ? 'W' : 'R',
+                (unsigned long long)m->cpu.cycles, (unsigned)addr, (unsigned)data, m->uvi.line);
 }
 
-typedef struct { int frame, row, col, down; } key_ev;
+typedef struct { int frame, bit, down; } key_ev;
 typedef struct { int frame, stick, bits; } joy_ev;
+typedef struct { int frame, stick, x, y; } disc_ev;
+typedef struct { int frame, down; } reset_ev;
 
 int main(int argc, char **argv)
 {
@@ -98,36 +100,27 @@ int main(int argc, char **argv)
     arc_fujinet_t *fj;
     arc_cart_t mapper;
     arc_machine_opts_t mo;
-    uint8_t *bios = NULL, *font = NULL, *font_ef = NULL, *cart = NULL, *game = NULL;
-    uint8_t *vrom = NULL, *vspeech = NULL, *vgame = NULL;
-    uint32_t bios_n = 0, font_n = 0, font_ef_n = 0, cart_n = 0, game_n = 0;
-    uint32_t vrom_n = 0, vspeech_n = 0, vgame_n = 0;
-    const char *ppm_path = NULL, *wav_path = NULL, *boip = "", *raw_path = NULL, *vdclog_path = NULL;
+    uint8_t *cart = NULL, *game = NULL;
+    uint32_t cart_n = 0, game_n = 0;
+    const char *ppm_path = NULL, *wav_path = NULL, *boip = "", *raw_path = NULL, *buslog_path = NULL;
     FILE *raw = NULL;
     int ppm_frame = -1, frames = 60, hash = 0, machine = ARC_MACHINE_ARCADIA;
     float gain = 1.0f;
     key_ev keys[256];
     joy_ev joys[256];
-    int nkeys = 0, njoys = 0, i, f;
+    disc_ev discs[256];
+    reset_ev resets[64];
+    int nkeys = 0, njoys = 0, ndiscs = 0, nresets = 0, i, f;
     FILE *wav = NULL;
     uint32_t wav_bytes = 0;
     char why[160];
     const char *err = NULL;
-    uint64_t keymask = 0;
 
     for (i = 1; i < argc; i++) {
         const char *a = argv[i];
 
-        if (!strcmp(a, "-machine") && i + 1 < argc) {
-            const char *v = argv[++i];
-            machine = !strcmp(v, "g7000") ? ARC_MACHINE_VIDEOPAC :
-                      !strcmp(v, "g7400") ? ARC_MACHINE_VIDEOPAC_PLUS : ARC_MACHINE_ARCADIA;
-        } else if (!strcmp(a, "-bios") && i + 1 < argc) bios = slurp(argv[++i], &bios_n);
-        else if (!strcmp(a, "-font") && i + 1 < argc) font = slurp(argv[++i], &font_n);
-        else if (!strcmp(a, "-font-ef") && i + 1 < argc) font_ef = slurp(argv[++i], &font_ef_n);
-        else if (!strcmp(a, "-voice") && i + 1 < argc) vrom = slurp(argv[++i], &vrom_n);
-        else if (!strcmp(a, "-voice-speech") && i + 1 < argc) vspeech = slurp(argv[++i], &vspeech_n);
-        else if (!strcmp(a, "-voice-game") && i + 1 < argc) vgame = slurp(argv[++i], &vgame_n);
+        if (!strcmp(a, "-machine") && i + 1 < argc)
+            machine = !strcmp(argv[++i], "pal") ? ARC_MACHINE_ARCADIA_PAL : ARC_MACHINE_ARCADIA;
         else if (!strcmp(a, "-cart") && i + 1 < argc) cart = slurp(argv[++i], &cart_n);
         else if (!strcmp(a, "-game") && i + 1 < argc) game = slurp(argv[++i], &game_n);
         else if (!strcmp(a, "-frames") && i + 1 < argc) frames = atoi(argv[++i]);
@@ -139,15 +132,23 @@ int main(int argc, char **argv)
             ppm_path = argv[++i];
         } else if (!strcmp(a, "-wav") && i + 1 < argc) wav_path = argv[++i];
         else if (!strcmp(a, "-raw") && i + 1 < argc) raw_path = argv[++i];
-        else if (!strcmp(a, "-vdclog") && i + 1 < argc) vdclog_path = argv[++i];
+        else if (!strcmp(a, "-buslog") && i + 1 < argc) buslog_path = argv[++i];
         else if (!strcmp(a, "-key") && i + 1 < argc && nkeys < 256) {
             key_ev k;
-            if (sscanf(argv[++i], "%d:%d:%d:%d", &k.frame, &k.row, &k.col, &k.down) == 4)
+            if (sscanf(argv[++i], "%d:%d:%d", &k.frame, &k.bit, &k.down) == 3)
                 keys[nkeys++] = k;
         } else if (!strcmp(a, "-joy") && i + 1 < argc && njoys < 256) {
             joy_ev j;
             if (sscanf(argv[++i], "%d:%d:%i", &j.frame, &j.stick, &j.bits) == 3)
                 joys[njoys++] = j;
+        } else if (!strcmp(a, "-disc") && i + 1 < argc && ndiscs < 256) {
+            disc_ev d;
+            if (sscanf(argv[++i], "%d:%d:%d:%d", &d.frame, &d.stick, &d.x, &d.y) == 4)
+                discs[ndiscs++] = d;
+        } else if (!strcmp(a, "-reset") && i + 1 < argc && nresets < 64) {
+            reset_ev r;
+            if (sscanf(argv[++i], "%d:%d", &r.frame, &r.down) == 2)
+                resets[nresets++] = r;
         } else {
             fprintf(stderr, "arc_headless: unknown option %s\n", a);
             return 2;
@@ -156,19 +157,10 @@ int main(int argc, char **argv)
 
     memset(&mo, 0, sizeof mo);
     mo.machine = machine;
-    mo.bios = bios && bios_n == ARC_BIOS_SIZE ? bios : NULL;
-    mo.font = font && font_n == 512 ? font : NULL;
-    mo.font_ef = font_ef;
-    if (vrom && vspeech && vrom_n == 2048 && vspeech_n == 16384) {
-        mo.voice = true;
-        mo.voice_rom = vrom;
-        mo.voice_speech = vspeech;
-        mo.voice_game = vgame && vgame_n == 16384 ? vgame : NULL;
-    }
 
     fj = arc_fujinet_create();
     if (game) {
-        if (arc_cart_init(&mapper, arc_cart_identify(game, game_n, NULL), game, game_n, &err) != 0) {
+        if (arc_cart_init(&mapper, arc_cart_identify(game, game_n), game, game_n, &err) != 0) {
             fprintf(stderr, "arc_headless: %s\n", err);
             return 2;
         }
@@ -186,10 +178,10 @@ int main(int argc, char **argv)
 
     if (raw_path)
         raw = fopen(raw_path, "wb");
-    if (vdclog_path) {
-        s_vdclog = fopen(vdclog_path, "w");
+    if (buslog_path) {
+        s_buslog = fopen(buslog_path, "w");
         m.bus_hook = log_access;
-        m.watch = ARC_WATCH_XR | ARC_WATCH_XW;
+        m.watch = ARC_WATCH_MEMR | ARC_WATCH_MEMW;
     }
     if (wav_path) {
         uint8_t hdr[44] = { 0 };
@@ -201,19 +193,24 @@ int main(int argc, char **argv)
     for (f = 0; f < frames; f++) {
         int k;
 
-        for (k = 0; k < nkeys; k++) {
-            if (keys[k].frame != f)
-                continue;
-            keymask = keys[k].down ? (m.keys_live | 1ull << (keys[k].row * 8 + keys[k].col))
-                                   : (m.keys_live & ~(1ull << (keys[k].row * 8 + keys[k].col)));
-            m.keys_live = keymask;
-        }
+        for (k = 0; k < nkeys; k++)
+            if (keys[k].frame == f)
+                m.keys_live = keys[k].down ? (m.keys_live | 1ull << keys[k].bit)
+                                           : (m.keys_live & ~(1ull << keys[k].bit));
         for (k = 0; k < njoys; k++)
             if (joys[k].frame == f)
                 m.joy_live[joys[k].stick & 1] = (uint8_t)joys[k].bits;
+        for (k = 0; k < ndiscs; k++)
+            if (discs[k].frame == f) {
+                m.disc_live[discs[k].stick & 1][0] = (int8_t)discs[k].x;
+                m.disc_live[discs[k].stick & 1][1] = (int8_t)discs[k].y;
+            }
+        for (k = 0; k < nresets; k++)
+            if (resets[k].frame == f)
+                m.reset_live = resets[k].down != 0;
         arc_machine_run_frame(&m);
-        if (s_vdclog)
-            fprintf(s_vdclog, "F %d %llu %u\n", f, (unsigned long long)arc_machine_now(&m), (unsigned)m.p1);
+        if (s_buslog)
+            fprintf(s_buslog, "F %d %llu\n", f, (unsigned long long)m.cpu.cycles);
         if (hash)
             printf("%d %016llx\n", f, (unsigned long long)fnv64(m.fb, ARC_FB_WIDTH * ARC_FB_HEIGHT));
         if (raw) {
@@ -240,8 +237,8 @@ int main(int argc, char **argv)
     }
     if (raw)
         fclose(raw);
-    if (s_vdclog)
-        fclose(s_vdclog);
+    if (s_buslog)
+        fclose(s_buslog);
     if (wav) {
         uint8_t h[44];
         uint32_t rate = ARC_AUDIO_RATE, byterate = ARC_AUDIO_RATE * 2u, riff = 36 + wav_bytes;
@@ -255,8 +252,8 @@ int main(int argc, char **argv)
         fwrite(h, 1, 44, wav);
         fclose(wav);
     }
-    fprintf(stderr, "arc_headless: %d frames, pc=%03x, %llu instructions\n", frames,
-            (unsigned)m.cpu.pc, (unsigned long long)m.cpu.instructions);
+    fprintf(stderr, "arc_headless: %d frames, pc=%04x, %llu instructions\n", frames,
+            (unsigned)s2650_pc(&m.cpu), (unsigned long long)m.cpu.instructions);
     arc_fujinet_destroy(fj);
     return 0;
 }

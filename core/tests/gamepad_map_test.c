@@ -1,8 +1,9 @@
 /*
  * gamepad_map_test -- the gamepad layer end to end with an SDL3 virtual
- * gamepad: hot-plug pickup, the default mapping onto the joystick (the D-pad
- * is the stick's four directions, South is its button, the left analog stick
- * steers too), a button rebound to a matrix key and to the console's RESET,
+ * gamepad: hot-plug pickup, the default mapping onto the disc (the D-pad is its four
+ * directions, South the side button, the left analog stick the analog disc, or
+ * the four directions again with analog off), a button rebound to a console
+ * key (START) and to the console's RESET,
  * the sources not stepping on each other, and hot-unplug releasing everything
  * the pad held -- with no hardware and no human.
  *
@@ -27,7 +28,7 @@
 #define PAD_NAME "arctest virtual pad"
 
 static int failures;
-static int vport;   /* the stick the virtual pad was given */
+static int vport;   /* the disc port the virtual pad was given */
 
 static void sleep_ms(int ms)
 {
@@ -43,7 +44,7 @@ static void expect(arcsession *s, unsigned want, int key, int reset, const char 
     int k = 0, r = 0;
     for (int i = 0; i < 100; i++) {
         held = arcsession_buttons_held(s, vport);
-        k = arcsession_key_held(s, 24);
+        k = arcsession_key_held(s, ARC_KEY_START);
         r = arcsession_switch_held(s, ARC_SW_RESET);
         if (held == want && k == key && r == reset) {
             printf("ok: %s\n", what);
@@ -51,11 +52,28 @@ static void expect(arcsession *s, unsigned want, int key, int reset, const char 
         }
         sleep_ms(20);
     }
-    printf("FAIL: %s (held %02X want %02X, key Q %d/%d, RESET %d/%d)\n", what, held, want, k, key, r, reset);
+    printf("FAIL: %s (held %02X want %02X, key START %d/%d, RESET %d/%d)\n", what, held, want, k, key, r, reset);
     failures++;
 }
 
 #define B(a) (1u << (a))
+
+/* The analog disc, by sign only (-1, 0, +1 per axis): the exact numbers are
+ * the dead zone's business, tested in gamepad_test. */
+static void expect_disc(arcsession *s, int sx, int sy, const char *what)
+{
+    int x = 0, y = 0;
+    for (int i = 0; i < 100; i++) {
+        arcsession_disc_get(s, vport, &x, &y);
+        if (((x > 0) - (x < 0)) == sx && ((y > 0) - (y < 0)) == sy) {
+            printf("ok: %s\n", what);
+            return;
+        }
+        sleep_ms(20);
+    }
+    printf("FAIL: %s (disc %d,%d want signs %d,%d)\n", what, x, y, sx, sy);
+    failures++;
+}
 
 int main(void)
 {
@@ -116,14 +134,14 @@ int main(void)
             vport = arcsession_gamepad_effective_port(s, i);
     }
     if (vport < 0 || vport > 1) {
-        printf("%s: the virtual pad got no keypad (%d; real pads attached?)\n",
+        printf("%s: the virtual pad got no port (%d; real pads attached?)\n",
                vport < 0 && arcsession_gamepad_count(s) <= baseline ? "FAIL" : "SKIP", vport);
         SDL_CloseJoystick(vj);
         SDL_DetachVirtualJoystick(vid);
         arcsession_free(s);
         return arcsession_gamepad_count(s) <= baseline ? 1 : 77;
     }
-    printf("ok: the virtual pad was picked up as stick %d\n", vport + 1);
+    printf("ok: the virtual pad was picked up as disc %d\n", vport + 1);
 
     SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_SOUTH, true);
     expect(s, B(ARC_ACT_FIRE), 0, 0, "South is the button");
@@ -150,11 +168,28 @@ int main(void)
     SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_DPAD_RIGHT, false);
     expect(s, 0, 0, 0, "released");
 
-    /* the stick past its threshold steers too (a pad that reports its D-pad
-     * as axes would otherwise drive nothing) */
+    /* the left stick is the analog disc by default: read back through
+     * arcsession_disc_get, and the digital directions stay released */
+    SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_LEFTX, 20000);
+    SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_LEFTY, -32768);
+    expect_disc(s, 1, -1, "the stick right and up is a disc deflected right and up");
+    expect(s, 0, 0, 0, "and holds no digital direction");
+    SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_DPAD_LEFT, true);
+    expect(s, B(ARC_ACT_LEFT), 0, 0, "the D-pad is still its own source");
+    SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_DPAD_LEFT, false);
+    SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_LEFTX, 0);
+    SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_LEFTY, 0);
+    expect_disc(s, 0, 0, "the stick centred: the disc is centred");
+    SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_LEFTX, 2000);
+    expect_disc(s, 0, 0, "a tremor inside the dead zone is nothing");
+    SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_LEFTX, 0);
+
+    /* with analog off the stick is the old eight-way switch */
+    arcsession_set_analog(s, 0);
     SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_LEFTX, 20000);
     SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_LEFTY, 20000);
-    expect(s, B(ARC_ACT_RIGHT) | B(ARC_ACT_DOWN), 0, 0, "the stick right and down is right and down");
+    expect(s, B(ARC_ACT_RIGHT) | B(ARC_ACT_DOWN), 0, 0, "analog off: the stick right and down is right and down");
+    expect_disc(s, 0, 0, "and the disc stays centred");
     SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_DPAD_RIGHT, true);
     SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_LEFTX, 0);
     expect(s, B(ARC_ACT_RIGHT) | B(ARC_ACT_DOWN), 0, 0,
@@ -162,11 +197,12 @@ int main(void)
     SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_DPAD_RIGHT, false);
     SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_LEFTY, 0);
     expect(s, 0, 0, 0, "centred");
+    arcsession_set_analog(s, 1);
 
-    /* a button bound to a matrix key, and to the console's RESET */
-    arcsession_binding_set_button(s, ARC_TARGET_KEY(24), ARC_PAD_BTN_EAST, NULL, 0);
+    /* a button bound to a console key, and to the console's RESET */
+    arcsession_binding_set_button(s, ARC_TARGET_KEY(ARC_KEY_START), ARC_PAD_BTN_EAST, NULL, 0);
     SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_EAST, true);
-    expect(s, 0, 1, 0, "East, bound to Q, holds the key");
+    expect(s, 0, 1, 0, "East, bound to START, holds the key");
     SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_EAST, false);
     expect(s, 0, 0, 0, "released");
     arcsession_binding_set_button(s, ARC_TARGET_SWITCH(ARC_SW_RESET), ARC_PAD_BTN_START, NULL, 0);
@@ -176,23 +212,24 @@ int main(void)
     expect(s, 0, 0, 0, "released");
 
     /* a D-pad direction rebound elsewhere stops steering */
-    arcsession_binding_set_button(s, ARC_TARGET_KEY(24), ARC_PAD_BTN_DPAD_UP, NULL, 0);
+    arcsession_binding_set_button(s, ARC_TARGET_KEY(ARC_KEY_START), ARC_PAD_BTN_DPAD_UP, NULL, 0);
     SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_DPAD_UP, true);
-    expect(s, 0, 1, 0, "D-pad up, bound to Q, is Q and not up any more");
+    expect(s, 0, 1, 0, "D-pad up, bound to START, is START and not up any more");
     SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_DPAD_UP, false);
     expect(s, 0, 0, 0, "released");
     arcsession_bindings_reset(s);
 
     /* hot-unplug while held: the stick, a key and RESET are released, not
      * left holding forever */
-    arcsession_binding_set_button(s, ARC_TARGET_KEY(24), ARC_PAD_BTN_EAST, NULL, 0);
+    arcsession_binding_set_button(s, ARC_TARGET_KEY(ARC_KEY_START), ARC_PAD_BTN_EAST, NULL, 0);
     arcsession_binding_set_button(s, ARC_TARGET_SWITCH(ARC_SW_RESET), ARC_PAD_BTN_START, NULL, 0);
     SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_DPAD_RIGHT, true);
     SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_SOUTH, true);
     SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_EAST, true);
     SDL_SetJoystickVirtualButton(vj, SDL_GAMEPAD_BUTTON_START, true);
-    SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_LEFTY, -20000);
-    expect(s, B(ARC_ACT_RIGHT) | B(ARC_ACT_FIRE) | B(ARC_ACT_UP), 1, 1, "held before the unplug");
+    SDL_SetJoystickVirtualAxis(vj, SDL_GAMEPAD_AXIS_LEFTX, 30000);
+    expect(s, B(ARC_ACT_RIGHT) | B(ARC_ACT_FIRE), 1, 1, "held before the unplug");
+    expect_disc(s, 1, 0, "with the disc deflected");
     SDL_CloseJoystick(vj);
     SDL_DetachVirtualJoystick(vid);
     for (i = 0; i < 100 && arcsession_gamepad_count(s) != baseline; i++)
@@ -204,7 +241,8 @@ int main(void)
                arcsession_gamepad_count(s), baseline);
         failures++;
     }
-    expect(s, 0, 0, 0, "and its stick, key and RESET are released");
+    expect(s, 0, 0, 0, "and its buttons, key and RESET are released");
+    expect_disc(s, 0, 0, "and its disc is centred");
     arcsession_bindings_reset(s);
 
     arcsession_stop(s);

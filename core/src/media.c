@@ -1,15 +1,10 @@
 /*
  * media -- routing a file the user dropped on the window to the right place.
  *
- * Three destinations, and which one a file wants is not a matter of taste:
+ * Two destinations:
  *
- *   ROM images -- the console BIOS, the character sets, The Voice's speech
- *   ROMs; recognised by size and CRC, not by name (a BIOS dump is a .bin
- *   like any cartridge), alone or in a zip -- go to the ROM directory,
- *   through arcsession_rom_import.
- *
- *   Cartridges (.bin, .rom, .arc) go to the cartridge directory and are
- *   opened from there (load_cart plans every image itself).
+ *   Cartridges (.bin, .rom, .arc, or a .zip of one) go to the cartridge
+ *   directory and are opened from there (load_cart plans every image itself).
  *
  *   Anything else goes to the FujiNet SD folder, because FujiNet is what
  *   serves it.
@@ -21,6 +16,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -55,9 +51,15 @@ static int ext_is(const char *path, const char *const *exts)
 }
 
 /* What a cartridge file is called (MAME's slot takes bin and rom; arc is the
- * emulators' own). The extension only routes the file: load_cart identifies
+ * emulators' own; a zip holds one). The extension only routes the file: load_cart identifies
  * every image by its contents. */
-static const char *const cart_exts[] = { "bin", "rom", "arc", NULL };
+static const char *const cart_exts[] = { "bin", "rom", "arc", "zip", NULL };
+
+static int is_zip(const char *name)
+{
+    size_t n = strlen(name);
+    return n > 4 && (!strcmp(name + n - 4, ".zip") || !strcmp(name + n - 4, ".ZIP"));
+}
 
 static int copy_file(const char *src, const char *dst)
 {
@@ -95,21 +97,6 @@ int arcsession_import_media(arcsession *s, const char *src_path,
     }
     src_path = paths_resolve(src_path, abs, sizeof abs);
     name = base_name(src_path);
-
-    if (arcsession_media_is_rom(src_path)) {
-        char msg[512], first[ARC_PATH_MAX];
-        int n = roms_import_ex(s, src_path, msg, sizeof msg, first, sizeof first);
-        if (n < 0)
-            return -1;
-        if (n == 0) {
-            /* recognised, but nothing this version uses (another console's
-             * BIOS): there is nothing to point at, and the message says why */
-            session_set_error(s, "%s", msg);
-            return -1;
-        }
-        snprintf(dest_out, (size_t)dest_sz, "%s", first[0] ? first : s->roms_dir);
-        return 0;
-    }
 
     if (ext_is(src_path, cart_exts)) {
         dir = s->carts_dir;
@@ -172,6 +159,33 @@ int arcsession_import_cart_to_sd(arcsession *s, const char *src_path,
             session_set_error(s, "%s: %s", name, why);
             return -1;
         }
+    }
+    if (is_zip(name)) {
+        /* a zip of one cartridge: unpacked to <zip name>.bin */
+        uint8_t *img;
+        uint32_t len = 0;
+        char why[256], stem[256];
+        FILE *out;
+        size_t n = strlen(name) - 4;
+
+        img = session_read_cart(src_path, &len, why, sizeof why);
+        if (!img) {
+            session_set_error(s, "%s", why);
+            return -1;
+        }
+        if (n >= sizeof stem - 5) n = sizeof stem - 5;
+        memcpy(stem, name, n);
+        stem[n] = '\0';
+        snprintf(dest_out, (size_t)dest_sz, "%s/%s.bin", s->fujinet_sd, stem);
+        out = fopen(dest_out, "wb");
+        if (!out || fwrite(img, 1, len, out) != len) {
+            if (out) fclose(out);
+            free(img);
+            session_set_error(s, "Could not write %s", dest_out);
+            return -1;
+        }
+        free(img);
+        return fclose(out) == 0 ? 0 : -1;
     }
     snprintf(dest_out, (size_t)dest_sz, "%s/%s", s->fujinet_sd, name);
     if (copy_file(src_path, dest_out) != 0) {

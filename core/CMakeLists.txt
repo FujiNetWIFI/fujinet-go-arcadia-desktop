@@ -1,12 +1,11 @@
-# arc_core: the toolkit-agnostic, SDL-free Magnavox Arcadia 2001 / Philips
-# Videopac core.
+# arc_core: the toolkit-agnostic, SDL-free Emerson Arcadia 2001 core.
 #
-#   arc/                the emulator: MAME's Arcadia 2001 driver, its MCS-48
-#                      CPU, the 8244/8245 VDC (and the G7400's EF9340/41 and
-#                      8243), The Voice's SP0256 and the cart mappers
-#                      transposed to C; the no-BIOS stand-in (stub.a48 /
-#                      stub.c), the paced host thread and the FujiNet
-#                      cartridge device.
+#   arc/                the emulator: MAME's Arcadia 2001 driver, the
+#                      Signetics 2650 and its disassembler, the 2637 UVI
+#                      (video, pots, beeper) and the cart mappers transposed
+#                      to C; the paced host thread and the FujiNet cartridge
+#                      device. There is no BIOS and no character ROM to
+#                      import: the glyph table is MAME's source.
 #
 #   arc/fuji-generated/ the cartridge firmware's OWN sources -- fujimail.c
 #                      (the mailbox), arcmap.c (the image planner), arcapp.h
@@ -14,7 +13,7 @@
 #                      codec) and the baked CONFIG client -- staged by
 #                      cmake/StageFujiProto.cmake. Compiling these rather
 #                      than reimplementing them is what makes the emulated
-#                      cartridge and the real RP2354B one identical by
+#                      cartridge and the real RP2040 one identical by
 #                      construction.
 #
 #   debugger/          the debugger engine (core/include/arcdebug.h).
@@ -47,8 +46,7 @@ set(ARC_FUJI_SOURCES
 # The emulator's own modules. A module that has not landed yet is skipped, so
 # the library builds at every step of the bring-up.
 set(ARC_EMU_SOURCES)
-foreach(_f mcs48 dasm48 i8244 i8243 ef9340 sp0256 carts machine stub
-           fujinet_cart fujitcp_host host)
+foreach(_f s2650 dasm2650 uvi sound carts machine fujinet_cart fujitcp_host host)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/arc/${_f}.c")
     list(APPEND ARC_EMU_SOURCES arc/${_f}.c)
   endif()
@@ -56,8 +54,9 @@ endforeach()
 
 # The debugger drives the machine, so it joins once the machine and the
 # debugger's own Arcadia port (vdcview.c is its marker) exist.
+option(ARC_CORE_ONLY "Build only the emulator and its machine-level tests (no debugger, no session)" OFF)
 set(ARC_DEBUGGER_SOURCES)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/arc/machine.c"
+if(NOT ARC_CORE_ONLY AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/arc/machine.c"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/debugger/vdcview.c")
   foreach(_f debugger.c expr.c fujitrace.c prompt.c symbols.c symbols_builtin.c vdcview.c)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/debugger/${_f}")
@@ -104,7 +103,7 @@ set_property(SOURCE ${ARC_WARN_SOURCES} APPEND PROPERTY COMPILE_OPTIONS
 # `-DFRONTEND=none` on a machine (or a cross-toolchain) with no SDL3 must
 # still configure and build the emulator and its tests. Not built until the
 # machine and the host it drives exist.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/session.c"
+if(NOT ARC_CORE_ONLY AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/session.c"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/arc/host.c"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/arc/machine.c")
   find_package(SDL3 CONFIG QUIET)

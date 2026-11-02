@@ -1,10 +1,12 @@
 /*
  * arcsession -- the toolkit-agnostic desktop session for FujiNet Go Arcadia 2001.
  *
- * Owns the emulator (the Arcadia 2001 / Videopac core on its own paced thread --
- * see core/arc/host.h), the FujiNet cartridge, the SDL audio and gamepad
- * backends, the in-process FujiNet runtime, the shared settings store, the
- * remappable key/pad bindings, the imported ROMs and the media path layout.
+ * Owns the emulator (the Emerson Arcadia 2001's Signetics 2650 core on its own
+ * paced thread -- see core/arc/host.h), the FujiNet cartridge, the SDL audio
+ * and gamepad backends, the in-process FujiNet runtime, the shared settings
+ * store, the remappable key/pad bindings and the media path layout. The
+ * console has no BIOS, so there are no ROMs to import: the only ROM-like
+ * data is a game cartridge the user opens.
  * Frontends (GTK4, Qt6, AppKit, Win32) drive this API and do only windowing,
  * painting and event translation. A frontend that needs something which is
  * not one of those three things belongs here instead.
@@ -22,11 +24,11 @@
 extern "C" {
 #endif
 
-/* MAME's visible area: 360 x 243 (the 8244/8245 VDC's picture; the G7400's
- * EF9340 text layer is composited into the same frame). Frontends show it at
- * the TV's 4:3 or with square pixels, per the "aspect" setting. */
-#define ARCSESSION_FB_WIDTH  360
-#define ARCSESSION_FB_HEIGHT 243
+/* The UVI's picture, MAME's visible area for the driver: 128 + 2 * XPOS (32)
+ * = 192 pixels wide, 262 lines tall. Frontends show it at the TV's 4:3 or
+ * with square pixels, per the "aspect" setting. */
+#define ARCSESSION_FB_WIDTH  192
+#define ARCSESSION_FB_HEIGHT 262
 
 /* FujiNet's BoIP listener and its web admin UI. High ports of this app's own
  * so a standalone fujinet-pc, or a sibling FujiNet Go app, never collides:
@@ -34,36 +36,37 @@ extern "C" {
  * Intellivision 65503/64003, MSX 65505/64003, Astrocade 11500/11501,
  * ColecoVision 11502/11503, Atari 2600 11504/11505, NES 11506/11507, SMS
  * 11508/11509, Atari 7800 11510/11511, H89 11512/11513, Atari 800
- * 11514/11515, MS-DOS 11516/11517, Studio II 11518/11519; the firmware's
- * MAME dev harness for the Arcadia 2001 uses 9995/9997.
+ * 11514/11515, MS-DOS 11516/11517, Studio II 11518/11519, Odyssey 2 11520/11521;
+ * the firmware's MAME dev harness for the Arcadia 2001 uses 9995/9997.
  *
  * Direction: FujiNet LISTENS and the Arcadia 2001 FujiNet cartridge dials in, as
  * on every sibling. That decides startup ordering -- see arcsession_start. */
-#define ARCSESSION_BOIP_PORT  11520
-#define ARCSESSION_WEBUI_PORT 11521
+#define ARCSESSION_BOIP_PORT  11522
+#define ARCSESSION_WEBUI_PORT 11523
 
-/* The host audio device rate; the core streams the 8244's sound and The
- * Voice's speech mixed at it. */
+/* The host audio device rate; the core streams the UVI's sound at it (mono,
+ * mirrored to both channels). */
 #define ARCSESSION_AUDIO_RATE 48000
 
 /* The accent colour every frontend uses for its highlights (the Map target,
  * held keys, the debugger's current line, the FujiNet status dot): the
- * Arcadia 2001's power-button red, as on the console. White text sits on it; on
- * the light themes a frontend that draws text in the accent uses the darker
- * variant (the console's reset key). */
-#define ARCSESSION_ACCENT_RGB      0xC11218
-#define ARCSESSION_ACCENT_DARK_RGB 0x942324
+ * gold of the console's keypad (#AA916C). Dark text sits on it; on the light
+ * themes a frontend that draws text in the accent uses the darker variant
+ * (#7A6340). */
+#define ARCSESSION_ACCENT_RGB      0xAA916C
+#define ARCSESSION_ACCENT_DARK_RGB 0x7A6340
 
-/* The machines. Arcadia 2001: NTSC, 8244. Videopac G7000: PAL, 8245, the same
- * BIOS. Videopac+ G7400: PAL, 8245 + EF9340/41 text chip + 8243, its own
- * BIOS and a larger keyboard. Setting "machine". */
+/* The machines. Arcadia 2001: NTSC, 3.58 MHz / 4 = 0.895 MHz 2650, 60 Hz.
+ * PAL clone (Hanimex/Leisure-Vision class): 4.433 MHz / 5, 50 Hz, 312 lines
+ * -- NOT verified against MAME, which runs every clone at NTSC. Setting
+ * "machine". The 16-key Palladium is not supported (MAME marks it not
+ * working). */
 typedef enum {
-    ARC_MACHINE_ARCADIA = 0,
-    ARC_MACHINE_VIDEOPAC,
-    ARC_MACHINE_VIDEOPAC_PLUS,
+    ARC_MACHINE_ARCADIA = 0,          /* NTSC */
+    ARC_MACHINE_ARCADIA_PAL,
     ARC_MACHINE_COUNT
 } arc_machine;
-const char *arc_machine_name(int machine);        /* "Magnavox Arcadia 2001 (NTSC)" */
+const char *arc_machine_name(int machine);        /* "Emerson Arcadia 2001 (NTSC)" */
 int arc_machine_is_pal(int machine);
 
 typedef struct arcsession arcsession;
@@ -99,22 +102,22 @@ void        arcsession_settings_flush(arcsession *s);
 
 /* ---- lifecycle ------------------------------------------------------------ */
 typedef struct {
-    const char *cart_path;    /* cartridge image; NULL boots the CONFIG client */
+    const char *cart_path;    /* cartridge image (.bin/.rom/.arc, or a zip of
+                                 exactly one); NULL boots the CONFIG client */
     int machine;              /* arc_machine */
-    int use_bios;             /* run the imported BIOS when there is one (else
-                                 the stand-in, which runs FujiNet apps only) */
-    int voice;                /* The Voice in front of the cartridge */
-    int analog_joystick;      /* gamepad sticks drive the directions too */
+    int analog_joystick;      /* the gamepad's left stick drives the disc
+                                 (arc_host_disc_set) instead of the four
+                                 digital directions */
     int enable_fujinet;       /* start the in-process FujiNet runtime */
     int external_fujinet;     /* 1: don't start it; dial another FujiNet
                                * instance at boip_connect instead */
     const char *boip_connect; /* "host:port" or "port" the cartridge dials
-                               * (external only); NULL/"" = 127.0.0.1:11520 */
+                               * (external only); NULL/"" = 127.0.0.1:11522 */
     int enable_audio;         /* open the SDL audio device */
     int enable_gamepad;       /* start the SDL gamepad thread */
 } arcsession_start_opts;
 
-/* Fills opts from the settings store (keys: cart machine use_bios voice
+/* Fills opts from the settings store (keys: cart machine
  * analog_joystick enable_fujinet enable_audio enable_gamepad
  * fujinet_external fujinet_external_addr). */
 void arcsession_default_opts(arcsession *s, arcsession_start_opts *opts);
@@ -142,25 +145,24 @@ int  arcsession_restart(arcsession *s);
  *
  * load_cart puts a local image (.bin, .rom or .arc) into the cartridge in
  * place of CONFIG and power-cycles the console onto it, as the firmware's MAME
- * device serves its -cart image: a FujiNet app (the "FUJI" claim at $F2C of an
- * APPBANK image) keeps the mailbox, a game runs alone behind the FujiNet slot
- * with the right mapper (standard, 4-in-1, rally, KTAA, by CRC as MAME's
- * software list does). An image the cartridge cannot plan is refused with
- * the reason; so is a game while no BIOS is imported (commercial games call
- * the BIOS: only the real one runs them), and the Chess and Home Computer
- * modules (their own CPUs). The path is remembered in the "cart" setting, so
- * it boots again next start. Returns 0 or -1 + error. */
+ * device serves its -cart image: a FujiNet app (an APPBANK image that claims
+ * the mailbox) keeps the mailbox, a game runs alone as its own cartridge
+ * (the standard or Golf mapper, identified by the core's carts.h as MAME's
+ * slot does). A zip holding exactly one cartridge image is read in place
+ * (MAME's romset zips work). An image the console cannot map is refused with
+ * the reason. The path is remembered in the "cart" setting, so it boots again
+ * next start. No BIOS or other ROM is involved. Returns 0 or -1 + error. */
 int  arcsession_load_cart(arcsession *s, const char *path);
 const char *arcsession_cart_path(const arcsession *s);
 /* 1 if the image can run; else 0 and why. */
 int  arcsession_check_cart(const char *path, char *why, int whysz);
-/* 1 if the image is a FujiNet app (runs without the BIOS). */
+/* 1 if the image is a FujiNet app (claims the mailbox). */
 int  arcsession_cart_is_app(const char *path);
-/* A description of the cartridge now running ("Standard, 8 KB",
- * "FujiNet CONFIG", "4-in-1", ...); returns the length. */
+/* A description of the cartridge now running ("Standard, 4 KB", "Golf",
+ * "FujiNet CONFIG", "FujiNet app", ...); returns the length. */
 int  arcsession_cart_type_name(arcsession *s, char *dst, int dstsz);
 
-/* The console's red RESET key: it resets the 8048 only and never reaches the
+/* The console's red RESET key: it pulses the 2650's /RESET and never reaches the
  * cartridge, so a running FujiNet app restarts from the cart's current image.
  * Pressed and released for a few frames (the controllers window and the
  * menus); the bound key (F1, MAME's) holds it for as long as it is down. */
@@ -169,22 +171,11 @@ int  arcsession_reset(arcsession *s);
  * "cart" setting) and boots CONFIG, exactly as at power-on -- on the
  * hardware, only taking the console's power away brings CONFIG back.
  * Escape by default. Every power cycle (this, Eject, Open Cartridge) takes
- * the BIOS as the settings name it now, so an imported BIOS boots here. */
+ * the machine setting as it is now. */
 int  arcsession_reset_to_config(arcsession *s);
 /* Eject: the same as Reset to CONFIG (there is no "no cartridge" state
  * worth having on a FujiNet cartridge). */
 int  arcsession_eject(arcsession *s);
-/* What the running configuration is missing, as a mask of ARC_MISSING_*: the
- * stand-in met a game it cannot run (no BIOS), the 8244's character set is not
- * imported (text shows blank), a Voice game or the Voice switch has no speech
- * ROM. The frontends say "Import BIOS" and name the part. Cleared by the next
- * power cycle that fixes it. */
-#define ARC_MISSING_BIOS   0x01   /* a game needs the console BIOS */
-#define ARC_MISSING_FONT   0x02   /* the 8244/8245 (or EF9340) character set */
-#define ARC_MISSING_VOICE  0x04   /* The Voice's speech ROMs */
-unsigned arcsession_missing(arcsession *s);
-/* Same as arcsession_missing() & ARC_MISSING_BIOS. */
-int  arcsession_needs_bios(arcsession *s);
 /* Pause/resume the machine (the debugger's Run/Stop is separate). */
 void arcsession_set_paused(arcsession *s, int paused);
 int  arcsession_is_paused(const arcsession *s);
@@ -207,7 +198,7 @@ void arcsession_set_frame_callback(arcsession *s, arcsession_frame_cb cb, void *
  * counts every frame, including the ones identical to their predecessor:
  * use it to ask "is the machine running", not "is the picture changing". */
 uint64_t arcsession_frame_count(arcsession *s);
-/* The machine's refresh rate, rounded (NTSC 60: 59.83 Hz; PAL 50: 49.70 Hz). */
+/* The machine's refresh rate, rounded (NTSC 60 Hz; PAL 50 Hz). */
 int  arcsession_refresh_rate(arcsession *s);
 
 /* Feed the UI's frame-clock ticks (CLOCK_MONOTONIC ns). While a steady
@@ -227,17 +218,27 @@ void arcsession_set_volume(arcsession *s, int percent);
 /* ---- input ---------------------------------------------------------------
  * Every control the machine has, flattened into one target index so the
  * bindings table, the settings store and the frontends can all name them:
- * per stick (1, then 2) its four directions and the button, then the
- * keyboard's 64 matrix positions (row * 8 + column; the Arcadia 2001 uses
- * 0-47, the Videopac+ G7400 adds rows 6 and 7), then the console's RESET
- * key, then the session's own actions. The console reads the matrix one row
- * at a time, so any number of keys may be held. */
+ * per port (1, then 2) the disc's UP/RIGHT/DOWN/LEFT and FIRE (the side
+ * button), then the 27 console keys (ARC_KEY_*: both 12-key keypads, then
+ * START/OPTION/SELECT), then the console's RESET, then the session's own
+ * actions. The console reads the keypads and the panel as a matrix, so any
+ * number of keys may be held. FIRE shares the keypad's "2" wire, as on the
+ * hardware (the core ORs it in); the disc is two potentiometers. */
 typedef enum {
     ARC_ACT_UP = 0, ARC_ACT_RIGHT, ARC_ACT_DOWN, ARC_ACT_LEFT, ARC_ACT_FIRE,
     ARC_ACT_PER_PORT
 } arc_action;
 
-#define ARC_KEY_COUNT 64
+/* Console keys, ARC_TARGET_KEY(k), k = 0..26:
+ *   0-11   player 1 keypad: 1 2 3 4 5 6 7 8 9 CLEAR 0 ENTER
+ *   12-23  player 2 keypad: the same twelve
+ *   24-26  the panel: START, OPTION, SELECT
+ * (the core's arc_host_keys_set takes exactly this index as the bit number) */
+#define ARC_KEY_COUNT 27
+#define ARC_KEY_PAD_BASE(port)  ((port) * 12)
+#define ARC_KEY_START  24
+#define ARC_KEY_OPTION 25
+#define ARC_KEY_SELECT 26
 
 typedef enum {
     ARC_SW_RESET = 0,                 /* F1 by default (MAME's) */
@@ -256,47 +257,57 @@ typedef enum {
 #define ARC_TARGET_SYSACT(sa)      (2 * ARC_ACT_PER_PORT + ARC_KEY_COUNT + ARC_SW_COUNT + (sa))
 #define ARC_TARGET_COUNT           (2 * ARC_ACT_PER_PORT + ARC_KEY_COUNT + ARC_SW_COUNT + ARC_SYSACT_COUNT)
 
-/* Apply one control directly. `down` is press/release. The matrix and the
- * sticks are sampled by the console at the frame boundary, as MAME's input
- * ports are. */
+/* Apply one control directly. `down` is press/release. The keys and the
+ * discs are sampled by the console at the frame boundary, as MAME's input
+ * ports are. Digital directions drive the disc's pots to their ends. */
 void arcsession_press(arcsession *s, int target, int down);
 void arcsession_sysaction(arcsession *s, int sysact);
 /* Release everything the keyboard holds (focus loss). */
 void arcsession_release_all(arcsession *s);
-/* What the console sees held on a stick right now (keyboard and gamepads
- * together), one bit per arc_action. For the controllers window's highlights. */
+/* What the console sees held on a disc right now (keyboard and gamepads'
+ * digital inputs together), one bit per arc_action. For the controllers window's highlights. */
 unsigned arcsession_buttons_held(arcsession *s, int port);
-/* Whether matrix key `key` (0-63) is held, from any source. */
+/* The analog disc's deflection on `port` right now, from the gamepads' left
+ * sticks (when the "analog" option is on): x -128..127 (+ right), y -128..127
+ * (+ DOWN, SDL's and the screen's convention); 0,0 = centre or no analog
+ * source. The digital directions are separate (arcsession_buttons_held) and
+ * the core lets a non-zero analog value override them. For the controllers
+ * window's disc indicator. */
+void arcsession_disc_get(arcsession *s, int port, int *x, int *y);
+/* Whether console key `key` (0-26) is held, from any source. */
 int arcsession_key_held(arcsession *s, int key);
 /* Whether a console button is held (arc_switch). */
 int arcsession_switch_held(arcsession *s, int sw);
 
-/* ---- the on-screen keyboard -----------------------------------------------
- * The membrane keyboard as it is printed on the console (the Arcadia 2001's, or
- * the Videopac+ G7400's when that machine is selected): one entry per key cap,
- * in key-cap units (1.0 = a letter key), x/y/w/h from the top-left of the
- * panel. `target` is the matrix position (a binding target is
- * ARC_TARGET_KEY(target)); -1 marks the RESET key, which is ARC_SW_RESET.
- * YES and NO are separate caps that press the same switches as Y and N (the
- * console wires each pair to one matrix position). `kind` says how a toolkit
- * should paint it: normal, function (red legend), input, reset, space. The
- * table is static; the pointer stays valid for the process. */
+/* ---- the on-screen controllers ---------------------------------------------
+ * The console's panel as printed: both 12-key keypads and the START / OPTION
+ * / SELECT buttons, one entry per cap, in cap units (1.0 = a keypad key) with
+ * x/y/w/h from the top-left of the panel. `target` is the console key index
+ * (a binding target is ARC_TARGET_KEY(target)); -1 marks the RESET button
+ * (ARC_SW_RESET). `port` says which controller it belongs to: 0 player 1's
+ * keypad, 1 player 2's, -1 the console panel. `kind` says how a toolkit
+ * should paint it. Static; the pointer stays valid for the process. */
 typedef enum {
-    ARC_KEYCAP_NORMAL = 0, ARC_KEYCAP_FUNCTION, ARC_KEYCAP_INPUT,
-    ARC_KEYCAP_RESET, ARC_KEYCAP_SPACE
+    ARC_KEYCAP_NORMAL = 0,      /* a keypad key (gold legend plate) */
+    ARC_KEYCAP_FUNCTION,        /* START / OPTION / SELECT */
+    ARC_KEYCAP_INPUT,           /* CLEAR / ENTER */
+    ARC_KEYCAP_RESET,           /* the console RESET */
+    ARC_KEYCAP_SPACE            /* unused here; kept for the enum's stability */
 } arc_keycap_kind;
 
 typedef struct {
-    const char *label;       /* "Q", "+", "\xc3\x97" (x), "YES", "ENTER", "SPACE" */
-    int target;              /* matrix position 0-63, or -1 for RESET */
+    const char *label;       /* "1", "CLEAR", "ENTER", "START", "RESET" */
+    int target;              /* console key 0-26, or -1 for RESET */
     float x, y, w, h;
     int kind;                /* arc_keycap_kind */
+    int port;                /* 0 / 1 keypad owner, -1 console panel */
 } arc_keycap;
 
-/* The layout for a machine; *n is its entry count; width/height (key units)
- * are the panel's extent so a toolkit can size its drawing area. */
+/* The layout (the machine argument is kept for the callers' shape; both
+ * machines print the same panel); *n is its entry count; width/height (cap
+ * units) are the panel's extent so a toolkit can size its drawing area. */
 const arc_keycap *arcsession_keyboard_layout(int machine, int *n, float *width, float *height);
-/* The label a matrix position has ("Q", "ENTER", "Y / YES"), or NULL. */
+/* The label a console key has ("1", "CLEAR", "START"), or NULL. */
 const char *arcsession_key_label(int machine, int key);
 
 /* ---- keyboard translation ------------------------------------------------
@@ -391,6 +402,11 @@ void arcsession_gamepad_capture_begin(arcsession *s);
 void arcsession_gamepad_capture_cancel(arcsession *s);
 int  arcsession_gamepad_capture_poll(arcsession *s, int *button);
 
+/* Analog on (the default): a gamepad's left stick is the analog disc
+ * (arc_host_disc_set; radial dead zone 12%, full deflection +-127) and the
+ * D-pad / bound buttons stay the digital directions. Off: the left stick is an
+ * eight-way switch with hysteresis driving the digital directions, and the
+ * disc is never analog. Setting "analog_joystick"; takes effect at once. */
 void arcsession_set_analog(arcsession *s, int joystick);
 
 /* ---- gamepads (SDL, hotplugged; started by arcsession_start) -------------
@@ -413,55 +429,10 @@ int  arcsession_gamepad_last_event(arcsession *s, char *dst, int dstsz);
 void arcsession_sysaction_post(arcsession *s, int sysact);
 int  arcsession_sysaction_take(arcsession *s, int *out);
 
-/* ---- the ROMs ----------------------------------------------------------------
- * Never shipped (see COMPLIANCE.md). CONFIG and every FujiNet app boot on the
- * app's own stand-in BIOS; a game needs the real one, and every machine needs
- * the video chip's character set to show text. Import copies a user's own
- * dumps into the ROM directory, each identified by size and CRC-32 against
- * MAME's tables whatever it is called, and stored under MAME's name. The
- * input can be a file, a zip (MAME's videopac.zip, i8244.zip, videopacp.zip
- * work) or a folder (searched 8 levels deep). */
-typedef enum {
-    ARC_ROM_BIOS = 0,          /* arcbios.rom: Arcadia 2001 and Videopac G7000 */
-    ARC_ROM_BIOS_G7400,        /* g7400.bin: Videopac+ G7400 */
-    ARC_ROM_FONT_8244,         /* charset_i8244.bin: the 8244/8245's characters */
-    ARC_ROM_FONT_EF9340,       /* charset_ef9340_1.rom: the G7400's text chip */
-    ARC_ROM_VOICE_INTERNAL,    /* sp0256b-019.bin: The Voice's SP0256 mask ROM */
-    ARC_ROM_VOICE_SPEECH,      /* spr128-003.bin: The Voice's speech ROM */
-    ARC_ROM_VOICE_SID,         /* spr128-004.bin: Sid the Spellbinder's speech */
-    ARC_ROM_COUNT
-} arc_rom_id;
-
-typedef struct {
-    const char *name;         /* "Arcadia 2001 / Videopac BIOS (arcbios.rom)" */
-    const char *group;        /* "Console", "Video chips", "The Voice" */
-    const char *file;         /* stored as */
-    uint32_t size, crc;
-} arc_rom_item;
-
-int arcsession_rom_item_count(void);
-const arc_rom_item *arcsession_rom_item(int i);
-/* 1 if item i is in the ROM directory. */
-int arcsession_rom_item_available(arcsession *s, int i);
-/* 1 if the console BIOS for `machine` is imported / the character set(s) it
- * needs are / The Voice's ROMs are. */
-int arcsession_have_bios(arcsession *s, int machine);
-int arcsession_have_font(arcsession *s, int machine);
-int arcsession_have_voice(arcsession *s);
-/* Import from a file, a zip or a folder. Returns how many items it imported
- * (0 = recognised nothing), or -1 with the error in `msg`; `msg` always says
- * what happened (names the items, warns about an unrecognised dump of the
- * right size). Takes effect at the next power cycle. */
-int arcsession_rom_import(arcsession *s, const char *path, char *msg, int msgsz);
-/* 1 if `path` is a ROM this app imports (a dropped file or zip), by size and
- * CRC (a zip: by any of its entries). */
-int arcsession_media_is_rom(const char *path);
-const char *arcsession_roms_path(const arcsession *s);
-
 /* ---- FujiNet -------------------------------------------------------------*/
 /* Parses the "Use external FujiNet" address field: "host:port" (host a name
  * or an IPv4 literal) or a bare "port". Empty text means the default,
- * 127.0.0.1:11520. Returns 0 and fills host/port, or -1 when the text is not
+ * 127.0.0.1:11522. Returns 0 and fills host/port, or -1 when the text is not
  * an address:port (nothing is written then). */
 int         arcsession_parse_hostport(const char *text, char *host,
                                           int hostsz, int *port);
@@ -469,7 +440,7 @@ int         arcsession_fujinet_running(const arcsession *s);
 /* 1 when the session was started to dial an external FujiNet. */
 int         arcsession_fujinet_external(const arcsession *s);
 /* "host:port" the cartridge dials (the running session's, or the default
- * 127.0.0.1:11520 before the first start). */
+ * 127.0.0.1:11522 before the first start). */
 const char *arcsession_boip_endpoint(const arcsession *s);
 const char *arcsession_fujinet_webui_url(const arcsession *s);
 int         arcsession_fujinet_copy_log(arcsession *s, char *dst, int max);
@@ -484,13 +455,13 @@ int         arcsession_cart_booted_game(arcsession *s);
 
 /* ---- media ---------------------------------------------------------------
  * Import a cartridge into FujiNet's SD folder so CONFIG can boot it through
- * the cartridge. Returns 0 and the
- * destination path, or -1 with the error. */
+ * the cartridge (the cartridge must be one FujiNet can serve: a flat image
+ * up to 8 KB or an APPBANK image; a zip of one is unpacked). Returns 0 and
+ * the destination path, or -1 with the error. */
 int  arcsession_import_cart_to_sd(arcsession *s, const char *src_path,
                                   char *dest_out, int dest_sz);
-/* Routes a dropped file: cartridge images to the cartridge directory (the
- * returned path is usable with load_cart), ROM images (BIOS, character sets,
- * speech; also zips of them) to the ROM directory (as rom_import), anything
+/* Routes a dropped file: cartridge images (.bin .rom .arc .zip) to the
+ * cartridge directory (the returned path is usable with load_cart), anything
  * else to the FujiNet SD folder. */
 int  arcsession_import_media(arcsession *s, const char *src_path,
                              char *dest_out, int dest_sz);

@@ -15,11 +15,13 @@
  * Every button goes through the bindings table: by default the D-pad is the
  * stick's four directions and South its button, and a button may be bound to
  * a keyboard key or RESET instead. With "analog sticks" on, the left analog
- * stick also drives the directions, as an eight-way switch with hysteresis
- * (and so does hat 0 of a raw joystick). The three ways of holding an input
+ * stick drives the console's analog disc (two pots, -128..127, radial
+ * dead zone), the way the real controller's disc does; with it off it is an
+ * eight-way switch with hysteresis instead. Hat 0 of a raw joystick is always
+ * digital. The three ways of holding an input
  * -- a pad button, the analog stick, the keyboard -- are separate sources in
  * the session, so letting go of one never releases another. Ported from the
- * Studio II sibling's gamepad_sdl.c.
+ * O2 sibling's gamepad_sdl.c.
  *
  * Pads are assigned to ports in connection order unless assigned explicitly.
  * A pad that is unplugged and plugged back in (matched by its SDL GUID and
@@ -51,6 +53,7 @@
 #define STICK_ENTER 0.35f
 #define STICK_EXIT  0.15f
 #define TRIGGER_ON  0.5f
+#define DISC_DEADZONE 0.12f
 
 typedef struct {
     SDL_JoystickID id;
@@ -62,6 +65,7 @@ typedef struct {
     int port;                 /* the port it drove on the last poll, or -1 */
     int stick_dir;            /* left stick's four-way state (hysteresis) */
     uint8_t sent[ARC_ACT_PER_PORT]; /* directions the analog stick / hat holds */
+    int disc_x, disc_y;       /* the analog disc last sent for this pad */
     /* What each button's press asserted (target + 1, 0 = nothing), so its
      * release lets go of exactly that even if the binding changed meanwhile,
      * and a pad that goes away drops what it held. */
@@ -91,6 +95,27 @@ typedef struct {
 static gamepad_state *g_state;   /* one per process: SDL's subsystem is */
 
 /* ---- pure helpers ----------------------------------------------------------- */
+
+void arc_disc_from_stick(float x, float y, int *dx, int *dy)
+{
+    const float dead = DISC_DEADZONE;
+    float mag = sqrtf(x * x + y * y);
+    float scale;
+    int ix, iy;
+
+    if (mag < dead) {
+        *dx = *dy = 0;
+        return;
+    }
+    if (mag > 1.0f)
+        mag = 1.0f;
+    /* radial dead zone: the deflection past it, rescaled to 0..1 */
+    scale = ((mag - dead) / (1.0f - dead)) / sqrtf(x * x + y * y);
+    ix = (int)lroundf(x * scale * 127.0f);
+    iy = (int)lroundf(y * scale * 127.0f);
+    *dx = ix < -128 ? -128 : ix > 127 ? 127 : ix;
+    *dy = iy < -128 ? -128 : iy > 127 ? 127 : iy;
+}
 
 unsigned arc_acts_from_dir(int dir)
 {
@@ -192,6 +217,10 @@ static const char *slot_name(const pad_slot *slot)
 static void slot_release_all(gamepad_state *g, pad_slot *slot)
 {
     int a, b;
+    if (slot->port >= 0 && (slot->disc_x || slot->disc_y)) {
+        slot->disc_x = slot->disc_y = 0;
+        session_gamepad_disc(g->session, slot->owner, slot->port, 0, 0);
+    }
     if (slot->port >= 0)
         for (a = 0; a < ARC_ACT_PER_PORT; a++)
             if (slot->sent[a]) {
@@ -421,7 +450,7 @@ static void poll_one(gamepad_state *g, pad_slot *slot, int port)
     const struct arcsession *s = g->session;
     uint8_t want[ARC_ACT_PER_PORT];
     unsigned acts;
-    int dir, a;
+    int dir, a, dx = 0, dy = 0;
     float lx, ly;
 
     memset(want, 0, sizeof want);
@@ -435,11 +464,19 @@ static void poll_one(gamepad_state *g, pad_slot *slot, int port)
 
     dir = slot_hat_dir(slot);
     if (s->opts.analog_joystick) {
+        /* the analog disc: the left stick's deflection, as is */
+        slot->stick_dir = 0;
+        slot_stick(slot, 0, &lx, &ly);
+        arc_disc_from_stick(lx, ly, &dx, &dy);
+    } else if (slot->handle || slot->joy) {
         slot_stick(slot, 0, &lx, &ly);
         slot->stick_dir = arc_dir_from_stick(lx, ly, slot->stick_dir, STICK_ENTER, STICK_EXIT);
         dir |= slot->stick_dir;
-    } else {
-        slot->stick_dir = 0;
+    }
+    if (dx != slot->disc_x || dy != slot->disc_y) {
+        slot->disc_x = dx;
+        slot->disc_y = dy;
+        session_gamepad_disc(g->session, slot->owner, port, dx, dy);
     }
     /* opposite directions together cancel: nothing */
     acts = arc_acts_from_dir(dir);

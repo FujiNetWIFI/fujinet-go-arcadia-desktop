@@ -26,6 +26,13 @@ extern "C" {
  * cancel, so a stick pushed both ways holds neither. Pure. */
 unsigned arc_acts_from_dir(int dir);
 
+/* The left stick as the analog disc (x, y in -1..1, SDL's convention: +x
+ * right, +y down) to the pots' -128..127, 0 = centre, with a radial dead
+ * zone (0.12) rescaled so the edge of the dead zone is 0 and full
+ * deflection +-127.
+ * Pure. */
+void arc_disc_from_stick(float x, float y, int *dx, int *dy);
+
 /* An analog stick as an eight-way switch with hysteresis: an axis engages
  * past `enter` and releases below `exit` (both 0..1 of full deflection),
  * so a thumb resting near the threshold cannot flutter. `prev` is the

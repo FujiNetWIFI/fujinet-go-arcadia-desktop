@@ -2,8 +2,8 @@
  * no_sdl_link_test -- the core links and runs on its own: no SDL, no
  * session, no frontend. Links arc_core alone (a session symbol would fail
  * the link), runs the staged wire codec's self test, plans the baked CONFIG
- * client with the staged planner, and boots a machine for a frame on the
- * no-BIOS stand-in.
+ * client with the staged planner, and boots a machine for a frame (the console has
+ * no BIOS, so there is nothing else to supply).
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -35,7 +35,7 @@ int main(void)
     check(fujibus_selftest(), "the staged fujibus codec passes its self test");
     check(arcmap_plan(_configrom, FUJI_CONFIGROM_SIZE, &plan) == ARCMAP_OK,
           "the staged arcmap plans the baked CONFIG client");
-    check(plan.appbank && plan.npages == 12, "CONFIG is a 12-page APPBANK image");
+    check(plan.mailbox_ok && plan.size == 0x2000, "CONFIG is an 8K image that claims the mailbox");
     {
         bool claims = false;
 
@@ -54,7 +54,7 @@ int main(void)
     arc_machine_init(&m, &mo);
     arc_machine_run_frame(&m);
     check(m.frame_count == 1, "a BIOS-less Arcadia 2001 runs a frame");
-    check(m.vdc.frames == 1 && m.cpu.instructions > 1000, "and the 8048 ran");
+    check(m.cpu.instructions > 1000, "and the 2650 ran");
     arc_fujinet_destroy(fj);
 
     printf("%d failure(s)\n", failures);

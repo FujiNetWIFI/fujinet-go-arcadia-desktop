@@ -7,7 +7,7 @@
  * keyboard can report. Everything else used to translate to keysym 0, which
  * the controllers window's Map mode reads as "not a key" and silently
  * discards. That made a keyboard with keys a normal PC keyboard has no cap
- * for (international, media, the G7400's Cntl and Break stand-ins) unmappable,
+ * for (international, media, the system keys) unmappable,
  * so the keys the user most needed to bind were exactly the ones that could
  * not be captured.
  *

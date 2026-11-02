@@ -1,20 +1,16 @@
 /*
  * session_test -- the frontend contract end to end, through the public API
  * only: settings round-trip and persist across sessions, paths resolve
- * inside the given tree, CONFIG boots on the stand-in and says what it is
- * missing (the character set), the keyboard, the sticks and the console's
- * RESET reach the machine, a FujiNet app opens and runs, RESET restarts it,
- * Reset to CONFIG ejects it, an image the console cannot take is refused with
- * the reason, a game is refused until a BIOS is imported and runs after, the
- * Videopac+ G7400 will not start without its own BIOS, and a remembered
- * cartridge boots at the next start.
+ * inside the given tree, CONFIG boots, the keypads, the discs and the
+ * console's RESET reach the machine, a FujiNet app opens and runs and sees a
+ * held key, RESET restarts it, Reset to CONFIG ejects it, an image the
+ * console cannot take is refused with the reason, a game and a game in a zip
+ * run, a remembered cartridge boots at the next start, and the PAL machine
+ * runs at 50 Hz.
  *
- * No firmware: the programs are this test's own 8048 code (hand-assembled
- * below), and the "BIOS" is a 1 KB image of its own whose last four bytes
- * steer its CRC-32 to MAME's (a CRC is linear), so Import BIOS takes it for
- * the real one. The cartridge programs count in the external RAM; the test
- * reads it back through the debugger. The app also calls the stand-in's
- * readkey, so a key held on the host shows up there.
+ * No firmware and no BIOS (the console has none): the programs are this
+ * test's own 2650 code (hand-assembled below), kept in the UVI's spare RAM
+ * at $18E0-$18E3 and read back through the debugger.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -29,6 +25,7 @@
 #include "arcsession.h"
 #include "arcdebug.h"
 #include "test_tmpdir.h"
+#include "test_zip.h"
 
 static int failures;
 static void check(int ok, const char *what)
@@ -44,120 +41,63 @@ static void sleep_ms(int ms)
 }
 
 /* ---- the programs ----------------------------------------------------------------
- * Cartridge code at $400 (file offset 0 of a 2K image; the FujiNet app's claim
- * "FUJI" is where the firmware looks for it, $F2C = offset $72C of the image).
+ * 2650 code at $0000 of the cartridge. State lives in the UVI's spare RAM:
  *
- *   $400  jmp $406           the stand-in's reset vector
- *   $402  jmp $430           its vblank interrupt vector: the ISR below
- *   $404  retr               its timer interrupt vector (never enabled)
- *   $406  P1 = $AF (RAM chip select low, writes enabled, the VDC deselected)
- *         ram[$12]++         boots: survives RESET, which resets only the 8048
- *         ram[$10] = ram[$11] = 0
- *   $414  loop: [app: A = readkey, bank 0 again; ram[$11] = A]  ram[$10]++
- *   $430  vblank ISR: bank 1, save A and P1, enable the VDC's reads and read
- *         its status (that is what lets go of INT), restore, retr
+ *   $18E0  counter, incremented in the main loop
+ *   $18E1  [app] player 1's keypad column 1 ($1900)
+ *   $18E2  boots: incremented at every start (the 2650's RESET leaves RAM alone)
+ *   $18E3  [app] the console panel ($1908: START, OPTION, SELECT)
  *
- * readkey (the stand-in's, at $0B0) turns interrupts on when it returns, which
- * is why a client that calls it needs an ISR that acknowledges them.
+ * A FujiNet app is an 8K image with "FUJI" at $1CFC (the mailbox claim).
+ *
+ *   0000  LODA,r0 $18E2 / ADDI,r0 1 / STRA,r0 $18E2   boots++
+ *   0008  LODI,r0 0 / STRA,r0 $18E0                    counter = 0
+ *   000D  [app: LODA,r0 $1900 / STRA,r0 $18E1 / LODA,r0 $1908 / STRA,r0 $18E3]
+ *         LODA,r0 $18E0 / ADDI,r0 1 / STRA,r0 $18E0 / BCTA,UN $000D
  */
-#define RAM_COUNTER 0x10
-#define RAM_KEY     0x11
-#define RAM_BOOTS   0x12
+#define RAM_COUNTER 0x18E0
+#define RAM_KEY     0x18E1
+#define RAM_BOOTS   0x18E2
+#define RAM_PANEL   0x18E3
 
 static const uint8_t prologue[] = {
-    0x84, 0x06,                 /* 400: jmp 406 */
-    0x84, 0x30,                 /* 402: jmp 430 */
-    0x93, 0x00,                 /* 404: retr, nop */
-    0x23, 0xAF,                 /* 406: mov a,#AFh */
-    0x39,                       /* 408: outl p1,a */
-    0xB8, RAM_BOOTS,            /* 409: mov r0,#12h */
-    0x80,                       /* 40B: movx a,@r0 */
-    0x17,                       /* 40C: inc a */
-    0x90,                       /* 40D: movx @r0,a */
-    0xB8, RAM_COUNTER,          /* 40E: mov r0,#10h */
-    0x27,                       /* 410: clr a */
-    0x90,                       /* 411: movx @r0,a */
-    0x18,                       /* 412: inc r0 */
-    0x90,                       /* 413: movx @r0,a */
+    0x0C, 0x18, 0xE2,           /* 0000: loda,r0 $18E2 */
+    0x84, 0x01,                 /* 0003: addi,r0 1 */
+    0xCC, 0x18, 0xE2,           /* 0005: stra,r0 $18E2 */
+    0x04, 0x00,                 /* 0008: lodi,r0 0 */
+    0xCC, 0x18, 0xE0,           /* 000A: stra,r0 $18E0 */
 };
-static const uint8_t app_loop[] = {
-    0x14, 0xB0,                 /* 414: call 0B0h (readkey) */
-    0xC5,                       /* 416: sel rb0 (it returns in bank 1) */
-    0xB8, RAM_KEY,              /* 417: mov r0,#11h */
-    0x90,                       /* 419: movx @r0,a */
-    0xB8, RAM_COUNTER,          /* 41A: mov r0,#10h */
-    0x80,                       /* 41C: movx a,@r0 */
-    0x17,                       /* 41D: inc a */
-    0x90,                       /* 41E: movx @r0,a */
-    0x84, 0x14,                 /* 41F: jmp 414 */
+static const uint8_t app_reads[] = {
+    0x0C, 0x19, 0x00,           /* 000D: loda,r0 $1900 */
+    0xCC, 0x18, 0xE1,           /* 0010: stra,r0 $18E1 */
+    0x0C, 0x19, 0x08,           /* 0013: loda,r0 $1908 */
+    0xCC, 0x18, 0xE3,           /* 0016: stra,r0 $18E3 */
 };
-static const uint8_t game_loop[] = {
-    0xB8, RAM_COUNTER,          /* 414: mov r0,#10h */
-    0x80,                       /* 416: movx a,@r0 */
-    0x17,                       /* 417: inc a */
-    0x90,                       /* 418: movx @r0,a */
-    0x84, 0x14,                 /* 419: jmp 414 */
-};
-static const uint8_t vblank_isr[] = {
-    0xD5,                       /* 430: sel rb1 */
-    0xAF,                       /*      mov r7,a */
-    0x09,                       /*      in a,p1 */
-    0xAE,                       /*      mov r6,a */
-    0x53, 0xB7,                 /*      anl a,#B7h (P13 and P16 low: the VDC's reads on) */
-    0x39,                       /*      outl p1,a */
-    0xB8, 0xA1,                 /*      mov r0,#A1h */
-    0x80,                       /*      movx a,@r0 (the status: INT lets go) */
-    0xFE,                       /*      mov a,r6 */
-    0x39,                       /*      outl p1,a */
-    0xFF,                       /*      mov a,r7 */
-    0x93,                       /*      retr */
+static const uint8_t count_loop[] = {
+    0x0C, 0x18, 0xE0,           /* loda,r0 $18E0 */
+    0x84, 0x01,                 /* addi,r0 1 */
+    0xCC, 0x18, 0xE0,           /* stra,r0 $18E0 */
+    0x1F, 0x00, 0x0D,           /* bcta,un $000D */
 };
 
-static void build_cart(uint8_t *img, int app)
+static void build_cart(uint8_t *img, size_t size, int app)
 {
-    memset(img, 0xFF, 2048);
-    memcpy(img, prologue, sizeof prologue);
-    memcpy(img + 0x30, vblank_isr, sizeof vblank_isr);
+    size_t n = sizeof prologue;
+
+    memset(img, 0xFF, size);
+    memcpy(img, prologue, n);
     if (app) {
-        memcpy(img + sizeof prologue, app_loop, sizeof app_loop);
-        memcpy(img + 0x72C, "FUJI", 4);
+        memcpy(img + n, app_reads, sizeof app_reads);
+        n += sizeof app_reads;
+        memcpy(img + 0x1CFC, "FUJI", 4);
+    }
+    memcpy(img + n, count_loop, sizeof count_loop);
+    if (app) {
+        /* the loop jumps back over the reads */
     } else {
-        memcpy(img + sizeof prologue, game_loop, sizeof game_loop);
-        memset(img + 0x72C, 0x00, 4);
-    }
-}
-
-/* ---- CRC-32, and a tail that steers it ---------------------------------------------- */
-
-static uint32_t T[256];
-static uint8_t inv[256];
-
-static void crc_tables(void)
-{
-    for (uint32_t i = 0; i < 256; i++) {
-        uint32_t c = i;
-        for (int k = 0; k < 8; k++)
-            c = (c >> 1) ^ (0xedb88320u & (~(c & 1) + 1));
-        T[i] = c;
-        inv[c >> 24] = (uint8_t)i;
-    }
-}
-
-/* Set the last four bytes of buf so its CRC-32 is `want`. */
-static void forge_tail(uint8_t *buf, uint32_t size, uint32_t want)
-{
-    uint32_t r = 0xffffffffu, v = ~want;
-    uint8_t idx[4];
-
-    for (uint32_t i = 0; i < size - 4; i++)
-        r = (r >> 8) ^ T[(r ^ buf[i]) & 0xff];
-    idx[3] = inv[v >> 24];          v ^= T[idx[3]];
-    idx[2] = inv[(v >> 16) & 0xff]; v ^= T[idx[2]] >> 8;
-    idx[1] = inv[(v >> 8) & 0xff];  v ^= T[idx[1]] >> 16;
-    idx[0] = inv[v & 0xff];
-    for (int k = 0; k < 4; k++) {
-        buf[size - 4 + k] = (uint8_t)(idx[k] ^ (r & 0xff));
-        r = (r >> 8) ^ T[idx[k]];
+        /* a game's loop starts right after the prologue */
+        img[n + 9] = 0x00;
+        img[n + 10] = (uint8_t)n;
     }
 }
 
@@ -214,19 +154,10 @@ static int wait_booted_game(arcsession *s, int want, int timeout_ms)
     return 0;
 }
 
-/* The programs keep their state in the external RAM; peek at it through the
- * debugger (which stops the machine while attached) and let it run on. */
+/* The programs keep their state in the UVI's spare RAM ($18E0-$18E3); peek at
+ * it through the debugger (which stops the machine while attached) and let it
+ * run on. */
 static uint8_t ram(arcsession *s, uint16_t addr)
-{
-    arcdebug *d = arcsession_debugger(s);
-    uint8_t v = 0;
-    arcdebug_attach(d);
-    arcdebug_read(d, ARC_SPACE_XDATA, addr, &v, 1);
-    arcdebug_detach(d);
-    return v;
-}
-
-static uint8_t prog(arcsession *s, uint16_t addr)
 {
     arcdebug *d = arcsession_debugger(s);
     uint8_t v = 0;
@@ -260,16 +191,15 @@ static int wait_ram(arcsession *s, uint16_t addr, int want, int timeout_ms)
 
 int main(void)
 {
-    char cfg[300], data[400], app[500], game[500], big[500], bios[500], font[500], chess[500], sid[500],
-         launch[400], msg[512], why[256];
-    uint8_t img[2048], rom[1024], fnt[512], blob[70000];
+    char cfg[300], data[400], app[500], game[500], big[500], zip1[500], zip2[500],
+         launch[400], why[256];
+    static uint8_t img[0x2000], blob[200000];
     arcsession_paths p;
     arcsession *s;
     arcsession_start_opts o;
     uint64_t serial = 0;
     int i;
 
-    crc_tables();
     test_tmpdir(cfg, sizeof cfg, "cfg");
     snprintf(data, sizeof data, "%s/data", cfg);
     if (!test_getcwd(launch, sizeof launch))
@@ -279,36 +209,27 @@ int main(void)
     p.fujinet_lib = "";     /* no runtime: the cart runs link-down */
 
     snprintf(app, sizeof app, "%s/counter.bin", cfg);
-    build_cart(img, 1);
-    check(write_file(app, img, sizeof img), "wrote a FujiNet app");
+    build_cart(img, 0x2000, 1);
+    check(write_file(app, img, 0x2000), "wrote a FujiNet app");
     snprintf(game, sizeof game, "%s/game.bin", cfg);
-    build_cart(img, 0);
-    check(write_file(game, img, sizeof img), "wrote a game");
+    build_cart(img, 4096, 0);
+    check(write_file(game, img, 4096), "wrote a game");
     snprintf(big, sizeof big, "%s/huge.bin", cfg);
     memset(blob, 0x55, sizeof blob);
-    check(write_file(big, blob, sizeof blob), "wrote a 70,000-byte image");
-    snprintf(chess, sizeof chess, "%s/chess.bin", cfg);
-    memset(blob, 0x33, 2048);
-    forge_tail(blob, 2048, 0x77066338u);
-    check(write_file(chess, blob, 2048), "wrote the Chess Module's CRC");
-    snprintf(sid, sizeof sid, "%s/sid.bin", cfg);
-    build_cart(img, 0);
-    forge_tail(img, 2048, 0x1b9f2f16u);
-    check(write_file(sid, img, 2048), "wrote Sid the Spellbinder's CRC");
-    /* a BIOS of the tests' own: the console's reset vectors straight into the
-     * cartridge, NOPs, and four bytes that make its CRC-32 MAME's */
-    snprintf(bios, sizeof bios, "%s/testbios.bin", cfg);
-    memset(rom, 0x00, sizeof rom);
-    memcpy(rom + 0x000, "\x84\x00", 2);
-    memcpy(rom + 0x003, "\x84\x02", 2);
-    memcpy(rom + 0x007, "\x84\x04", 2);
-    forge_tail(rom, sizeof rom, 0x8016a315u);
-    check(write_file(bios, rom, sizeof rom), "wrote a BIOS of the tests' own");
-    /* and a character set: noise that CRCs as the 8244's */
-    snprintf(font, sizeof font, "%s/font.bin", cfg);
-    for (i = 0; i < 512; i++) fnt[i] = (uint8_t)(i * 37 + (i >> 3));
-    forge_tail(fnt, sizeof fnt, 0xb46a3f31u);
-    check(write_file(font, fnt, sizeof fnt), "wrote a character set");
+    check(write_file(big, blob, sizeof blob), "wrote a 200,000-byte image");
+    {
+        const char *one[] = { "game.bin" };
+        const uint8_t *od[] = { img };
+        uint32_t os[] = { 4096 };
+        const char *two[] = { "a.bin", "b.bin" };
+        const uint8_t *td[] = { img, img };
+        uint32_t ts[] = { 4096, 4096 };
+
+        snprintf(zip1, sizeof zip1, "%s/game.zip", cfg);
+        check(test_zip_write(zip1, 1, one, od, os), "wrote a zip of the game");
+        snprintf(zip2, sizeof zip2, "%s/pair.zip", cfg);
+        check(test_zip_write(zip2, 2, two, td, ts), "wrote a zip of two");
+    }
 
     s = arcsession_new(&p);
     check(s != NULL, "session created");
@@ -317,7 +238,6 @@ int main(void)
     check(strcmp(arcsession_config_path(s), cfg) == 0, "config path is the given tree");
     check(strncmp(arcsession_carts_path(s), data, strlen(data)) == 0, "carts dir is under the data tree");
     check(strncmp(arcsession_sd_path(s), data, strlen(data)) == 0, "SD path is under the data tree");
-    check(strncmp(arcsession_roms_path(s), data, strlen(data)) == 0, "ROM dir is under the data tree");
 
     arcsession_set_int(s, "answer", 42);
     arcsession_set_str(s, "greeting", "hello");
@@ -327,9 +247,11 @@ int main(void)
 
     arcsession_default_opts(s, &o);
     check(o.enable_fujinet == 1 && o.enable_audio == 1, "default opts enable FujiNet and audio");
-    check(o.machine == ARC_MACHINE_ARCADIA && o.use_bios == 1 && o.voice == 0, "the Arcadia 2001, its BIOS, no Voice");
+    check(o.machine == ARC_MACHINE_ARCADIA && o.analog_joystick == 1, "the NTSC Arcadia 2001, analog disc");
     check(o.cart_path == NULL, "no remembered cartridge: CONFIG");
-    check(!arcsession_have_bios(s, ARC_MACHINE_ARCADIA), "no BIOS imported: the stand-in");
+    check(strstr(arc_machine_name(ARC_MACHINE_ARCADIA), "Arcadia 2001") != NULL
+          && !arc_machine_is_pal(ARC_MACHINE_ARCADIA) && arc_machine_is_pal(ARC_MACHINE_ARCADIA_PAL),
+          "the machine names and standards");
 
     o.enable_fujinet = 0; o.enable_audio = 0; o.enable_gamepad = 0;
     check(arcsession_start(s, &o) == 0, "session starts (CONFIG, no FujiNet)");
@@ -338,8 +260,6 @@ int main(void)
     check(wait_frames(s, &serial, 30, 5000), "frames arrive");
     check(wait_status(s, "link down", 5000), "CONFIG runs link-down");
     check(!arcsession_cart_booted_game(s), "CONFIG is not a booted game");
-    check(!arcsession_needs_bios(s), "and needs no BIOS");
-    check(arcsession_missing(s) == ARC_MISSING_FONT, "but the character set is missing, and only that");
     {
         char name[96];
         arcsession_cart_type_name(s, name, sizeof name);
@@ -347,14 +267,6 @@ int main(void)
     }
     check(arcsession_refresh_rate(s) == 60, "60 Hz");
     check(!arcsession_is_paused(s), "not paused");
-
-    /* Import BIOS: the character set, then a power cycle brings it in */
-    check(arcsession_rom_import(s, font, msg, sizeof msg) == 1, "the character set imports");
-    check(arcsession_missing(s) == ARC_MISSING_FONT, "the running console still lacks it until a power cycle");
-    check(arcsession_reset_to_config(s) == 0, "reset to CONFIG");
-    check(arcsession_missing(s) == 0, "now nothing is missing");
-    serial = 0;
-    check(wait_frames(s, &serial, 10, 5000), "frames flow from the new console");
     {
         uint64_t z = 0; int lit = 0, tries;
         check(arcsession_copy_frame(s, px, &z) == 1, "a forced copy (serial 0) always copies");
@@ -370,7 +282,6 @@ int main(void)
         }
         check(lit > 50, "the CONFIG client painted something");
     }
-    check(wait_status(s, "link down", 5000), "CONFIG is back");
 
     /* pause and resume */
     arcsession_set_paused(s, 1);
@@ -385,24 +296,33 @@ int main(void)
     check(!arcsession_is_paused(s) && wait_frames(s, &serial, 10, 3000), "resumed: they run again");
 
     /* keyboard: the default map */
-    check(arcsession_key(s, 'q', 1) == 1, "Q is bound (matrix 24)");
-    check(arcsession_key_held(s, 24), "and holds it");
-    check(arcsession_key(s, 'q', 0) == 1 && !arcsession_key_held(s, 24), "and releases it");
+    check(arcsession_key(s, '1', 1) == 1, "1 is bound (player 1's keypad 1, key 0)");
+    check(arcsession_key_held(s, 0), "and holds it");
+    check(arcsession_key(s, '1', 0) == 1 && !arcsession_key_held(s, 0), "and releases it");
+    check(arcsession_key(s, 'q', 1) == 1 && arcsession_key_held(s, 12), "Q is player 2's keypad 1 (key 12)");
+    arcsession_key(s, 'q', 0);
+    check(arcsession_key(s, ARC_KEYSYM_F2, 1) == 1 && arcsession_key_held(s, ARC_KEY_START), "F2 is START");
+    arcsession_key(s, ARC_KEYSYM_F2, 0);
     check(arcsession_key(s, ARC_KEYSYM_UP, 1) == 1 && (arcsession_buttons_held(s, 0) & (1u << ARC_ACT_UP)),
-          "the up arrow is stick 1 up");
+          "the up arrow is disc 1 up");
     check(arcsession_key(s, ARC_KEYSYM_RCTRL, 1) == 1 && (arcsession_buttons_held(s, 0) & (1u << ARC_ACT_FIRE)),
-          "Right Ctrl is its button");
+          "Right Ctrl is its fire button");
     arcsession_key(s, ARC_KEYSYM_DOWN, 1);
     check((arcsession_buttons_held(s, 0) & ((1u << ARC_ACT_UP) | (1u << ARC_ACT_DOWN))) == 0,
-          "up and down together: the stick holds neither");
+          "up and down together: the disc holds neither");
     arcsession_key(s, ARC_KEYSYM_DOWN, 0);
     check((arcsession_buttons_held(s, 0) & (1u << ARC_ACT_UP)) != 0, "up again once down lets go");
     arcsession_release_all(s);
     check(arcsession_buttons_held(s, 0) == 0, "release_all lets go of the keyboard");
     check(arcsession_key(s, ARC_KEYSYM_KP_6, 1) == 1 && (arcsession_buttons_held(s, 1) & (1u << ARC_ACT_RIGHT)),
-          "the keypad's 6 is stick 2 right");
+          "the keypad's 6 is disc 2 right");
     arcsession_key(s, ARC_KEYSYM_KP_6, 0);
     check(arcsession_buttons_held(s, 1) == 0, "released");
+    {
+        int dx = 9, dy = 9;
+        arcsession_disc_get(s, 0, &dx, &dy);
+        check(dx == 0 && dy == 0, "no gamepad: the analog disc is centred");
+    }
     check(arcsession_key(s, ARC_KEYSYM_F11, 1) == 0, "an unbound key is ignored");
     check(arcsession_key_sysaction(s, ARC_KEYSYM_ESCAPE) == ARC_SYSACT_RESET_CONFIG,
           "Escape is the Reset to CONFIG system action");
@@ -410,52 +330,78 @@ int main(void)
     check(arcsession_key(s, ARC_KEYSYM_F1, 1) == 1 && arcsession_switch_held(s, ARC_SW_RESET), "holding it holds RESET");
     arcsession_key(s, ARC_KEYSYM_F1, 0);
     check(!arcsession_switch_held(s, ARC_SW_RESET), "and letting go lets go");
-    arcsession_press(s, ARC_TARGET_KEY(12), 1);
-    check(arcsession_key_held(s, 12), "the controllers window can press a key directly");
-    arcsession_press(s, ARC_TARGET_KEY(12), 0);
+    arcsession_press(s, ARC_TARGET_KEY(20), 1);
+    check(arcsession_key_held(s, 20), "the controllers window can press a key directly");
+    arcsession_press(s, ARC_TARGET_KEY(20), 0);
     check(wait_frames(s, &serial, 10, 3000), "the machine keeps running after input");
 
     /* images the console cannot take */
-    check(arcsession_check_cart(big, why, sizeof why) == 0, "a 70,000-byte image is refused");
+    check(arcsession_check_cart(big, why, sizeof why) == 0, "a 200,000-byte image is refused");
     check(strstr(why, "larger") != NULL, "with the reason");
     check(arcsession_load_cart(s, big) == -1, "load_cart refuses it");
     check(!arcsession_cart_booted_game(s) && arcsession_cart_path(s)[0] == '\0', "and CONFIG keeps running");
-    check(arcsession_load_cart(s, chess) == -1 && strstr(arcsession_last_error(s), "Chess Module") != NULL,
-          "the Chess Module is refused, with MAME's reason");
+    check(arcsession_load_cart(s, zip2) == -1 && strstr(arcsession_last_error(s), "exactly one") != NULL,
+          "a zip of two cartridges is refused, with the reason");
 
-    /* a game, with no BIOS */
+    /* a game: its own cartridge, no mailbox, no BIOS needed */
     check(arcsession_check_cart(game, NULL, 0) == 1 && !arcsession_cart_is_app(game),
           "the game plans, and is not an app");
-    check(arcsession_load_cart(s, game) == -1, "load_cart refuses a game with no BIOS");
-    check(strstr(arcsession_last_error(s), "needs the BIOS") != NULL, "and says to import one");
-    check(arcsession_cart_path(s)[0] == '\0' && wait_status(s, "link down", 3000), "CONFIG is untouched");
+    check(arcsession_load_cart(s, game) == 0, "load_cart opens the game");
+    check(arcsession_cart_path(s)[0] != '\0' && strcmp(arcsession_get_str(s, "cart", ""), game) == 0,
+          "remembered and persisted");
+    check(wait_booted_game(s, 1, 5000), "a game is a booted cartridge");
+    check(moving(s), "and the game runs");
+    check(wait_status(s, "game running", 3000), "the cartridge reports a game (mailbox closed)");
+    {
+        char name[96];
+        arcsession_cart_type_name(s, name, sizeof name);
+        check(strstr(name, "4 KB") != NULL, "the cartridge is 4 KB");
+    }
+    check(arcsession_reset(s) == 0 && moving(s), "RESET on a game: it runs again");
+
+    /* the same game from a zip */
+    check(arcsession_load_cart(s, zip1) == 0, "a zip of one cartridge opens");
+    check(strcmp(arcsession_cart_path(s), zip1) == 0 && moving(s), "remembered as the zip, and it runs");
 
     /* open a FujiNet app: served from power-on, the mailbox live */
     check(arcsession_cart_is_app(app), "the app is an app");
     check(arcsession_load_cart(s, app) == 0, "load_cart");
     check(strcmp(arcsession_cart_path(s), app) == 0, "the cart path is remembered");
-    check(strcmp(arcsession_get_str(s, "cart", ""), app) == 0, "and persisted");
     check(wait_booted_game(s, 1, 5000), "something other than CONFIG is in the cartridge");
     check(moving(s), "the app runs (its counter moves)");
-    check(wait_ram(s, RAM_BOOTS, 1, 3000), "it has started once");
     {
         char name[96];
         arcsession_cart_type_name(s, name, sizeof name);
         check(strcmp(name, "FujiNet app") == 0, "the cartridge is a FujiNet app");
     }
 
-    /* the keyboard reaches the program through the stand-in's readkey */
-    check(wait_ram(s, RAM_KEY, 0xFF, 3000), "no key reads $FF");
-    arcsession_key(s, 'q', 1);
-    check(wait_ram(s, RAM_KEY, 0xC0 + 24, 3000), "Q held reads $C0 + 24");
-    arcsession_key(s, 'q', 0);
-    check(wait_ram(s, RAM_KEY, 0xFF, 3000), "and $FF once it is let go");
+    /* the keypad and the panel reach the program through the UVI's ports */
+    {
+        uint8_t idle = ram(s, RAM_KEY), idle_panel = ram(s, RAM_PANEL);
 
-    /* RESET: the 8048 starts over, the app is still open */
+        arcsession_key(s, '1', 1);
+        {
+            int waited = 0, changed = 0;
+            while (waited < 3000 && !(changed = ram(s, RAM_KEY) != idle)) { sleep_ms(30); waited += 30; }
+            check(changed, "player 1's key 1 changes what $1900 reads");
+        }
+        arcsession_key(s, '1', 0);
+        check(wait_ram(s, RAM_KEY, idle, 3000), "and it reads as before once let go");
+        arcsession_key(s, ARC_KEYSYM_F2, 1);
+        {
+            int waited = 0, changed = 0;
+            while (waited < 3000 && !(changed = ram(s, RAM_PANEL) != idle_panel)) { sleep_ms(30); waited += 30; }
+            check(changed, "START changes what $1908 reads");
+        }
+        arcsession_key(s, ARC_KEYSYM_F2, 0);
+        check(wait_ram(s, RAM_PANEL, idle_panel, 3000), "and not once let go");
+    }
+
+    /* RESET: the 2650 starts over, the app is still open */
     {
         uint8_t boots = ram(s, RAM_BOOTS);
         check(arcsession_reset(s) == 0, "RESET");
-        check(wait_ram(s, RAM_BOOTS, boots + 1, 3000), "the app started over");
+        check(wait_ram(s, RAM_BOOTS, (uint8_t)(boots + 1), 3000), "the app started over");
         check(moving(s), "and runs");
         check(strcmp(arcsession_cart_path(s), app) == 0, "still the open cartridge");
     }
@@ -470,37 +416,6 @@ int main(void)
     check(!arcsession_cart_booted_game(s), "no game in the cartridge");
     check(arcsession_cart_link_up(s) == 0, "with no runtime the cart reports link down");
 
-    /* Import BIOS: the game opens and runs on it */
-    check(arcsession_media_is_rom(bios), "the BIOS is recognised by size and CRC");
-    check(arcsession_rom_import(s, bios, msg, sizeof msg) == 1, "Import BIOS takes the tests' own");
-    check(arcsession_have_bios(s, ARC_MACHINE_ARCADIA), "the console has a BIOS now");
-    check(prog(s, 0x0B0) == 0x15, "(the stand-in is still what is running: readkey's DIS I)");
-    check(arcsession_load_cart(s, game) == 0, "the game opens");
-    check(prog(s, 0x0B0) == 0x00, "the console powered up with the imported BIOS");
-    check(moving(s), "and the game runs");
-    check(!arcsession_needs_bios(s) && arcsession_missing(s) == 0, "nothing is missing");
-    check(wait_status(s, "game running", 3000), "the cartridge reports a game (mailbox closed)");
-    check(arcsession_cart_booted_game(s), "a game is a booted cartridge");
-    {
-        char name[96];
-        arcsession_cart_type_name(s, name, sizeof name);
-        check(strcmp(name, "Standard, 2 KB") == 0, "the cartridge is a standard 2 KB one");
-    }
-    check(arcsession_reset(s) == 0 && moving(s), "RESET on a game: it runs again");
-
-    /* "use the BIOS" off: the stand-in again, and the game refused */
-    arcsession_set_int(s, "use_bios", 0);
-    check(arcsession_reset_to_config(s) == 0, "use_bios off, reset to CONFIG");
-    check(prog(s, 0x0B0) == 0x15, "the stand-in boots");
-    check(wait_status(s, "link down", 5000), "CONFIG runs");
-    check(arcsession_load_cart(s, game) == -1 && strstr(arcsession_last_error(s), "switched off") != NULL,
-          "and a game is refused again, with the reason");
-    arcsession_set_int(s, "use_bios", 1);
-
-    /* Sid the Spellbinder wants The Voice and its ROMs */
-    check(arcsession_load_cart(s, sid) == -1 && strstr(arcsession_last_error(s), "The Voice") != NULL,
-          "a game that speaks is refused without the Voice's ROMs");
-
     /* A path relative to where the app started still means that file after
      * the process's working directory moves: the in-process FujiNet makes
      * its runtime root the working directory. */
@@ -508,8 +423,8 @@ int main(void)
         char rel[64], abs[900];
         snprintf(rel, sizeof rel, "arc-rel-%ld.bin", (long)test_getpid());
         snprintf(abs, sizeof abs, "%s/%s", launch, rel);
-        build_cart(img, 1);
-        check(write_file(abs, img, sizeof img), "wrote an image in the launch directory");
+        build_cart(img, 0x2000, 1);
+        check(write_file(abs, img, 0x2000), "wrote an image in the launch directory");
         check(test_chdir(data) == 0, "the working directory moves away");
         check(arcsession_check_cart(rel, NULL, 0) == 1, "a bare name still finds it");
         check(arcsession_load_cart(s, rel) == 0, "and opens it");
@@ -530,52 +445,28 @@ int main(void)
     if (s) {
         arcsession_default_opts(s, &o);
         check(o.cart_path && strcmp(o.cart_path, app) == 0, "the cartridge is remembered");
-        check(arcsession_have_bios(s, ARC_MACHINE_ARCADIA) && arcsession_have_font(s, ARC_MACHINE_ARCADIA),
-              "and so are the imported ROMs");
         o.enable_fujinet = 0; o.enable_audio = 0; o.enable_gamepad = 0;
         check(arcsession_start(s, &o) == 0, "restart");
         check(moving(s), "and it boots the remembered cartridge");
 
-        /* the Videopac G7000 is PAL, and the same BIOS */
-        arcsession_set_int(s, "machine", ARC_MACHINE_VIDEOPAC);
-        check(arcsession_restart(s) == 0, "the Videopac G7000: a power cycle");
+        /* the PAL machine: 50 Hz, the same cartridge */
+        arcsession_set_int(s, "machine", ARC_MACHINE_ARCADIA_PAL);
+        check(arcsession_restart(s) == 0, "the PAL console: a power cycle");
         check(arcsession_refresh_rate(s) == 50, "50 Hz");
         serial = 0;
         check(wait_frames(s, &serial, 10, 5000) && moving(s), "it runs the same cartridge");
         arcsession_set_int(s, "machine", ARC_MACHINE_ARCADIA);
-        check(arcsession_restart(s) == 0 && arcsession_refresh_rate(s) == 60, "and back to the Arcadia 2001");
+        check(arcsession_restart(s) == 0 && arcsession_refresh_rate(s) == 60, "and back to the NTSC console");
 
-        /* the Voice, switched on with no ROMs: the console runs, and says what is missing */
-        arcsession_set_int(s, "voice", 1);
-        check(arcsession_restart(s) == 0 && (arcsession_missing(s) & ARC_MISSING_VOICE) != 0,
-              "the Voice with no speech ROMs is reported missing");
-        arcsession_set_int(s, "voice", 0);
-        check(arcsession_restart(s) == 0 && (arcsession_missing(s) & ARC_MISSING_VOICE) == 0, "and not once it is off");
+        /* a remembered cartridge that has gone: CONFIG, and forgotten */
+        arcsession_stop(s);
+        arcsession_set_str(s, "cart", "/nonexistent/gone.bin");
+        arcsession_default_opts(s, &o);
+        o.enable_fujinet = 0; o.enable_audio = 0; o.enable_gamepad = 0;
+        check(arcsession_start(s, &o) == 0, "a vanished remembered cartridge does not stop the start");
+        check(arcsession_cart_path(s)[0] == '\0' && wait_status(s, "link down", 5000), "CONFIG boots instead");
         arcsession_stop(s);
         arcsession_free(s);
-    }
-
-    /* The Videopac+ G7400 cannot run on the stand-in: no BIOS, no start */
-    {
-        char cfg2[300], data2[400];
-        arcsession_paths p2;
-        arcsession_start_opts arc;
-        arcsession *g;
-
-        test_tmpdir(cfg2, sizeof cfg2, "g7400");
-        snprintf(data2, sizeof data2, "%s/data", cfg2);
-        memset(&p2, 0, sizeof p2);
-        p2.config_dir = cfg2; p2.data_dir = data2; p2.fujinet_lib = "";
-        g = arcsession_new(&p2);
-        if (g) {
-            arcsession_default_opts(g, &arc);
-            arc.machine = ARC_MACHINE_VIDEOPAC_PLUS;
-            arc.enable_fujinet = 0; arc.enable_audio = 0; arc.enable_gamepad = 0;
-            check(arcsession_start(g, &arc) == -1 && !arcsession_is_running(g), "a G7400 with no BIOS does not start");
-            check(strstr(arcsession_last_error(g), "G7400 needs its BIOS") != NULL
-                  && strstr(arcsession_last_error(g), "Import BIOS") != NULL, "and says why");
-            arcsession_free(g);
-        }
     }
 
     printf("%d failure(s)\n", failures);

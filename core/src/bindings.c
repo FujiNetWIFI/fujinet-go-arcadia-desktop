@@ -2,9 +2,10 @@
  * bindings -- the remappable key/gamepad table, the keyboard translator,
  * and every name the bindings editor and the settings store need.
  *
- * One flat target table (arcsession.h's ARC_TARGET_* indices): per stick (1,
- * then 2) its four directions and its button; the keyboard's 64 matrix
- * positions; the console's RESET key; then the session's own actions.
+ * One flat target table (arcsession.h's ARC_TARGET_* indices): per disc (1,
+ * then 2) its four directions and its fire button; the console's 27
+ * keys (two keypads and START/OPTION/SELECT); the console's RESET; then the
+ * session's own actions.
  * Each target holds at most one keysym and one gamepad button. Rebinding
  * STEALS -- a key drives exactly one target, because one keystroke doing
  * two things is worse than losing the old binding: the second effect is
@@ -17,7 +18,7 @@
  *
  * Keysyms are X11's, folded to lower case before lookup so a binding made
  * with 'w' still fires while Shift is held for something else. The numeric
- * keypad's keys are NOT folded onto the main block's (stick 2 lives there),
+ * keypad's keys are NOT folded onto the main block's (disc 2 lives there),
  * except its Enter, which is Enter.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
@@ -55,22 +56,23 @@ static void seed_button(int target, int button)
     s_defaults[target].button = button;
 }
 
-#define KS_KP_ADD       0xffabu
-#define KS_CAPS_LOCK    0xffe5u
-#define KS_END          0xff57u
-
-/* The defaults follow MAME's INPUT_PORTS (arc and vpp): a host key presses the
- * console key of the same legend, and where MAME names a keypad code for an
- * operator it is that one (+ on the keypad's +, x on its *, the division sign
- * on its /). ? is the / key (KEYCODE_SLASH), CLEAR is Backspace, ENTER is
- * Enter. The G7400's rows 6 and 7 take the punctuation keys MAME gives them.
- * Stick 1 is the arrow keys with Right Ctrl for fire; stick 2 the numeric
- * keypad's 8 4 6 2 with 0 for fire -- the keypad's digits are otherwise left
- * alone, and where a default would clash the stick wins. F1 is the console's
+/* The defaults: player 1's keypad on the top-row digits (1-9, 0), Backspace
+ * is CLEAR and Enter is ENTER; player 2's keypad is the Q block (Q W E / A S
+ * D / Z X C, then V B N for CLEAR 0 ENTER). Disc 1 is the arrow keys with
+ * Right Ctrl for fire; disc 2 the numeric keypad's 8 4 6 2 with 0 for fire --
+ * the keypad's other keys are left alone, and where a default would clash the
+ * disc wins. START, OPTION and SELECT are F2, F3, F4; F1 is the console's
  * RESET (MAME's), Escape is Reset to CONFIG. F5/F7/F8/F9/F11/F12 are the
  * family's window and debugger keys and stay free of the machine. */
 static void compute_defaults_locked(void)
 {
+    static const uint32_t p1[12] = {
+        '1', '2', '3', '4', '5', '6', '7', '8', '9',
+        ARC_KEYSYM_BACKSPACE, '0', ARC_KEYSYM_RETURN,
+    };
+    static const uint32_t p2[12] = {
+        'q', 'w', 'e', 'a', 's', 'd', 'z', 'x', 'c', 'v', 'b', 'n',
+    };
     int t, k;
 
     for (t = 0; t < ARC_TARGET_COUNT; t++) {
@@ -78,40 +80,13 @@ static void compute_defaults_locked(void)
         s_defaults[t].button = ARC_PAD_BTN_NONE;
     }
 
-    /* every key whose legend is one character: the same host key */
-    for (k = 0; k < 48; k++) {
-        const char *label = arcsession_key_label(ARC_MACHINE_ARCADIA, k);
-        if (label && label[0] && !label[1]) {
-            char c = label[0];
-            if (c >= 'A' && c <= 'Z')
-                c = (char)(c + 32);
-            seed_key(ARC_TARGET_KEY(k), (uint32_t)(unsigned char)c);
-        }
+    for (k = 0; k < 12; k++) {
+        seed_key(ARC_TARGET_KEY(ARC_KEY_PAD_BASE(0) + k), p1[k]);
+        seed_key(ARC_TARGET_KEY(ARC_KEY_PAD_BASE(1) + k), p2[k]);
     }
-    seed_key(ARC_TARGET_KEY(12), ARC_KEYSYM_SPACE);
-    seed_key(ARC_TARGET_KEY(13), '/');                       /* ? */
-    seed_key(ARC_TARGET_KEY(16), KS_KP_ADD);                 /* + */
-    seed_key(ARC_TARGET_KEY(40), '-');
-    seed_key(ARC_TARGET_KEY(41), ARC_KEYSYM_KP_MULTIPLY);     /* x */
-    seed_key(ARC_TARGET_KEY(42), ARC_KEYSYM_KP_DIVIDE);       /* division */
-    seed_key(ARC_TARGET_KEY(43), '=');
-    seed_key(ARC_TARGET_KEY(44), 'y');                       /* Y / YES */
-    seed_key(ARC_TARGET_KEY(45), 'n');                       /* N / NO */
-    seed_key(ARC_TARGET_KEY(46), ARC_KEYSYM_BACKSPACE);       /* CLEAR */
-    seed_key(ARC_TARGET_KEY(47), ARC_KEYSYM_RETURN);          /* ENTER */
-    /* the Videopac+ G7400's extra rows (position 48, Ret, has no host key:
-     * the keypad's Enter is ENTER) */
-    seed_key(ARC_TARGET_KEY(49), KS_CAPS_LOCK);              /* Lock */
-    seed_key(ARC_TARGET_KEY(50), ';');                       /* : * */
-    seed_key(ARC_TARGET_KEY(51), '\\');                      /* | @ */
-    seed_key(ARC_TARGET_KEY(52), ']');                       /* ] [ */
-    seed_key(ARC_TARGET_KEY(53), '\'');                      /* diaeresis ^ */
-    seed_key(ARC_TARGET_KEY(54), ',');                       /* , / */
-    seed_key(ARC_TARGET_KEY(55), '[');                       /* < > */
-    seed_key(ARC_TARGET_KEY(56), ARC_KEYSYM_LSHIFT);          /* Shift */
-    seed_key(ARC_TARGET_KEY(57), KS_END);                    /* Break */
-    seed_key(ARC_TARGET_KEY(58), ARC_KEYSYM_LCTRL);           /* Cntl */
-    /* (position 63, Esc: Escape is Reset to CONFIG) */
+    seed_key(ARC_TARGET_KEY(ARC_KEY_START), ARC_KEYSYM_F2);
+    seed_key(ARC_TARGET_KEY(ARC_KEY_OPTION), ARC_KEYSYM_F3);
+    seed_key(ARC_TARGET_KEY(ARC_KEY_SELECT), ARC_KEYSYM_F4);
 
     seed_key(ARC_TARGET_PORT(0, ARC_ACT_UP), ARC_KEYSYM_UP);
     seed_key(ARC_TARGET_PORT(0, ARC_ACT_RIGHT), ARC_KEYSYM_RIGHT);
@@ -127,9 +102,14 @@ static void compute_defaults_locked(void)
     seed_key(ARC_TARGET_SWITCH(ARC_SW_RESET), ARC_KEYSYM_F1);
     seed_key(ARC_TARGET_SYSACT(ARC_SYSACT_RESET_CONFIG), ARC_KEYSYM_ESCAPE);
 
-    /* gamepad defaults, the same on both sticks: the D-pad is the stick's
-     * directions (the left analog stick drives them too, with "analog sticks"
-     * on: gamepad_sdl.c) and South is the button. */
+    /* gamepad defaults, the same on both discs: the D-pad is the disc's
+     * directions (the left analog stick drives the analog disc too, with
+     * "analog sticks" on: gamepad_sdl.c) and South is the side button. The
+     * console's buttons go on the pad's Start (START), X (OPTION) and Back
+     * (SELECT). */
+    seed_button(ARC_TARGET_KEY(ARC_KEY_START), ARC_PAD_BTN_START);
+    seed_button(ARC_TARGET_KEY(ARC_KEY_OPTION), ARC_PAD_BTN_WEST);
+    seed_button(ARC_TARGET_KEY(ARC_KEY_SELECT), ARC_PAD_BTN_BACK);
     {
         int port;
         for (port = 0; port < 2; port++) {
@@ -356,26 +336,28 @@ static const char *const sysact_names[ARC_SYSACT_COUNT] = {
     "Reset to CONFIG", "Debugger Stop",
 };
 
-/* A matrix position's legend ("Q", "ENTER", "Y / YES"; the Videopac+ G7400's
- * rows 6 and 7 by their G7400 legends); positions no key sits on get a
- * plain number. */
+/* A console key's name: "Player 1 keypad 5", "START". */
 static const char *key_name(int key, char *buf, size_t bufsz)
 {
-    const char *label = arcsession_key_label(
-        key < 48 ? ARC_MACHINE_ARCADIA : ARC_MACHINE_VIDEOPAC_PLUS, key);
-    if (label)
-        return label;
-    snprintf(buf, bufsz, "%d", key);
-    return buf;
+    const char *label = arcsession_key_label(ARC_MACHINE_ARCADIA, key);
+    if (!label) {
+        snprintf(buf, bufsz, "%d", key);
+        return buf;
+    }
+    if (key < 24) {
+        snprintf(buf, bufsz, "P%d keypad %s", key / 12 + 1, label);
+        return buf;
+    }
+    return label;
 }
 
 const char *arc_target_name(int target)
 {
     static char buf[64];
-    char kbuf[16];
+    char kbuf[32];
     if (target < 0 || target >= ARC_TARGET_COUNT) return "";
     if (target < 2 * ARC_ACT_PER_PORT) {
-        snprintf(buf, sizeof buf, "Stick %d: %s", target / ARC_ACT_PER_PORT + 1,
+        snprintf(buf, sizeof buf, "Disc %d: %s", target / ARC_ACT_PER_PORT + 1,
                  act_names[target % ARC_ACT_PER_PORT]);
         return buf;
     }

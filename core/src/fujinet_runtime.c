@@ -4,9 +4,9 @@
  * entry wrapper, tools/fujinet/support/fujinet_desktop_entry.cpp). Transposed
  * from the Intv port's fujinet_runtime.c by way of the SMS sibling.
  *
- * FujiNet listens on the BoIP port (ARCSESSION_BOIP_PORT, 11520) and the
+ * FujiNet listens on the BoIP port (ARCSESSION_BOIP_PORT, 11522) and the
  * emulator's cart device dials into it; the web admin UI binds
- * ARCSESSION_WEBUI_PORT (11521, via FUJINET_WEBUI_BIND).
+ * ARCSESSION_WEBUI_PORT (11523, via FUJINET_WEBUI_BIND).
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later

@@ -23,10 +23,9 @@ name: Release
 # downloaded build's About box can never disagree with the download it came
 # from. The check-version job below enforces that.
 #
-# Nothing copyrighted is embedded in any artifact: every configure below
-# passes -DWITH_ARC_ROMS=OFF (CONFIG and FujiNet apps boot on the app's own
-# stand-in; a user's own BIOS is imported at run time), and the no_embedded_roms
-# ctests run against each frontend binary (see COMPLIANCE.md).
+# Nothing copyrighted is embedded in any artifact (the Arcadia 2001 has no
+# BIOS; games are the user's own files), and the no_embedded_roms ctests run
+# against each frontend binary (see COMPLIANCE.md).
 
 on:
   push:
@@ -130,8 +129,7 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_PREFIX_PATH=/tmp/sdl3-install \
             -DCMAKE_INSTALL_PREFIX=/usr \
-            -DFRONTEND=${{ matrix.frontend }} \
-            -DWITH_ARC_ROMS=OFF
+            -DFRONTEND=${{ matrix.frontend }}
 
       - name: Build
         run: cmake --build build
@@ -252,7 +250,7 @@ jobs:
           cmake --install sdl3-src/build
 
       - name: Configure
-        run: cmake -B build -G Ninja -DWITH_ARC_ROMS=OFF
+        run: cmake -B build -G Ninja
 
       - name: Build
         run: cmake --build build
@@ -397,8 +395,7 @@ jobs:
       - name: Configure
         run: |
           cmake -B build -G Ninja \
-            -DCMAKE_PREFIX_PATH=/tmp/sdl3-install \
-            -DWITH_ARC_ROMS=OFF
+            -DCMAKE_PREFIX_PATH=/tmp/sdl3-install
 
       - name: Build
         run: cmake --build build

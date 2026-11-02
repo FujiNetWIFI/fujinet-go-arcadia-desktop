@@ -58,8 +58,9 @@ arc_session_test(session_test session_test.c)
 add_test(NAME session COMMAND session_test)
 set_tests_properties(session PROPERTIES TIMEOUT 120)
 
-# The remappable binding table and the keyboard translator, pure: MAME's key
-# map, two sticks, F1 for RESET, steal-on-rebind, persistence, names.
+# The remappable binding table and the keyboard translator, pure: the two
+# keypads and the panel, two sticks and fire buttons, F1 for RESET,
+# steal-on-rebind, persistence, names.
 arc_session_test(bindings_test bindings_test.c)
 add_test(NAME bindings COMMAND bindings_test)
 
@@ -69,16 +70,6 @@ add_test(NAME bindings COMMAND bindings_test)
 # them. No machine is started.
 arc_session_test(keyboard_test keyboard_test.c)
 add_test(NAME keyboard COMMAND keyboard_test)
-
-# Import BIOS end to end, without a machine: every ROM item recognised by size
-# and CRC whatever it is called and stored under MAME's name; a file, a zip
-# (stored; deflated with fixed and dynamic Huffman blocks, by the reader's own
-# INFLATE), a folder eight levels deep with zips in it; other consoles' dumps
-# recognised and not stored; an unknown 1 KB dump taken only when it is the one
-# file handed over; the G7400's two extra ROMs; the EF9340 bad-dump warning.
-# Generated fillers with the right CRC (no firmware).
-arc_session_test(roms_import_test roms_import_test.c)
-add_test(NAME roms_import COMMAND roms_import_test)
 
 # Where a dropped file goes (a ROM to the ROM directory, a cartridge to the
 # cartridge directory, the rest to the SD folder), what makes a cartridge
@@ -118,12 +109,12 @@ arc_session_test(fujibus_smoke fujibus_smoke.c)
 add_test(NAME fujibus_smoke COMMAND fujibus_smoke)
 set_tests_properties(fujibus_smoke PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 RUN_SERIAL ON)
 
-# These two need the FujiNet runtime and the firmware's own test clients; they
-# join once their sources are ported (see TODO).
-if(FALSE)
+# These two need the FujiNet runtime and the firmware's own test clients.
+if(TRUE)
 # CONFIG, driven like a user, boots the suite's own app from the SD host
-# through FujiNet (screens recognised by their text in the cart's text
-# engine). SKIPs (77) without the FujiNet runtime. Serial: it owns the port.
+# through FujiNet (screens recognised by their glyph codes on the UVI's
+# character screen). SKIPs (77) without the FujiNet runtime. Serial: it owns
+# the port.
 arc_session_test(config_boot_test config_boot_test.c)
 add_test(NAME config_boot COMMAND config_boot_test)
 set_tests_properties(config_boot PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180 RUN_SERIAL ON)

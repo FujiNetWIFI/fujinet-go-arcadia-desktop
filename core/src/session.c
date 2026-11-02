@@ -1,11 +1,12 @@
 /*
  * session.c -- the frontend contract (core/include/arcsession.h) over the
- * Magnavox Arcadia 2001 / Philips Videopac host (core/arc/host.h).
+ * Emerson Arcadia 2001 host (core/arc/host.h): a Signetics 2650 console with
+ * no BIOS, so the only images are game cartridges and FujiNet apps.
  *
  * The C modules beside it (settings, paths, media, roms, keyboard, audio,
  * gamepads, bindings) share the session struct through session_internal.h;
  * this file owns the lifecycle, the power cycles, the cartridges, the input
- * routing and the cartridge status. Ported from the Studio II sibling's
+ * routing and the cartridge status. Ported from the O2 sibling's
  * session.c.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
@@ -17,18 +18,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "session_internal.h"
 #include "bindings.h"
 #include "arcdebug.h"
 #include "host.h"
+#include "zipread.h"
 #include "carts.h"
 #include "fuji_mailbox.h"
 #include "arcmap.h"
 
-/* The largest image the cartridge serves: an APPBANK image (a fixed 1K and up
- * to 31 pages of 2K), with room to say "too big" rather than truncate. */
-#define CART_MAX (ARC_APP_FIXED_BYTES + ARC_APP_MAXPAGES * ARC_APP_PAGE_BYTES + 1u)
+/* The largest image the cartridge serves: an APPBANK image (8K and up to 31
+ * pages of 2K), with room to say "too big" rather than truncate. */
+#define CART_MAX (ARCMAP_STORE + 1u)
 
 /* ---- the machines ----------------------------------------------------------- */
 
@@ -104,7 +107,6 @@ arcsession *arcsession_new(const arcsession_paths *paths)
     }
     settings_init(s);
     bindings_init(s);
-    roms_provision_embedded(s);
 
     if (paths && paths->fujinet_lib) {
         snprintf(s->fujinet_lib, sizeof s->fujinet_lib, "%s", paths->fujinet_lib);
@@ -135,8 +137,6 @@ void arcsession_default_opts(arcsession *s, arcsession_start_opts *opts)
 {
     memset(opts, 0, sizeof *opts);
     opts->machine = clamp_machine(arcsession_get_int(s, "machine", ARC_MACHINE_ARCADIA));
-    opts->use_bios = arcsession_get_int(s, "use_bios", 1);
-    opts->voice = arcsession_get_int(s, "voice", 0);
     opts->analog_joystick = arcsession_get_int(s, "analog_joystick", 1);
     opts->enable_fujinet = arcsession_get_int(s, "enable_fujinet", 1);
     opts->external_fujinet = arcsession_get_int(s, "fujinet_external", 0);
@@ -153,17 +153,73 @@ void arcsession_default_opts(arcsession *s, arcsession_start_opts *opts)
 typedef struct {
     int app;                  /* a FujiNet app: claims the mailbox */
     int type;                 /* arc_cart_type of a game (ARC_CART_FUJINET for an app) */
-    bool needs_voice;         /* the game carries speech data of its own */
     arcmap_plan_t plan;        /* what the FujiNet cartridge makes of the image */
     arcmap_err_t plan_err;
 } cart_info;
 
-static uint8_t *read_cart(const char *path, uint32_t *len, char *why, int whysz)
+static int path_is_zip(const char *path)
 {
-    FILE *f = fopen(path, "rb");
+    size_t n = strlen(path);
+    return n > 4 && (!strcmp(path + n - 4, ".zip") || !strcmp(path + n - 4, ".ZIP"));
+}
+
+static int name_has_cart_ext(const char *name)
+{
+    const char *dot = strrchr(name, '.');
+    return dot && (!strcasecmp(dot, ".bin") || !strcasecmp(dot, ".rom") ||
+                   !strcasecmp(dot, ".arc"));
+}
+
+/* A zip holding one cartridge image (MAME's romset zips): the one entry
+ * with a cartridge extension, or the only entry there is. */
+static uint8_t *read_cart_zip(const char *path, uint32_t *len, char *why, int whysz)
+{
+    zipread *z = zipread_open(path);
+    uint8_t *buf = NULL;
+    int pick = -1, ncart = 0, nfile = 0, only = -1;
+
+    if (!z) {
+        snprintf(why, (size_t)whysz, "cannot read %s as a zip", path);
+        return NULL;
+    }
+    for (int i = 0; i < zipread_count(z); i++) {
+        const char *name = zipread_name(z, i);
+        size_t nl = strlen(name);
+        if (nl == 0 || name[nl - 1] == '/')
+            continue;
+        nfile++;
+        only = i;
+        if (name_has_cart_ext(name)) {
+            ncart++;
+            pick = i;
+        }
+    }
+    if (ncart != 1 && !(ncart == 0 && nfile == 1)) {
+        snprintf(why, (size_t)whysz, "%s must hold exactly one cartridge image (found %d)",
+                 path, ncart ? ncart : nfile);
+        zipread_close(z);
+        return NULL;
+    }
+    if (pick < 0)
+        pick = only;
+    if (zipread_extract(z, pick, &buf, len, CART_MAX) != 0 || !buf || *len == 0) {
+        snprintf(why, (size_t)whysz, "cannot extract the cartridge from %s", path);
+        free(buf);
+        buf = NULL;
+    }
+    zipread_close(z);
+    return buf;
+}
+
+uint8_t *session_read_cart(const char *path, uint32_t *len, char *why, int whysz)
+{
+    FILE *f;
     uint8_t *buf;
     size_t got;
 
+    if (path_is_zip(path))
+        return read_cart_zip(path, len, why, whysz);
+    f = fopen(path, "rb");
     if (!f) {
         snprintf(why, (size_t)whysz, "cannot open %s", path);
         return NULL;
@@ -195,9 +251,8 @@ static uint8_t *read_cart(const char *path, uint32_t *len, char *why, int whysz)
 /* Identify an image. A FujiNet app is one the cartridge firmware's own
  * planner says claims the mailbox (an APPBANK image, or a bank layout with
  * "FUJI" at $F2C); anything else is a game, which is MAME's cartridge for its
- * CRC and size (the mapper the host puts in the slot). 1 if the image can
- * run, else 0 and why (the Chess and Home Computer modules, a mapper that
- * cannot take the size). */
+ * size and contents (the mapper the host puts in the slot: standard or Golf).
+ * 1 if the image can run, else 0 and why. */
 static int analyse_image(const uint8_t *img, uint32_t len, cart_info *ci,
                          char *why, int whysz)
 {
@@ -213,13 +268,25 @@ static int analyse_image(const uint8_t *img, uint32_t len, cart_info *ci,
         ci->type = ARC_CART_FUJINET;
         return 1;
     }
-    ci->type = arc_cart_identify(img, len, &ci->needs_voice);
+    ci->type = arc_cart_identify(img, len);
     if (arc_cart_init(&tmp, ci->type, img, len, &err) != 0) {
         if (why && whysz > 0)
             snprintf(why, (size_t)whysz, "%s", err ? err : "the cartridge cannot be mapped");
         return 0;
     }
     return 1;
+}
+
+static const char *arcmap_strerror(arcmap_err_t e)
+{
+    switch (e) {
+    case ARCMAP_OK:       return "ok";
+    case ARCMAP_EEMPTY:   return "the image is empty";
+    case ARCMAP_ETOOBIG:  return "the image is larger than the biggest FujiNet app";
+    case ARCMAP_ENOMAP:   return "over 8 KB, but not 8 KB plus whole 2 KB pages";
+    case ARCMAP_ENOCLAIM: return "an image over 8 KB must claim the mailbox (\"FUJI\")";
+    }
+    return "the image cannot be mapped";
 }
 
 static int check_image(const char *path, cart_info *out, char *why, int whysz)
@@ -239,7 +306,7 @@ static int check_image(const char *path, cart_info *out, char *why, int whysz)
     if (!path || !*path)
         return 0;
     path = paths_resolve(path, abs, sizeof abs);
-    img = read_cart(path, &len, err, sizeof err);
+    img = session_read_cart(path, &len, err, sizeof err);
     if (!img) {
         if (why && whysz > 0)
             snprintf(why, (size_t)whysz, "%s", err);
@@ -264,10 +331,10 @@ int arcsession_cart_is_app(const char *path)
 }
 
 /* Whether the FujiNet cartridge itself can serve the image (a network boot of
- * it from the SD folder): a whole number of 2K or 3K banks, or an APPBANK
- * image. A game of any other size still runs from the slot as its own
- * cartridge, so check_cart allows it; the SD folder is for what CONFIG can
- * boot. */
+ * it from the SD folder): arcmap's plan accepts it (up to 8 KB flat, or an
+ * APPBANK image of 8 KB plus 2 KB pages that claims the mailbox). A game the
+ * slot's own mapper takes but arcmap does not still runs from the slot, so
+ * check_cart allows it; the SD folder is for what CONFIG can boot. */
 int session_cart_plan_check(const char *path, char *why, int whysz)
 {
     cart_info ci;
@@ -283,76 +350,23 @@ int session_cart_plan_check(const char *path, char *why, int whysz)
     return 1;
 }
 
-/* What the console would be missing to run this image (NULL: just power on)
- * with the ROMs imported now: 1 if it can, else 0 and why; *recoverable is
- * set when importing a ROM fixes it. */
-static int requirements(struct arcsession *s, int machine, int use_bios,
-                        const cart_info *ci, int *recoverable, char *why, int whysz)
-{
-    const int plus = machine == ARC_MACHINE_VIDEOPAC_PLUS;
-
-    *recoverable = 0;
-    if (plus && !arcsession_have_bios(s, machine)) {
-        *recoverable = 1;
-        snprintf(why, (size_t)whysz,
-                 "The Videopac+ G7400 needs its BIOS: Machine > Import BIOS...");
-        return 0;
-    }
-    if (ci && !ci->app && !(plus || (use_bios && arcsession_have_bios(s, machine)))) {
-        *recoverable = 1;
-        if (!use_bios && arcsession_have_bios(s, machine))
-            snprintf(why, (size_t)whysz,
-                     "This cartridge needs the BIOS, which is switched off in "
-                     "Preferences (Machine > Use the imported BIOS).");
-        else
-            snprintf(why, (size_t)whysz,
-                     "This cartridge needs the BIOS. Use Machine > Import BIOS... to add "
-                     "your own copy (CONFIG and the FujiNet apps run without it).");
-        return 0;
-    }
-    if (ci && ci->needs_voice && !(arcsession_have_voice(s) &&
-        arcsession_rom_item_available(s, ARC_ROM_VOICE_SID))) {
-        *recoverable = 1;
-        snprintf(why, (size_t)whysz,
-                 "This cartridge speaks through The Voice and needs its speech ROMs "
-                 "(sp0256b-019.bin, spr128-003.bin and spr128-004.bin): Machine > Import BIOS...");
-        return 0;
-    }
-    return 1;
-}
-
 /* ---- powering the machine -------------------------------------------------------- */
-
-static void free_host_roms(struct arcsession *s)
-{
-    for (size_t i = 0; i < sizeof s->host_roms / sizeof s->host_roms[0]; i++) {
-        free(s->host_roms[i]);
-        s->host_roms[i] = NULL;
-    }
-}
 
 /* Bring the machine up with s->opts and the given image (NULL: CONFIG). */
 static int host_up(struct arcsession *s, const char *cart_path)
 {
     arc_host_opts_t ho;
     cart_info ci;
-    uint8_t *cart = NULL, *bios = NULL, *font = NULL, *font_ef = NULL;
-    uint8_t *vrom = NULL, *vspeech = NULL, *vgame = NULL;
-    uint32_t cart_len = 0, bios_len = 0, font_len = 0, font_ef_len = 0;
-    uint32_t vrom_len = 0, vspeech_len = 0, vgame_len = 0;
-    const int machine = s->opts.machine;
-    const int plus = machine == ARC_MACHINE_VIDEOPAC_PLUS;
-    unsigned missing = 0;
+    uint8_t *cart = NULL;
+    uint32_t cart_len = 0;
     char why[256];
-    int rc, recoverable = 0;
+    int rc;
 
     memset(&ho, 0, sizeof ho);
     memset(&ci, 0, sizeof ci);
-    free_host_roms(s);
-    s->refusal_recoverable = 0;
 
     if (cart_path && *cart_path) {
-        cart = read_cart(cart_path, &cart_len, why, sizeof why);
+        cart = session_read_cart(cart_path, &cart_len, why, sizeof why);
         if (!cart) {
             session_set_error(s, "%s", why);
             return -1;
@@ -363,53 +377,6 @@ static int host_up(struct arcsession *s, const char *cart_path)
             return -1;
         }
     }
-    if (!requirements(s, machine, s->opts.use_bios, cart ? &ci : NULL, &recoverable,
-                      why, sizeof why)) {
-        session_set_error(s, "%s", why);
-        s->refusal_recoverable = recoverable;
-        free(cart);
-        return -1;
-    }
-
-    /* the console's BIOS, or none: the stand-in runs CONFIG and the apps */
-    if (plus || s->opts.use_bios)
-        bios = roms_load(s, plus ? ARC_ROM_BIOS_G7400 : ARC_ROM_BIOS, &bios_len);
-    if ((plus || (cart && !ci.app)) && !bios) {
-        session_set_error(s, "The BIOS could not be read from %s", s->roms_dir);
-        free(cart);
-        return -1;
-    }
-
-    /* the video chips' character sets: without them text is blank, which the
-     * missing mask says */
-    font = roms_load(s, ARC_ROM_FONT_8244, &font_len);
-    if (plus)
-        font_ef = roms_load(s, ARC_ROM_FONT_EF9340, &font_ef_len);
-    if (!font || (plus && !font_ef))
-        missing |= ARC_MISSING_FONT;
-
-    /* The Voice, in front of the cartridge: asked for in Preferences, or a
-     * game that speaks needs it (requirements() has seen to its ROMs) */
-    if (s->opts.voice || ci.needs_voice) {
-        vrom = roms_load(s, ARC_ROM_VOICE_INTERNAL, &vrom_len);
-        vspeech = roms_load(s, ARC_ROM_VOICE_SPEECH, &vspeech_len);
-        if (ci.needs_voice)
-            vgame = roms_load(s, ARC_ROM_VOICE_SID, &vgame_len);
-        if (vrom && vspeech && (vgame || !ci.needs_voice)) {
-            ho.voice = true;
-        } else {
-            missing |= ARC_MISSING_VOICE;
-            free(vrom); free(vspeech); free(vgame);
-            vrom = vspeech = vgame = NULL;
-        }
-    }
-
-    s->host_roms[0] = bios;
-    s->host_roms[1] = font;
-    s->host_roms[2] = font_ef;
-    s->host_roms[3] = vrom;
-    s->host_roms[4] = vspeech;
-    s->host_roms[5] = vgame;
 
     /* The cartridge dials FujiNet's BoIP port -- the in-process runtime's,
      * or a standalone fujinet-pc's when the runtime is switched off or
@@ -419,19 +386,7 @@ static int host_up(struct arcsession *s, const char *cart_path)
      * power-on). */
     if (s->fujinet_disabled)
         s->boip_endpoint[0] = '\0';
-    ho.machine = machine;
-    ho.bios = bios;
-    ho.bios_size = bios_len;
-    ho.font = font;
-    ho.font_size = font_len;
-    ho.font_ef = font_ef;
-    ho.font_ef_size = font_ef_len;
-    ho.voice_rom = vrom;
-    ho.voice_rom_size = vrom_len;
-    ho.voice_speech = vspeech;
-    ho.voice_speech_size = vspeech_len;
-    ho.voice_game = vgame;
-    ho.voice_game_size = vgame_len;
+    ho.machine = s->opts.machine;
     ho.cart = cart;
     ho.cart_size = cart_len;
     ho.cart_type = cart ? ci.type : ARC_CART_FUJINET;
@@ -442,23 +397,19 @@ static int host_up(struct arcsession *s, const char *cart_path)
     rc = arc_host_start(&ho);
     if (rc != 0) {
         session_set_error(s, "%s", arc_host_last_error());
-        free_host_roms(s);
     } else {
-        s->run_machine = machine;
+        s->run_machine = s->opts.machine;
         s->run_game = cart && !ci.app;
-        s->run_missing = missing;
     }
     free(cart);
     return rc;
 }
 
-/* The machine options the settings name now: an Import BIOS or a Preferences
- * change takes effect at the next power cycle, which reads them here. */
+/* The machine option the settings name now: a Preferences change takes
+ * effect at the next power cycle, which reads it here. */
 static void reload_machine_opts(struct arcsession *s)
 {
     s->opts.machine = clamp_machine(arcsession_get_int(s, "machine", s->opts.machine));
-    s->opts.use_bios = arcsession_get_int(s, "use_bios", s->opts.use_bios);
-    s->opts.voice = arcsession_get_int(s, "voice", s->opts.voice);
 }
 
 /* A power cycle: the machine and the cartridge come up fresh; FujiNet stays
@@ -475,11 +426,9 @@ static int power_cycle(struct arcsession *s, const char *cart_path)
     if (rc != 0 && cart_path) {
         /* whatever was running is gone: put CONFIG back */
         char err[256];
-        int recoverable = s->refusal_recoverable;
         snprintf(err, sizeof err, "%s", s->last_error);
         host_up(s, NULL);
         snprintf(s->last_error, sizeof s->last_error, "%s", err);
-        s->refusal_recoverable = recoverable;
     }
     arcdebug_after_power_cycle(s);
     return rc;
@@ -514,8 +463,6 @@ static void adopt_opts(struct arcsession *s, const arcsession_start_opts *opts)
 int arcsession_start(arcsession *s, const arcsession_start_opts *opts)
 {
     arcsession_start_opts local;
-    char why[256];
-    int recoverable;
 
     if (s->running)
         return 0;
@@ -527,17 +474,11 @@ int arcsession_start(arcsession *s, const arcsession_start_opts *opts)
     }
     adopt_opts(s, opts);
 
-    /* a Videopac+ G7400 cannot run on the stand-in: say so before anything
-     * else starts */
-    if (!requirements(s, s->opts.machine, s->opts.use_bios, NULL, &recoverable,
-                      why, sizeof why)) {
-        session_set_error(s, "%s", why);
-        return -1;
-    }
-
     memset(s->pad_src, 0, sizeof s->pad_src);
     memset(s->key_src, 0, sizeof s->key_src);
     memset(s->sw_src, 0, sizeof s->sw_src);
+    memset(s->disc_x, 0, sizeof s->disc_x);
+    memset(s->disc_y, 0, sizeof s->disc_y);
     arc_host_release_all();
     arcdebug_trace_fujinet(s);
 
@@ -574,18 +515,12 @@ int arcsession_start(arcsession *s, const arcsession_start_opts *opts)
     }
 
     /* A remembered cartridge that no longer loads (moved, an image the
-     * console cannot take, a ROM since deleted) must not leave the app
-     * unbootable: fall back to CONFIG and say why. The setting is kept when an
-     * import would fix it, so the cartridge is back after one. */
+     * console cannot take) must not leave the app unbootable: fall back to
+     * CONFIG and say why. */
     if (host_up(s, s->opts.cart_path) != 0) {
         if (s->opts.cart_path) {
-            const int keep = s->refusal_recoverable;
             fprintf(stderr, "arc: %s: %s; booting CONFIG\n", s->cart_path, s->last_error);
-            if (keep) {
-                s->cart_path[0] = '\0';
-                s->opts.cart_path = NULL;
-            } else
-                set_cart(s, NULL);
+            set_cart(s, NULL);
             if (host_up(s, NULL) != 0) {
                 fujinet_stop(s);
                 return -1;
@@ -618,7 +553,6 @@ void arcsession_stop(arcsession *s)
     gamepad_stop(s);
     arcdebug_before_power_cycle(s);
     arc_host_stop();
-    free_host_roms(s);
     fujinet_stop(s);
     s->fujinet_external = 0;
     s->running = 0;
@@ -664,24 +598,13 @@ int arcsession_load_cart(arcsession *s, const char *path)
     char why[256];
     char abs[ARC_PATH_MAX];
     cart_info ci;
-    int recoverable;
 
     if (!s->running || !path || !*path)
         return -1;
     path = paths_resolve(path, abs, sizeof abs);
+    /* refuse before touching the running machine */
     if (!check_image(path, &ci, why, sizeof why)) {
         session_set_error(s, "%s", why);
-        s->refusal_recoverable = 0;
-        return -1;
-    }
-    /* A game is BIOS byte-code (the stand-in cannot run it) and a speaking
-     * one needs The Voice: refuse before touching the running machine. The
-     * power cycle reads the machine settings, so judge by them. */
-    if (!requirements(s, clamp_machine(arcsession_get_int(s, "machine", s->opts.machine)),
-                      arcsession_get_int(s, "use_bios", s->opts.use_bios), &ci, &recoverable,
-                      why, sizeof why)) {
-        session_set_error(s, "%s", why);
-        s->refusal_recoverable = recoverable;
         return -1;
     }
     if (power_cycle(s, path) != 0) {
@@ -716,21 +639,6 @@ int arcsession_reset_to_config(arcsession *s)
 int arcsession_eject(arcsession *s)
 {
     return arcsession_reset_to_config(s);
-}
-
-/* What the running configuration lacks: the stand-in met a game (the host
- * saw it), and what was not handed to the host at power-up. Both clear at the
- * next power cycle that has the ROMs. */
-unsigned arcsession_missing(arcsession *s)
-{
-    if (!s->running)
-        return 0;
-    return (arc_host_missing() & ARC_MISSING_BIOS) | s->run_missing;
-}
-
-int arcsession_needs_bios(arcsession *s)
-{
-    return (arcsession_missing(s) & ARC_MISSING_BIOS) != 0;
 }
 
 void arcsession_set_paused(arcsession *s, int paused)
@@ -805,9 +713,8 @@ void arcsession_set_volume(arcsession *s, int percent)
 
 /* ---- input ----------------------------------------------------------------- */
 
-/* The console's view of a stick: a real one is a set of switches, so
- * opposite directions cancel (MAME's inputs are 8-way for the same reason).
- * input_mtx held. */
+/* The console's view of a disc's digital side: opposite directions cancel
+ * (MAME's inputs are 8-way for the same reason). input_mtx held. */
 static unsigned stick_mask_locked(const struct arcsession *s, int port)
 {
     unsigned mask = 0;
@@ -824,8 +731,25 @@ static unsigned stick_mask_locked(const struct arcsession *s, int port)
 
 static void push_stick_locked(struct arcsession *s, int port)
 {
-    /* arc_action's order is the host's bit order: UP RIGHT DOWN LEFT BUTTON */
+    /* arc_action's order is the host's bit order: UP RIGHT DOWN LEFT FIRE */
     arc_host_stick_set(port, (uint8_t)stick_mask_locked(s, port));
+}
+
+/* The analog disc: the strongest deflection any pad on the port holds
+ * (a non-zero analog value overrides the digital bits in the core). */
+static void push_disc_locked(struct arcsession *s, int port)
+{
+    int bx = 0, by = 0, best = 0;
+
+    for (int o = 0; o < ARC_MAX_PADS; o++) {
+        int mag = abs(s->disc_x[o][port]) + abs(s->disc_y[o][port]);
+        if (mag > best) {
+            best = mag;
+            bx = s->disc_x[o][port];
+            by = s->disc_y[o][port];
+        }
+    }
+    arc_host_disc_set(port, bx, by);
 }
 
 static void push_matrix_locked(struct arcsession *s)
@@ -937,6 +861,26 @@ unsigned arcsession_buttons_held(arcsession *s, int port)
     return held;
 }
 
+void arcsession_disc_get(arcsession *s, int port, int *x, int *y)
+{
+    int bx = 0, by = 0, best = 0;
+
+    if (port >= 0 && port <= 1) {
+        pthread_mutex_lock(&s->input_mtx);
+        for (int o = 0; o < ARC_MAX_PADS; o++) {
+            int mag = abs(s->disc_x[o][port]) + abs(s->disc_y[o][port]);
+            if (mag > best) {
+                best = mag;
+                bx = s->disc_x[o][port];
+                by = s->disc_y[o][port];
+            }
+        }
+        pthread_mutex_unlock(&s->input_mtx);
+    }
+    if (x) *x = bx;
+    if (y) *y = by;
+}
+
 int arcsession_key_held(arcsession *s, int key)
 {
     int held;
@@ -995,6 +939,17 @@ void session_gamepad_press(struct arcsession *s, int owner, int target, int down
         || target >= ARC_TARGET_SYSACT(0))
         return;
     source_press(s, target, SRC_PAD(owner), down);
+}
+
+void session_gamepad_disc(struct arcsession *s, int owner, int port, int x, int y)
+{
+    if (!s->running || owner < 0 || owner >= ARC_MAX_PADS || port < 0 || port > 1)
+        return;
+    pthread_mutex_lock(&s->input_mtx);
+    s->disc_x[owner][port] = x;
+    s->disc_y[owner][port] = y;
+    push_disc_locked(s, port);
+    pthread_mutex_unlock(&s->input_mtx);
 }
 
 void session_gamepad_stick(struct arcsession *s, int owner, int port, int act, int down)
@@ -1088,7 +1043,7 @@ int arcsession_fujinet_external(const arcsession *s)
 
 const char *arcsession_boip_endpoint(const arcsession *s)
 {
-    return s->boip_endpoint[0] ? s->boip_endpoint : "127.0.0.1:11520";
+    return s->boip_endpoint[0] ? s->boip_endpoint : "127.0.0.1:" "11522";
 }
 
 int arcsession_cart_link_up(arcsession *s)
@@ -1140,8 +1095,7 @@ int arcsession_cart_type_name(arcsession *s, char *dst, int dstsz)
 {
     arc_cart_status_t st;
     arc_cart_t *c;
-    arc_machine_t *m;
-    int type = ARC_CART_NONE, voice = 0;
+    int type = ARC_CART_NONE;
     uint32_t size = 0;
     char what[96];
 
@@ -1157,15 +1111,7 @@ int arcsession_cart_type_name(arcsession *s, char *dst, int dstsz)
     if (c) {
         type = c->type;
         size = c->rom_size;
-        if (c->type == ARC_CART_VOICE && c->sub) {
-            type = c->sub->type;
-            size = c->sub->rom_size;
-            voice = 1;
-        }
     }
-    m = arc_host_machine();
-    if (m && m->have_voice)
-        voice = 1;
     arc_host_unlock();
 
     if (s->run_game || (type != ARC_CART_FUJINET && type != ARC_CART_NONE)) {
@@ -1181,7 +1127,7 @@ int arcsession_cart_type_name(arcsession *s, char *dst, int dstsz)
     } else {
         snprintf(what, sizeof what, "FujiNet cartridge, game");
     }
-    return snprintf(dst, (size_t)dstsz, "%s%s", voice ? "The Voice + " : "", what);
+    return snprintf(dst, (size_t)dstsz, "%s", what);
 }
 
 /* ---- paths ----------------------------------------------------------------- */

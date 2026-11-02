@@ -2,10 +2,9 @@ name: Linux
 
 # Builds both frontends (GNOME + KDE) and runs the full test suite.
 #
-# -DWITH_ARC_ROMS=OFF, as every published build: nothing copyrighted is
-# embedded (only games need the Arcadia 2001's BIOS; see COMPLIANCE.md). The
-# tests build the images they need themselves, and the ones that need a
-# real BIOS or the cartridge bring-up's test ROMs skip.
+# Nothing copyrighted is embedded (the Arcadia 2001 has no BIOS; games are the
+# user's own files; see COMPLIANCE.md). The tests build the images they need
+# themselves, and the ones that need a commercial cartridge skip.
 #
 # WITH_FUJINET=OFF here to keep the test job fast and self-contained: the
 # emulator, both frontends and every test build and run without the FujiNet
@@ -59,8 +58,7 @@ jobs:
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_PREFIX_PATH=/tmp/sdl3-install \
-            -DWITH_FUJINET=OFF \
-            -DWITH_ARC_ROMS=OFF
+            -DWITH_FUJINET=OFF
 
       - name: Build
         run: cmake --build build

@@ -182,18 +182,6 @@ int paths_init(struct arcsession *s, const char *config_dir,
         session_set_error(s, "cannot create cartridge dir %s", s->carts_dir);
         return -1;
     }
-    /* The imported ROMs (roms.c); ARC_ROM_DIR overrides it (the tests). */
-    {
-        const char *env = getenv("ARC_ROM_DIR");
-        if (env && *env)
-            snprintf(s->roms_dir, sizeof s->roms_dir, "%s", env);
-        else
-            snprintf(s->roms_dir, sizeof s->roms_dir, "%s/roms", s->data_dir);
-    }
-    if (mkdir_p(s->roms_dir) != 0) {
-        session_set_error(s, "cannot create ROM dir %s", s->roms_dir);
-        return -1;
-    }
     return 0;
 }
 

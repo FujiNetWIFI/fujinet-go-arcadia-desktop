@@ -10,11 +10,10 @@
 # core stages, and the RS232 PC target built as libfujinet) is provisioned from
 # the pinned commit below, exactly as cmake/Dependencies.cmake pins it, so a
 # flatpak build never depends on a working checkout's state. The emulator core
-# (MAME's Magnavox Arcadia 2001, CDP1802 and CDP1861, transposed to C) is in the tree.
+# (MAME's Emerson Arcadia 2001, Signetics 2650 and 2637 UVI, transposed to C) is in the tree.
 #
-# -DWITH_ARC_ROMS=OFF, as every published build: nothing copyrighted is
-# embedded. CONFIG and FujiNet apps boot on the app's own stand-in; a user's
-# own BIOS, which games need, is imported at run time (see COMPLIANCE.md).
+# Nothing copyrighted is embedded: the Arcadia 2001 has no BIOS and games are
+# the user's own files (see COMPLIANCE.md).
 #
 # Build + install + run:
 #   flatpak-builder --user --install --force-clean build-flatpak \
@@ -85,7 +84,7 @@ modules:
         PYTHONPATH: /app/fujinet-pyshims
     config-opts:
       - -DFRONTEND=kde
-      - -DWITH_ARC_ROMS=OFF
+      -
     sources:
       - type: dir
         path: ../..
@@ -111,20 +110,15 @@ modules:
           # The cartridge firmware's sources as staged at configure time
           # (cmake/StageFujiProto.cmake): regenerated from the pinned source.
           - core/arc/fuji-generated
-          # (tools/roms is NOT skipped: embed-roms.py there is source. A
-          # developer's own BIOS images beside it are copied in but never
-          # embedded -- WITH_ARC_ROMS is OFF above, which the build's
-          # no_embedded_roms checks hold it to.)
-      # Pinned exactly as cmake/Dependencies.cmake (FUJINET_COMMIT, PR
-      # #2237's head + the BoIP idle-wait fix, PR #2247, on the tschak909 fork;
-      # temporary). A git source can't take a commit on no branch, so this
+      # Pinned exactly as cmake/Dependencies.cmake (FUJINET_COMMIT, PR #2259's
+      # head -- the real CONFIG baked in -- on the tschak909 fork; temporary). A git source can't take a commit on no branch, so this
       # is GitHub's archive of it (the FujiNet version then reads 0000000);
       # back to `type: git` on master once #2237 and #2247 merge.
       # arc_provide_dependency() skips its own fetch once it finds
       # build.sh (the SENTINEL) already here.
       - type: archive
-        url: https://github.com/tschak909/fujinet-firmware/archive/77d7dd3f3066b8d046dc18306e7e8a8f32b92392.tar.gz
-        sha256: 8893d40b2f5639e3b9dbdf22cdab1bb4b046b9f45f077bd38e1bf26709046ffd
+        url: https://github.com/tschak909/fujinet-firmware/archive/c38e8b446b28024811d494de81353734fb84777b.tar.gz
+        sha256: c01c0e87dea272b514c9ba79177fcd32378c8f61200b78dfb27ec62e408cf192
         dest: third_party/fujinet-firmware
       # Same reasoning: the sandboxed build step has no network access, but
       # tools/fujinet/build-fujinet-desktop.sh needs mbedTLS 3.x and
