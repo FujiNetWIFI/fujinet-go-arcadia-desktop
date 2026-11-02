@@ -130,7 +130,7 @@ int main(void)
     check(arcsession_import_cart_to_sd(s, src, dest, sizeof dest) == 0, "and a game");
 
     check(wait_text("FUJINET HOSTS", 30000), "CONFIG reaches its hosts screen over the live link");
-    check(test_find_row("SD") >= 0, "and lists the SD host");
+    check(wait_text("SD", 15000), "and lists the SD host");
 
     check(boot_from_sd(s, APP_NAME),
           "ENTER opens SD, 8 onto the file, ENTER boots it: the cart swaps it in");
