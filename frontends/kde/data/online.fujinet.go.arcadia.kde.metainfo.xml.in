@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>online.fujinet.go.arcadia.kde</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>FujiNet Go Arcadia 2001 (KDE)</name>
+  <summary>Magnavox Arcadia 2001 and Philips Videopac with a built-in FujiNet</summary>
+  <description>
+    <p>
+      A self-contained Magnavox Arcadia 2001 with a FujiNet built in: browse a
+      network host from the console with the CONFIG client, boot cartridges
+      over the network, and let a FujiNet app keep talking to the network
+      once it is running, all in one application.
+    </p>
+    <p>
+      The machine is MAME's Arcadia 2001 transposed to C: the Intel 8048, the
+      8244 and 8245 video and sound chips, and The Voice's speech chip. It
+      is the Magnavox Arcadia 2001 (NTSC), the Philips Videopac G7000 (PAL) or
+      the Videopac+ G7400 with its text chip, with the FujiNet cartridge
+      always in the slot. CONFIG is the cartridge's resident image, a game
+      booted over the network runs from the cartridge, and a local
+      cartridge file can be opened in place of CONFIG.
+    </p>
+    <p>
+      The Arcadia 2001's membrane keyboard and both joysticks are on screen,
+      drawn as they are on the console and remappable, gamepads are picked up
+      as they are plugged in, and a native debugger is a key press away: a
+      command prompt, the 8048's registers and RAM, a disassembly with
+      breakpoints, every object the 8244 draws with its position and the
+      picture as the chip renders it, the text chip, the keyboard matrix and
+      sticks, the cartridge, and the FujiNet traffic.
+    </p>
+    <p>
+      Nothing copyrighted is included. CONFIG and the FujiNet apps boot on
+      the application's own stand-in for the console BIOS; games need the
+      console's BIOS, and every machine needs its video chip's character set
+      to show text. Import your own copies from the application, as ROM
+      files, a zip or a folder.
+    </p>
+  </description>
+  <launchable type="desktop-id">online.fujinet.go.arcadia.kde.desktop</launchable>
+  <icon type="stock">online.fujinet.go.arcadia.kde</icon>
+  <!-- Software centres classify from these, not from the .desktop
+       Categories= line; without them the app lands in no section at all. -->
+  <categories>
+    <category>Game</category>
+    <category>Emulator</category>
+  </categories>
+  <url type="homepage">https://fujinet.online/</url>
+  <url type="bugtracker">https://github.com/FujiNetWIFI/fujinet-go-arcadia-desktop/issues</url>
+  <url type="vcs-browser">https://github.com/FujiNetWIFI/fujinet-go-arcadia-desktop</url>
+  <developer id="online.fujinet">
+    <name>FujiNet</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <screenshots>
+    <screenshot type="default">
+      <caption>The FujiNet CONFIG client running on the Arcadia 2001</caption>
+      <image>https://raw.githubusercontent.com/FujiNetWIFI/fujinet-go-arcadia-desktop/v0.1.0/data/screenshots/kde/1_running_config.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The debugger's Video tab: every object the 8244 draws, with its position</caption>
+      <image>https://raw.githubusercontent.com/FujiNetWIFI/fujinet-go-arcadia-desktop/v0.1.0/data/screenshots/kde/2_debugger.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The Controllers window: the membrane keyboard and both joysticks</caption>
+      <image>https://raw.githubusercontent.com/FujiNetWIFI/fujinet-go-arcadia-desktop/v0.1.0/data/screenshots/kde/3_controllers.png</image>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <!-- The CURRENT release templates its version from @PROJECT_VERSION@, so
+         it cannot disagree with the tree; past releases are literal. The
+         release job checks that this first entry is still a template. -->
+    <release version="@PROJECT_VERSION@" date="2026-11-02">
+      <description>
+        <p>
+          The CONFIG client's start-up splash now shows the FujiNet logo. 0.1.0 embedded an earlier CONFIG whose logo was wrong.
+        </p>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-11-01">
+      <description>
+        <p>
+          First release: the Magnavox Arcadia 2001, Philips Videopac G7000 and Videopac+ G7400 transposed from MAME with the FujiNet Arcadia 2001 cartridge and an in-process FujiNet. CONFIG and FujiNet apps boot without a BIOS; games run on a BIOS you import. The membrane keyboard and both joysticks are on screen, and the debugger shows everything the 8244 knows. Needs Qt 6.7 or newer.
+        </p>
+      </description>
+    </release>
+  </releases>
+</component>
