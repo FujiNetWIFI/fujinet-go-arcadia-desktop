@@ -110,15 +110,14 @@ modules:
           # The cartridge firmware's sources as staged at configure time
           # (cmake/StageFujiProto.cmake): regenerated from the pinned source.
           - core/arc/fuji-generated
-      # Pinned exactly as cmake/Dependencies.cmake (FUJINET_COMMIT, PR #2259's
-      # head -- the real CONFIG baked in -- on the tschak909 fork; temporary). A git source can't take a commit on no branch, so this
-      # is GitHub's archive of it (the FujiNet version then reads 0000000);
-      # back to `type: git` on master once #2259 merges.
+      # Pinned exactly as cmake/Dependencies.cmake (FUJINET_COMMIT, master as of
+      # PR #2259's merge, which baked the real CONFIG in). GitHub's archive of
+      # it, as the siblings do (the FujiNet version then reads 0000000).
       # arc_provide_dependency() skips its own fetch once it finds
       # build.sh (the SENTINEL) already here.
       - type: archive
-        url: https://github.com/tschak909/fujinet-firmware/archive/c38e8b446b28024811d494de81353734fb84777b.tar.gz
-        sha256: c01c0e87dea272b514c9ba79177fcd32378c8f61200b78dfb27ec62e408cf192
+        url: https://github.com/FujiNetWIFI/fujinet-firmware/archive/193d18f53b3affd9cd52a6e90525fb2a4be38bc1.tar.gz
+        sha256: 84610a9ed179d2c1e64bc259aa6bdd722da854ceb3a4bef85351a5c6e187f33a
         dest: third_party/fujinet-firmware
       # Same reasoning: the sandboxed build step has no network access, but
       # tools/fujinet/build-fujinet-desktop.sh needs mbedTLS 3.x and

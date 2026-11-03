@@ -5,9 +5,9 @@ MAME; the session, debugger and frontends are other work packages (see below).
 
 DONE (core)
   [x] M0  skeleton cloned from the Odyssey 2 desktop (v0.1.1); firmware pin =
-          PR #2259's head c38e8b446 (the real CONFIG baked into
-          pico/arcadia/firmware/baked/fujiconfigrom.h), fork branch
-          tschak909/fujinet-firmware arcadia-bake-config; runtime build script
+          master at PR #2259's merge 193d18f53 (the real CONFIG baked into
+          pico/arcadia/firmware/baked/fujiconfigrom.h; it was the fork branch
+          arcadia-bake-config until the PR merged); runtime build script
           (tools/fujinet/: the patch anchors audited against the pin -- all
           found; BoIP 11522, web UI 11523)
   [x] M1  Signetics 2650 (s2650.c) + disassembler (dasm2650.c): traces

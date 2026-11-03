@@ -17,7 +17,7 @@
 #                     cmake/StageFujiProto.cmake, so the emulated cartridge
 #                     and the hardware cannot disagree. Everything else is
 #                     the RS232 PC runtime, built in-process as libfujinet by
-#                     cmake/FujiNetRuntime.cmake. Pinned to PR #2259 (see
+#                     cmake/FujiNetRuntime.cmake. Pinned to master at #2259 (see
 #                     FUJINET_COMMIT below); the pin already maps .bin/.rom to
 #                     a ROM image to push.
 #
@@ -32,16 +32,13 @@
 
 find_package(Git QUIET)
 
-# fujinet-firmware PR #2259's head (c38e8b446, branch arcadia-bake-config on the
-# tschak909 fork): the Emerson Arcadia 2001 cartridge (pico/arcadia) with
-# protocol 2 (APPBANK images up to 70K, #2180) and the real CONFIG baked into
-# pico/arcadia/firmware/baked/fujiconfigrom.h. TEMPORARY: it is on no
-# FujiNetWIFI branch, so the URL is the fork and the flatpak manifests take it
-# as an archive. The fork branch must not be deleted while this pin points at
-# it; back to master once #2259 merges. Recorded in three places -- here and in
-# both flatpak manifests (build-aux/flatpak/*.yml).
-set(FUJINET_COMMIT "c38e8b446b28024811d494de81353734fb84777b")
-set(FUJINET_URL "https://github.com/tschak909/fujinet-firmware")
+# fujinet-firmware master at 193d18f53 (PR #2259's merge): the Emerson Arcadia 2001
+# cartridge (pico/arcadia) with protocol 2 (APPBANK images up to 70K, #2180) and
+# the real CONFIG baked into pico/arcadia/firmware/baked/fujiconfigrom.h.
+# Recorded in three places -- here and in both flatpak manifests
+# (build-aux/flatpak/*.yml).
+set(FUJINET_COMMIT "193d18f53b3affd9cd52a6e90525fb2a4be38bc1")
+set(FUJINET_URL "https://github.com/FujiNetWIFI/fujinet-firmware")
 
 # arc_provide_dependency(NAME <n> PATH <p> SENTINEL <file> OVERRIDE <VAR>
 #                           RESULT <out>
