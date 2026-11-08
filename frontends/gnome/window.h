@@ -47,3 +47,7 @@ void arc_window_release_keys(ArcWindow *self);
  * it on a dark theme, the darker red on a light one), and ".arc-pill" makes a
  * label a small rounded indicator. Installed once by the main window. */
 void arc_install_accent_css(void);
+
+/* The Help context the main window shows now: "main", or "prefs/<page>"
+ * while Preferences is open. */
+const char *arc_window_help_context(ArcWindow *self);

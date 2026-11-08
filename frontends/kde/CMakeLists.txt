@@ -32,6 +32,7 @@ add_executable(fujinet-go-arcadia-kde
   KeyForward.cpp
   SettingsDialog.cpp
   FujiNetWindows.cpp
+  help/HelpWindow.cpp
   controllers/ControllersWindow.cpp
   debugger/DebuggerWindow.cpp
   debugger/VideoTab.cpp

@@ -53,6 +53,7 @@
 #include "controllers_window.h"
 
 #include "../window.h"
+#include "../help/help_window.h"
 
 #include <math.h>
 #include <pango/pangocairo.h>
@@ -1310,6 +1311,8 @@ static void build_window(GtkWindow *parent)
     header = adw_header_bar_new();
     g_title = ADW_WINDOW_TITLE(adw_window_title_new("Controllers", ""));
     adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), GTK_WIDGET(g_title));
+    adw_header_bar_pack_end(ADW_HEADER_BAR(header), arc_help_button("controllers"));
+    arc_help_set_context(GTK_WINDOW(g_window), "controllers");
     toolbar = adw_toolbar_view_new();
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), header);
     adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), root);

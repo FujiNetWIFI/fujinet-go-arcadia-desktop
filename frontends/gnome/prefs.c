@@ -19,6 +19,7 @@
 
 #include "fujilog.h"
 #include "window.h"
+#include "help/help_window.h"
 
 #include <string.h>
 
@@ -314,6 +315,13 @@ static AdwPreferencesGroup *new_group(AdwPreferencesPage *page, const char *titl
     adw_preferences_group_set_title(g, title);
     if (description)
         adw_preferences_group_set_description(g, description);
+    /* the first group on a page carries the page's Help button */
+    if (!g_object_get_data(G_OBJECT(page), "arc-help-done")) {
+        char ctx[64];
+        g_snprintf(ctx, sizeof ctx, "prefs/%s", adw_preferences_page_get_name(page));
+        adw_preferences_group_set_header_suffix(g, arc_help_button(ctx));
+        g_object_set_data(G_OBJECT(page), "arc-help-done", GINT_TO_POINTER(1));
+    }
     adw_preferences_page_add(page, g);
     return g;
 }
@@ -323,10 +331,10 @@ void arc_prefs_show(ArcWindow *parent, arcsession *session,
 {
     PrefsState *state = g_new0(PrefsState, 1);
     AdwPreferencesDialog *dialog = ADW_PREFERENCES_DIALOG(adw_preferences_dialog_new());
-    AdwPreferencesPage *machine = new_page("Machine", "machine", "applications-games-symbolic");
-    AdwPreferencesPage *video = new_page("Display & Audio", "display", "video-display-symbolic");
-    AdwPreferencesPage *input = new_page("Input", "input", "input-gaming-symbolic");
-    AdwPreferencesPage *net = new_page("FujiNet", "fujinet", "network-wireless-symbolic");
+    AdwPreferencesPage *machine = new_page("Machine", "Machine", "applications-games-symbolic");
+    AdwPreferencesPage *video = new_page("Display & Audio", "Display", "video-display-symbolic");
+    AdwPreferencesPage *input = new_page("Input", "Input", "input-gaming-symbolic");
+    AdwPreferencesPage *net = new_page("FujiNet", "FujiNet", "network-wireless-symbolic");
     AdwPreferencesGroup *group, *external_group;
     GtkWidget *external, *addr, *row;
 

@@ -20,7 +20,7 @@
 - (void)settingsClosed:(BOOL)needsRestart;
 @end
 
-@interface ArcSettingsWindow : NSObject <NSWindowDelegate>
+@interface ArcSettingsWindow : NSObject <NSWindowDelegate, NSTabViewDelegate>
 - (instancetype)initWithSession:(arcsession *)session delegate:(id<ArcSettingsDelegate>)delegate;
 - (void)show;
 /* The machine note and the Web UI line, from the session (after a restart). */

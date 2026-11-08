@@ -34,6 +34,7 @@
 #include "SoftDisplayWidget.h"
 #include "controllers/ControllersWindow.h"
 #include "debugger/DebuggerWindow.h"
+#include "help/HelpWindow.h"
 
 namespace {
 
@@ -46,6 +47,16 @@ bool envOn(const char *name)
 {
     const QByteArray v = qgetenv(name);
     return !v.isEmpty() && v[0] != '0';
+}
+
+/* An action whose key works from every window of the app (the Controllers
+ * window and the Debugger have the keyboard too). */
+QAction *appShortcut(QWidget *owner, QAction *a, const QKeySequence &key)
+{
+    a->setShortcut(key);
+    a->setShortcutContext(Qt::ApplicationShortcut);
+    owner->addAction(a);
+    return a;
 }
 
 /* A status line that elides instead of widening the window. */
@@ -69,6 +80,7 @@ MainWindow::MainWindow(arcsession *session, QWidget *parent)
     : QMainWindow(parent), m_session(session)
 {
     setWindowTitle(QStringLiteral("FujiNet Go Arcadia 2001"));
+    setProperty("arcHelpContext", QStringLiteral("main"));
     /* 4:3 at 972 x 729, and the chrome */
     resize(972, 729 + 60);
     setAcceptDrops(true);
@@ -240,6 +252,12 @@ void MainWindow::buildMenus()
     });
 
     QMenu *help = menuBar()->addMenu(QStringLiteral("&Help"));
+    connect(appShortcut(this, help->addAction(QStringLiteral("FujiNet Go Arcadia 2001 &Help")),
+                        QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_H)),
+            &QAction::triggered, this, [this] {
+        arcHelpFor(QApplication::activeWindow() ? QApplication::activeWindow() : this);
+    });
+    help->addSeparator();
     help->addAction(QStringLiteral("&About FujiNet Go Arcadia 2001"), this, &MainWindow::showAbout);
     syncMenus();
 }

@@ -42,6 +42,7 @@
       positions and bitmaps, the character screen with its colour bits, the
       registers, collisions and the glyph table), the inputs and the beeper,
       and the FujiNet cartridge with every FujiBus packet on its link.
+      Built-in, searchable Help covers all of it.
     </p>
     <p>
       Nothing copyrighted is included, and the console needs no BIOS: it has

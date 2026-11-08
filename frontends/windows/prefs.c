@@ -21,6 +21,7 @@
 #include <commctrl.h>
 #include <shellapi.h>
 
+#include "help/help_window.h"
 #include "resource.h"
 
 #ifndef EM_SETCUEBANNER
@@ -42,7 +43,12 @@ enum { PG_MACHINE, PG_DISPLAY, PG_AUDIO, PG_INPUT, PG_FUJINET, PG_COUNT };
 enum {
     IDC_TABS = 100, IDC_MACHINE,
     IDC_ASPECT, IDC_SMOOTH, IDC_AUDIO, IDC_VOLUME, IDC_GAMEPAD, IDC_ANALOG, IDC_PAD_LIST,
-    IDC_PAD_PORT, IDC_FUJINET, IDC_EXTERNAL, IDC_EXT_ADDR, IDC_WEBUI, IDC_CLOSE
+    IDC_PAD_PORT, IDC_FUJINET, IDC_EXTERNAL, IDC_EXT_ADDR, IDC_WEBUI, IDC_PREFS_HELP, IDC_CLOSE
+};
+
+/* The Help contexts, by page. */
+static const char *const k_contexts[PG_COUNT] = {
+    "prefs/Machine", "prefs/Display", "prefs/Display", "prefs/Input", "prefs/FujiNet"
 };
 
 #define IDT_PADS 1
@@ -54,7 +60,7 @@ typedef struct {
     int bold;               /* a heading */
 } item;
 
-static HWND g_win, g_tabs, g_close;
+static HWND g_win, g_tabs, g_close, g_help;
 static HWND g_machine_note, g_pad_list, g_pad_port, g_ext_addr;
 static HWND g_machine_combo;
 static item g_items[MAX_ITEMS];
@@ -296,6 +302,8 @@ static void show_page(int page)
     for (i = 0; i < g_nitems; i++)
         if (g_items[i].page >= 0)
             ShowWindow(g_items[i].h, g_items[i].page == page ? SW_SHOW : SW_HIDE);
+    /* Help, F1 and Ctrl+Shift+H open the page's own */
+    arc_help_set_context(g_win, k_contexts[page], 1);
 }
 
 /* Places everything at the current DPI and sizes the window to its
@@ -312,6 +320,7 @@ static void layout(void)
         /* a drop-down's height is its list: keep the closed box one line */
         MoveWindow(it->h, S(it->x), top + S(it->y), S(it->w), h, TRUE);
     }
+    MoveWindow(g_help, S(M), top + S(PAGE_H) + S(6), S(100), S(28), TRUE);
     MoveWindow(g_close, S(CW) - S(M) - S(100), top + S(PAGE_H) + S(6), S(100), S(28), TRUE);
     SetRect(&want, 0, 0, S(CW), top + S(PAGE_H) + S(6) + S(28) + S(M));
     {
@@ -454,6 +463,7 @@ static LRESULT CALLBACK prefs_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_COMMAND:
+        if (LOWORD(wp) == IDC_PREFS_HELP) { arc_help_for(g_win); return 0; }
         if (LOWORD(wp) == IDC_CLOSE || LOWORD(wp) == IDCANCEL) {
             PostMessageA(hwnd, WM_CLOSE, 0, 0);
             return 0;
@@ -487,7 +497,7 @@ static LRESULT CALLBACK prefs_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         const int dirty = g_dirty;
         KillTimer(hwnd, IDT_PADS);
         g_win = NULL;
-        g_tabs = g_close = g_pad_list = g_pad_port = g_ext_addr = g_machine_combo = g_machine_note = NULL;
+        g_tabs = g_close = g_help = g_pad_list = g_pad_port = g_ext_addr = g_machine_combo = g_machine_note = NULL;
         g_nitems = 0;
         g_dirty = 0;
         if (g_font) DeleteObject(g_font);
@@ -552,6 +562,8 @@ void arc_prefs_show(HWND parent, arcsession *session, const arc_prefs_hooks *hoo
     build_audio();
     build_input();
     build_fujinet();
+    g_help = CreateWindowExW(0, L"BUTTON", L"Help", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                             0, 0, 10, 10, g_win, (HMENU)(INT_PTR)IDC_PREFS_HELP, inst, NULL);
     g_close = CreateWindowExW(0, L"BUTTON", L"Close", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
                               0, 0, 10, 10, g_win, (HMENU)(INT_PTR)IDC_CLOSE, inst, NULL);
     /* the tab strip first in creation order, last in z-order: with
@@ -583,5 +595,9 @@ void arc_prefs_gamepads_changed(void)
 int arc_prefs_pretranslate(MSG *msg)
 {
     if (!g_win || !msg->hwnd || (msg->hwnd != g_win && !IsChild(g_win, msg->hwnd))) return 0;
+    /* F1 and the Ctrl shortcuts (Ctrl+Shift+H, Help) are the app's, not a dialog's */
+    if ((msg->message == WM_KEYDOWN || msg->message == WM_SYSKEYDOWN) &&
+        (msg->wParam == VK_F1 || GetKeyState(VK_CONTROL) < 0))
+        return 0;
     return IsDialogMessageW(g_win, msg) ? 1 : 0;
 }

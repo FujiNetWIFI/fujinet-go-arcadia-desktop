@@ -67,6 +67,7 @@
 #include "../FujiNetWindows.h"
 #include "../KeyForward.h"
 #include "../debugger/DebuggerWindow.h"
+#include "../help/HelpWindow.h"
 
 namespace {
 
@@ -718,6 +719,7 @@ ControllersWindow::ControllersWindow(arcsession *session, QWidget *parent)
 {
     setObjectName(QStringLiteral("controllers"));
     setWindowTitle(QStringLiteral("Controllers"));
+    setProperty("arcHelpContext", QStringLiteral("controllers"));
     setFocusPolicy(Qt::StrongFocus);
 
     auto *root = new QVBoxLayout(this);
@@ -759,6 +761,7 @@ ControllersWindow::ControllersWindow(arcsession *session, QWidget *parent)
     maprow->addWidget(m_mapButton);
     maprow->addWidget(defaults);
     maprow->addWidget(m_keyNames);
+    maprow->addWidget(arcHelpButton(QStringLiteral("controllers")));
     maprow->addStretch(1);
     root->addLayout(maprow);
     m_hint = new ElidedLabel(true, 2);

@@ -15,11 +15,18 @@
  */
 
 #import "SettingsWindow.h"
+#import "help/HelpWindow.h"
 
 #include <string.h>
 
 #define WINDOW_W 640.0
 #define WINDOW_H 540.0
+#define NUM_PAGES 5
+
+/* The Help topic of each page, in tab order (Display and Audio are one topic). */
+static NSString *const kPageContexts[NUM_PAGES] = {
+    @"prefs/Machine", @"prefs/Display", @"prefs/Display", @"prefs/Input", @"prefs/FujiNet"
+};
 
 static NSString *nsstr(const char *s)
 {
@@ -90,8 +97,10 @@ static NSString *nsstr(const char *s)
 }
 
 /* A page: a two-column grid (labels trailing, controls leading) at the top
- * left of a plain view, followed by any extra views stacked under it. */
+ * left of a plain view, followed by any extra views stacked under it, and the
+ * page's Help button at the bottom left. */
 - (NSView *)pageWithRows:(NSArray<NSArray<NSView *> *> *)rows extras:(NSArray<NSView *> *)extras
+                    help:(NSString *)context
 {
     NSGridView *grid = [NSGridView gridViewWithViews:rows];
     grid.rowSpacing = 10;
@@ -111,6 +120,12 @@ static NSString *nsstr(const char *s)
     [holder addSubview:stack];
     [stack.leadingAnchor constraintEqualToAnchor:holder.leadingAnchor constant:20].active = YES;
     [stack.topAnchor constraintEqualToAnchor:holder.topAnchor constant:20].active = YES;
+
+    NSButton *help = ArcHelpButton(context);
+    help.translatesAutoresizingMaskIntoConstraints = NO;
+    [holder addSubview:help];
+    [help.leadingAnchor constraintEqualToAnchor:holder.leadingAnchor constant:20].active = YES;
+    [help.bottomAnchor constraintEqualToAnchor:holder.bottomAnchor constant:-16].active = YES;
     return holder;
 }
 
@@ -157,7 +172,7 @@ static NSString *nsstr(const char *s)
         @[ [self label:@"Console"], _machinePopup ],
         @[ [self label:@""], _machineNote ],
     ];
-    return [self pageWithRows:rows extras:@[]];
+    return [self pageWithRows:rows extras:@[] help:kPageContexts[0]];
 }
 
 /* ---- display, audio, input, FujiNet --------------------------------------------------------- */
@@ -180,7 +195,7 @@ static NSString *nsstr(const char *s)
         @[ [self label:@"Picture"], _aspectPopup ],
         @[ [self label:@""], _smoothBox ],
     ];
-    return [self pageWithRows:rows extras:@[]];
+    return [self pageWithRows:rows extras:@[] help:kPageContexts[1]];
 }
 
 - (void)syncDisplay
@@ -204,7 +219,7 @@ static NSString *nsstr(const char *s)
         @[ [self label:@""], [self checkBoxForKey:"enable_audio" title:@"Audio" fallback:1] ],
         @[ [self label:@"Volume"], volume ],
     ];
-    return [self pageWithRows:rows extras:@[]];
+    return [self pageWithRows:rows extras:@[] help:kPageContexts[2]];
 }
 
 - (void)refreshPadList
@@ -266,7 +281,7 @@ static NSString *nsstr(const char *s)
         @[ [self label:@"Gamepads"], padRow ],
         @[ [self label:@""], [self note:@"Keys and gamepad buttons are re-mapped in the Controllers window (Map)."] ],
     ];
-    return [self pageWithRows:rows extras:@[]];
+    return [self pageWithRows:rows extras:@[] help:kPageContexts[3]];
 }
 
 /* The external-FujiNet address field: valid text (or none, meaning
@@ -326,7 +341,7 @@ static NSString *nsstr(const char *s)
         @[ [self label:@"Address:port"], _externalField ],
         @[ [self label:@"Web UI"], webUiRow ],
     ];
-    return [self pageWithRows:rows extras:@[]];
+    return [self pageWithRows:rows extras:@[] help:kPageContexts[4]];
 }
 
 /* A checkbox. The picture and the analog stick apply at once; every other
@@ -392,6 +407,13 @@ static NSString *nsstr(const char *s)
     [self updatePadTimer];
 }
 
+/* The Help button and Command+? open the page being shown. */
+- (void)tabView:(NSTabView *)tabView didSelectTabViewItem:(NSTabViewItem *)item
+{
+    const NSInteger i = [tabView indexOfTabViewItem:item];
+    if (i >= 0 && i < NUM_PAGES) ArcSetHelpContext(_window, kPageContexts[i]);
+}
+
 - (void)show
 {
     if (!_window) {
@@ -405,6 +427,7 @@ static NSString *nsstr(const char *s)
             item.view = page[1];
             [tabs addTabViewItem:item];
         }
+        tabs.delegate = self;
         _window = [[NSWindow alloc]
             initWithContentRect:NSMakeRect(0, 0, WINDOW_W, WINDOW_H)
                       styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
@@ -414,6 +437,7 @@ static NSString *nsstr(const char *s)
         _window.releasedWhenClosed = NO;
         _window.delegate = self;
         _window.contentView = tabs;
+        ArcSetHelpContext(_window, kPageContexts[0]);
         [_window center];
         for (NSString *name in @[NSWindowDidChangeOcclusionStateNotification,
                                  NSWindowDidMiniaturizeNotification, NSWindowDidDeminiaturizeNotification])

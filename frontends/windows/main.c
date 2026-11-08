@@ -36,6 +36,7 @@
 #include "debugger/dbg_window.h"
 #include "display.h"
 #include "fujilog.h"
+#include "help/help_window.h"
 #include "import.h"
 #include "key_forward.h"
 #include "prefs.h"
@@ -308,6 +309,8 @@ static void build_menu(HWND hwnd)
     AppendMenuA(fuji, MF_STRING, IDM_FUJINET_CONFIG, "&Web UI");
     AppendMenuA(fuji, MF_STRING, IDM_FUJINET_LOG, "Console &Log");
 
+    AppendMenuA(help, MF_STRING, IDM_HELP, APP_TITLE " &Help\tCtrl+Shift+H");
+    AppendMenuA(help, MF_SEPARATOR, 0, NULL);
     AppendMenuA(help, MF_STRING, IDM_ABOUT, "&About " APP_TITLE);
 
     AppendMenuA(bar, MF_POPUP, (UINT_PTR)machine, "&Machine");
@@ -550,6 +553,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case IDM_SETTINGS: show_prefs(); return 0;
         case IDM_FUJINET_LOG: show_log(); return 0;
         case IDM_FUJINET_CONFIG: open_web_ui(hwnd); return 0;
+        case IDM_HELP: arc_help_for(hwnd); return 0;
         case IDM_ABOUT: show_about(); return 0;
         case IDM_EXIT: PostMessage(hwnd, WM_CLOSE, 0, 0); return 0;
         default: break;
@@ -694,6 +698,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         int scaled[2] = { arc_scale(parts[0], arc_window_dpi(g_hwnd)), -1 };
         SendMessageA(g_statusbar, SB_SETPARTS, 2, (LPARAM)scaled);
     }
+    arc_help_set_context(g_hwnd, "main", 0);       /* F1 is the console's RESET here */
     g_display = arc_display_create(g_hwnd, g_session);
     arc_display_set_options(g_aspect, g_smooth);
     layout_children();
@@ -728,6 +733,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
          * regardless of which child control has the focus. */
         if (arc_debugger_pretranslate(&msg)) continue;
         if (arc_prefs_pretranslate(&msg)) continue;
+        if (arc_help_pretranslate(&msg)) continue;
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }

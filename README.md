@@ -11,7 +11,7 @@ Go desktop family (Linux GNOME and KDE, Windows, macOS).
 | **Machines** | Arcadia 2001 (NTSC, 60 Hz, 262 lines) and a PAL clone row (50 Hz, 312 lines, 4.433619/5 MHz; **not verified against MAME**, which runs every clone at NTSC). Two hand controllers: 12-key keypad, disc and side fire each, plus the console's START, OPTION, SELECT and RESET. |
 | **No BIOS, no ROMs to import** | The Arcadia 2001 has no BIOS and the character set is part of the UVI source, so nothing but your games is needed. CONFIG and every FujiNet app run as they are. |
 | **Cartridge** | The FujiNet Arcadia 2001 cartridge (`fujinet-firmware` `pico/arcadia`): the 8K program window, up to 70K of paged app image (APPBANK), 1K of cart RAM, a 60 Hz tick, the mailbox at `$2B00-$2FFF`, and CONFIG baked in. Its mailbox service (`fujimail`), connector decode (`arcmap`), APPBANK serving (`arcapp`) and wire codec (`fujibus`) are the cartridge firmware's own sources, staged verbatim. A game opened from disk gets its own mapper cartridge instead (standard 4K/8K, Golf), as a real console would have it. |
-| **Frontends** | GNOME (GTK4/libadwaita), KDE (Qt6 Widgets), macOS (AppKit), Windows (Win32/D3D11) — each with the display, a Controllers window, Preferences, a live FujiNet console log, and a debugger. |
+| **Frontends** | GNOME (GTK4/libadwaita), KDE (Qt6 Widgets), macOS (AppKit), Windows (Win32/D3D11) — each with the display, a Controllers window, Preferences, a live FujiNet console log, built-in Help and a debugger. |
 | **Packages** | Linux: Flatpak (GNOME and KDE runtimes), DEB, RPM, tar.gz. Windows: ZIP and an NSIS installer. macOS: signed/notarised zips (unsigned without secrets). |
 
 The icon is the family mark in the console's own colours, sampled from the
@@ -29,6 +29,14 @@ cartridge; any other image gets the mapper a real cartridge would have, and
 FujiNet is not reachable until the next power cycle. Nothing copyrighted is
 embedded in any build: see `COMPLIANCE.md`. The **Palladium Video-Computer-Game**
 (16 keys) is not emulated, as MAME marks it not working.
+
+## Help
+
+**Help ▸ FujiNet Go Arcadia 2001 Help** (Ctrl+Shift+H, ⌘? on a Mac) opens a
+searchable Help, and the Help buttons in Preferences, the Controllers window,
+the debugger and the console log open the topic for what they show. The text
+is [data/help/help.md](data/help/help.md), which GitHub shows as it is; the
+build embeds it and every frontend lays it out natively.
 
 ## Controllers window (F9)
 

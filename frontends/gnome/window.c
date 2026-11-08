@@ -24,6 +24,7 @@
 #include "debugger/dbg_window.h"
 #include "display.h"
 #include "fujilog.h"
+#include "help/help_window.h"
 #include "prefs.h"
 
 #include <string.h>
@@ -210,8 +211,16 @@ static gboolean on_key_pressed(GtkEventControllerKey *ctrl, guint keyval,
                                guint keycode, GdkModifierType state,
                                gpointer user_data)
 {
+    ArcWindow *self = user_data;
     (void)ctrl;
-    return arc_window_key(user_data, keyval, keycode, state, TRUE);
+    /* F1 is the console's RESET in the window itself, and Help while
+     * Preferences or a dialog is open */
+    if (keyval == GDK_KEY_F1 && ui_has_keyboard(self) &&
+        !(state & GDK_MODIFIER_MASK & ~GDK_LOCK_MASK)) {
+        arc_help_for(GTK_WINDOW(self));
+        return TRUE;
+    }
+    return arc_window_key(self, keyval, keycode, state, TRUE);
 }
 
 static gboolean on_key_released(GtkEventControllerKey *ctrl, guint keyval,
@@ -668,6 +677,33 @@ void arc_window_apply_smooth(ArcWindow *self, gboolean smooth)
         g_simple_action_set_state(G_SIMPLE_ACTION(a), g_variant_new_boolean(smooth));
 }
 
+const char *arc_window_help_context(ArcWindow *self)
+{
+    static char ctx[64];
+    AdwDialog *d = adw_application_window_get_visible_dialog(ADW_APPLICATION_WINDOW(self));
+
+    if (d && ADW_IS_PREFERENCES_DIALOG(d)) {
+        const char *page = adw_preferences_dialog_get_visible_page_name(ADW_PREFERENCES_DIALOG(d));
+        if (page) {
+            g_snprintf(ctx, sizeof ctx, "prefs/%s", page);
+            return ctx;
+        }
+    }
+    return "main";
+}
+
+/* app.help: every window's Ctrl+Shift+H, for what it shows. Not a cast of
+ * the active window: it can be the debugger, the controllers or the log. */
+static void action_help(GSimpleAction *a, GVariant *p, gpointer user_data)
+{
+    (void)a; (void)p;
+    arc_help_for(gtk_application_get_active_window(GTK_APPLICATION(user_data)));
+}
+
+static const GActionEntry app_actions[] = {
+    { "help", action_help, NULL, NULL, NULL, { 0 } },
+};
+
 static const GActionEntry win_actions[] = {
     { "open", action_open, NULL, NULL, NULL, { 0 } },
     { "eject", action_eject, NULL, NULL, NULL, { 0 } },
@@ -718,6 +754,7 @@ static GMenu *build_menu(ArcWindow *self)
     g_menu_append_section(menu, "FujiNet", G_MENU_MODEL(fuji));
 
     g_menu_append(app, "Pr_eferences", "win.prefs");
+    g_menu_append(app, "_Help", "app.help");
     g_menu_append(app, "_About FujiNet Go Arcadia 2001", "win.about");
     g_menu_append(app, "_Quit", "win.quit");
     g_menu_append_section(menu, NULL, G_MENU_MODEL(app));
@@ -772,11 +809,16 @@ GtkWidget *arc_window_new(AdwApplication *app, arcsession *session)
 
     g_action_map_add_action_entries(G_ACTION_MAP(self), win_actions,
                                     G_N_ELEMENTS(win_actions), self);
+    if (!g_action_map_lookup_action(G_ACTION_MAP(app), "help"))
+        g_action_map_add_action_entries(G_ACTION_MAP(app), app_actions,
+                                        G_N_ELEMENTS(app_actions), app);
     {
         static const char *const prefs_accels[] = { "<Control>comma", NULL };
         static const char *const open_accels[] = { "<Control>o", NULL };
         static const char *const reboot_accels[] = { "<Control>r", NULL };
         static const char *const quit_accels[] = { "<Control>q", NULL };
+        static const char *const help_accels[] = { "<Control><Shift>h", NULL };
+        gtk_application_set_accels_for_action(GTK_APPLICATION(app), "app.help", help_accels);
         gtk_application_set_accels_for_action(GTK_APPLICATION(app), "win.prefs", prefs_accels);
         gtk_application_set_accels_for_action(GTK_APPLICATION(app), "win.open", open_accels);
         gtk_application_set_accels_for_action(GTK_APPLICATION(app), "win.reset-config", reboot_accels);

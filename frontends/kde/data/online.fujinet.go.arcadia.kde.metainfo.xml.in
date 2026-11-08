@@ -29,6 +29,7 @@
       memory view and disassembly with breakpoints, every object the UVI
       draws with its position, the character screen and its registers, the
       picture as the chip renders it, the cartridge, and the FujiNet traffic.
+      Built-in, searchable Help covers all of it.
     </p>
     <p>
       The console has no BIOS, so there is nothing to import. Nothing

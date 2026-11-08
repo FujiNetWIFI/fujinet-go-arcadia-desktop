@@ -79,6 +79,12 @@ add_test(NAME keyboard COMMAND keyboard_test)
 arc_session_test(media_test media_test.c)
 add_test(NAME media COMMAND media_test)
 
+# The built-in Help covers what the app has: settings, machines, keys, ports,
+# the debugger's tabs and prompt commands, and every context a Help button
+# opens.
+arc_session_test(help_test help_test.c)
+add_test(NAME help COMMAND help_test)
+
 # The external-FujiNet address field's parser.
 arc_session_test(hostport_test hostport_test.c)
 add_test(NAME hostport COMMAND hostport_test)

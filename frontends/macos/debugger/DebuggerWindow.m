@@ -23,6 +23,7 @@
 #import "DebugViews.h"
 #import "VideoTab.h"
 #import "../KeyForward.h"
+#import "../help/HelpWindow.h"
 
 #include <float.h>
 #include <math.h>
@@ -51,6 +52,12 @@
 #define TAB_CART        6
 #define TAB_FUJINET     7
 #define NUM_TABS        8
+
+/* The Help topic of each tab. */
+static NSString *const kTabContexts[NUM_TABS] = {
+    @"debugger/prompt", @"debugger/cpu", @"debugger/disassembly", @"debugger/video",
+    @"debugger/io", @"debugger/breakpoints", @"debugger/cart", @"debugger/fujinet"
+};
 
 static ArcDebuggerWindow *g_debugger;
 
@@ -475,7 +482,10 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
 - (void)tabView:(NSTabView *)tabView didSelectTabViewItem:(NSTabViewItem *)item
 {
     (void)tabView;
-    [self refreshTab:[_tabs indexOfTabViewItem:item]];
+    const NSInteger i = [_tabs indexOfTabViewItem:item];
+    /* The Help button and Command+? open the tab being shown. */
+    if (i >= 0 && i < NUM_TABS) ArcSetHelpContext(_window, kTabContexts[i]);
+    [self refreshTab:i];
 }
 
 /* ---- construction -------------------------------------------------------------------- */
@@ -752,7 +762,9 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
     _status = ArcNote(@"Running");
     _status.alignment = NSTextAlignmentRight;
     _status.lineBreakMode = NSLineBreakByTruncatingTail;
-    NSStackView *toolbar = ArcHStack(@[_runBtn, step, over, outBtn, scan, frame, symbols, save, _status]);
+    NSButton *help = ArcHelpButton(nil);
+    [help setRefusesFirstResponder:YES];
+    NSStackView *toolbar = ArcHStack(@[_runBtn, step, over, outBtn, scan, frame, symbols, save, _status, help]);
     [_status setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     [_status setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                       forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -789,6 +801,10 @@ static void setButtonLit(NSButton *b, NSString *title, BOOL lit)
         if (t >= 0 && t < (int)_tabs.numberOfTabViewItems) [_tabs selectTabViewItemAtIndex:t];
     }
     _tabs.delegate = self;
+    {
+        const NSInteger i = _tabs.selectedTabViewItem ? [_tabs indexOfTabViewItem:_tabs.selectedTabViewItem] : 0;
+        ArcSetHelpContext(_window, kTabContexts[i >= 0 && i < NUM_TABS ? i : 0]);
+    }
 
     NSStackView *root = ArcVStack(@[toolbar, _tabs]);
     root.edgeInsets = NSEdgeInsetsMake(8, 8, 8, 8);

@@ -39,6 +39,7 @@
 #include <string.h>
 
 #include "../window.h"
+#include "../help/help_window.h"
 #include "dbg_common.h"
 
 #define DISASM_WINDOW 48
@@ -57,6 +58,12 @@ static const struct { const char *name; int tab; } k_tab_names[] = {
     { "memory", TAB_CPU }, { "disassembly", TAB_DISASM }, { "video", TAB_VIDEO },
     { "uvi", TAB_VIDEO }, { "sound", TAB_IO }, { "io", TAB_IO },
     { "breakpoints", TAB_BREAKS }, { "cart", TAB_CART }, { "fujinet", TAB_FUJINET },
+};
+
+/* Help's contexts (archelp.h), one per tab */
+static const char *const k_tab_contexts[TAB_COUNT] = {
+    "debugger/prompt", "debugger/cpu", "debugger/disassembly", "debugger/video",
+    "debugger/io", "debugger/breakpoints", "debugger/cart", "debugger/fujinet",
 };
 
 /* The 2650's registers as entries: how many hex digits each shows. R1-R3 are
@@ -1310,8 +1317,10 @@ static void on_switch_page(GtkNotebook *nb, GtkWidget *page, guint num, gpointer
 {
     DbgWin *w = ud;
     (void)nb; (void)page;
-    if (num < TAB_COUNT)
+    if (num < TAB_COUNT) {
+        arc_help_set_context(w->win, k_tab_contexts[num]);
         refresh_tab(w, (int)num);
+    }
 }
 
 static void hide_window(DbgWin *w)
@@ -1326,6 +1335,7 @@ static gboolean on_key(GtkEventControllerKey *c, guint keyval, guint code,
     DbgWin *w = ud;
     (void)c; (void)code;
     switch (keyval) {
+    case GDK_KEY_F1: arc_help_for(w->win); return TRUE;
     case GDK_KEY_F5: on_run(NULL, w); return TRUE;
     case GDK_KEY_F7: on_step(NULL, w); return TRUE;
     case GDK_KEY_F8:
@@ -1870,6 +1880,7 @@ void arc_debugger_show(GtkWindow *parent, arcsession *session)
     gtk_box_append(GTK_BOX(root), notebook);
     tab = tab_from_env();
     if (tab >= 0) gtk_notebook_set_current_page(w->notebook, tab);
+    arc_help_set_context(w->win, k_tab_contexts[tab >= 0 ? tab : 0]);
     g_signal_connect(notebook, "switch-page", G_CALLBACK(on_switch_page), w);
 
     overlay = adw_toast_overlay_new();
@@ -1880,6 +1891,7 @@ void arc_debugger_show(GtkWindow *parent, arcsession *session)
     header = adw_header_bar_new();
     w->title = ADW_WINDOW_TITLE(adw_window_title_new("Debugger", ""));
     adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), GTK_WIDGET(w->title));
+    adw_header_bar_pack_end(ADW_HEADER_BAR(header), arc_help_button(NULL));
     toolbar = adw_toolbar_view_new();
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), header);
     adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), overlay);
