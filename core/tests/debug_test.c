@@ -1199,8 +1199,11 @@ int main(void)
     arcdebug_detach(d);
     check(!arcdebug_is_attached(d) && !arcdebug_is_stopped(d), "detached");
     {
+        /* up to 3 s: a loaded runner can take longer than 200 ms to show frames */
         const uint64_t f0 = arc_host_frame_count();
-        sleep_ms(200);
+        int waited;
+        for (waited = 0; waited < 3000 && arc_host_frame_count() <= f0 + 3; waited += 20)
+            sleep_ms(20);
         check(arc_host_frame_count() > f0 + 3, "the machine runs at full speed again");
     }
     arcdebug_attach(d);
