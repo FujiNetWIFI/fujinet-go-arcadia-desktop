@@ -65,8 +65,13 @@ if(NOT ARC_CORE_ONLY AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/arc/machine.c"
   endforeach()
 endif()
 
+# src/pad_assign.c is the session's remembered pad -> port table, kept here
+# (pure, no SDL) so its test links the core alone.
+set(ARC_PAD_ASSIGN_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/pad_assign.c")
+
 add_library(arc_core STATIC
-  ${ARC_EMU_SOURCES} ${ARC_FUJI_SOURCES} ${ARC_DEBUGGER_SOURCES})
+  ${ARC_EMU_SOURCES} ${ARC_FUJI_SOURCES} ${ARC_DEBUGGER_SOURCES}
+  ${ARC_PAD_ASSIGN_SOURCE})
 set_target_properties(arc_core PROPERTIES
   C_STANDARD 11
   POSITION_INDEPENDENT_CODE ON)
@@ -91,7 +96,7 @@ endif()
 
 # Our own modules are warning-clean; the staged tree is built with whatever
 # warnings upstream is comfortable with.
-set(ARC_WARN_SOURCES ${ARC_EMU_SOURCES} ${ARC_DEBUGGER_SOURCES})
+set(ARC_WARN_SOURCES ${ARC_EMU_SOURCES} ${ARC_DEBUGGER_SOURCES} ${ARC_PAD_ASSIGN_SOURCE})
 list(REMOVE_ITEM ARC_WARN_SOURCES debugger/symbols_builtin.c)
 set_property(SOURCE ${ARC_WARN_SOURCES} APPEND PROPERTY COMPILE_OPTIONS
   "$<$<C_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra>")

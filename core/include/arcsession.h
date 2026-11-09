@@ -251,6 +251,7 @@ typedef enum {
     ARC_SYSACT_COUNT
 } arc_sysaction;
 
+#define ARC_PLAYERS 2   /* hand controllers (ports) */
 #define ARC_TARGET_PORT(port, act) ((port) * ARC_ACT_PER_PORT + (act))
 #define ARC_TARGET_KEY(key)        (2 * ARC_ACT_PER_PORT + (key))
 #define ARC_TARGET_SWITCH(sw)      (2 * ARC_ACT_PER_PORT + ARC_KEY_COUNT + (sw))
