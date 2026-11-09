@@ -752,9 +752,14 @@ ControllersWindow::ControllersWindow(arcsession *session, QWidget *parent)
     m_keyNames = new QCheckBox(QStringLiteral("Key names"));
     m_keyNames->setFocusPolicy(Qt::NoFocus);
     m_keyNames->setToolTip(QStringLiteral("Show the host key bound to each key cap"));
-    m_keyNames->setChecked(arcsession_get_int(session, "controllers_key_names", 0) != 0);
+    {
+        /* Old key controllers_key_names is read when the new one is absent. */
+        int shown = arcsession_get_int(session, "controllers_show_bindings", -1);
+        if (shown < 0) shown = arcsession_get_int(session, "controllers_key_names", 0);
+        m_keyNames->setChecked(shown != 0);
+    }
     connect(m_keyNames, &QCheckBox::toggled, this, [this](bool on) {
-        arcsession_set_int(m_session, "controllers_key_names", on ? 1 : 0);
+        arcsession_set_int(m_session, "controllers_show_bindings", on ? 1 : 0);
         m_console->setKeyNames(on);
     });
     m_console->setKeyNames(m_keyNames->isChecked());

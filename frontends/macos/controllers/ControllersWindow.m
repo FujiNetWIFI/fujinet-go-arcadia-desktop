@@ -532,7 +532,12 @@ static void discDeflection(ArcCtl *c, NSPoint p, int *x, int *y)
     _console = [[ArcConsoleView alloc] initWithFrame:NSZeroRect];
     _console.owner = self;
     _console.mapTarget = -1;
-    _console.showKeys = arcsession_get_int(_session, "show_bindings", 0) != 0;
+    {
+        /* Old key show_bindings is read when the new one is absent. */
+        int shown = arcsession_get_int(_session, "controllers_show_bindings", -1);
+        if (shown < 0) shown = arcsession_get_int(_session, "show_bindings", 0);
+        _console.showKeys = shown != 0;
+    }
     [_content addSubview:_console];
 
     /* Gamepads: one row per pad, its name, the controller it drives and the one it
@@ -905,7 +910,7 @@ static CGFloat snap(CGFloat v)
 {
     (void)sender;
     const BOOL on = [_showKeysBox state] == NSControlStateValueOn;
-    arcsession_set_int(_session, "show_bindings", on ? 1 : 0);
+    arcsession_set_int(_session, "controllers_show_bindings", on ? 1 : 0);
     _console.showKeys = on;
     [_console setNeedsDisplay:YES];
 }
