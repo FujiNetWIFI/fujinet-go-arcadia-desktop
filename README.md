@@ -62,7 +62,8 @@ hardware.
 
 RESET holds the 2650's reset line only, as the console's button does, so a
 running FujiNet app restarts from the cartridge's current image; **Reset to
-CONFIG** is the power cycle.
+CONFIG** is the power cycle. A gamepad's player (Automatic, Player 1 or
+Player 2) is remembered between runs.
 
 ## Debugger (F12)
 
