@@ -127,6 +127,7 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
     BOOL _launched;
     NSWindow *_window;
     ArcDisplayView *_display;
+    id<NSObject> _activity;          /* no App Nap, no timer coalescing while we run */
     ArcContentView *_content;
     NSTimer *_statusTimer;
     NSTimer *_sysactTimer;
@@ -169,6 +170,13 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
 - (void)applicationDidFinishLaunching:(NSNotification *)note
 {
     (void)note;
+
+    /* An emulator is latency-critical work: App Nap must not throttle the
+     * machine thread or coalesce its timers when the window is behind
+     * another, and Game Mode (Info.plist) asks the system to favour it. */
+    _activity = [[NSProcessInfo processInfo]
+        beginActivityWithOptions:(NSActivityUserInitiated | NSActivityLatencyCritical)
+                          reason:@"Emulating an Emerson Arcadia 2001"];
 
     /* The 192x262 picture at the TV's 4:3, twice its 262 lines high:
      * 699x524, a comfortable first window on any Mac. */
@@ -409,6 +417,10 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
     [_sysactTimer invalidate];
     [_logTimer invalidate];
     [_display stop];
+    if (_activity) {
+        [[NSProcessInfo processInfo] endActivity:_activity];
+        _activity = nil;
+    }
     arcsession_stop(_session);
     arcsession_free(_session);
     _session = NULL;
